@@ -115,6 +115,7 @@ const api = {
 
   // dialogs / window
   browseFolder: (): Promise<string | null> => ipcRenderer.invoke(CH.browseFolder),
+  setBadge: (show: boolean): void => ipcRenderer.send(CH.setBadge, show),
   windowMinimize: (): void => ipcRenderer.send(CH.windowMinimize),
   windowMaximize: (): void => ipcRenderer.send(CH.windowMaximize),
   windowClose: (): void => ipcRenderer.send(CH.windowClose)

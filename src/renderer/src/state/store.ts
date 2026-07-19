@@ -92,6 +92,8 @@ interface AppState {
   /** session ids that currently have a live pty */
   live: Record<string, boolean>
   activity: Record<string, AgentActivity>
+  /** agent sessions that finished while unwatched — a red "!" until opened */
+  notifications: Record<string, boolean>
 
   dialog: DialogKind
   ap: ProjectDraft
@@ -128,6 +130,7 @@ interface AppState {
   resetTerminalZoom: () => void
   setLive: (sessionId: string, live: boolean) => void
   setActivity: (sessionId: string, a: AgentActivity) => void
+  notifyAgentFinished: (sessionId: string) => void
 
   // dialogs
   openAddProject: () => void
@@ -202,6 +205,7 @@ export const useStore = create<AppState>((set, get) => ({
   terminalFontSize: 13,
   live: {},
   activity: {},
+  notifications: {},
   dialog: null,
   ap: emptyDraft(),
   st: null,
@@ -274,8 +278,12 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => {
       // ensure the owning project is expanded
       const proj = s.config.projects.find((p) => p.sessions.some((x) => x.id === sessionId))
+      // opening a session acknowledges its finished-agent notification
+      const notifications = { ...s.notifications }
+      delete notifications[sessionId]
       return {
         selectedSessionId: sessionId,
+        notifications,
         expanded: proj ? { ...s.expanded, [proj.id]: true } : s.expanded
       }
     }),
@@ -290,6 +298,15 @@ export const useStore = create<AppState>((set, get) => ({
   resetTerminalZoom: () => set({ terminalFontSize: 13 }),
   setLive: (sessionId, live) => set((s) => ({ live: { ...s.live, [sessionId]: live } })),
   setActivity: (sessionId, a) => set((s) => ({ activity: { ...s.activity, [sessionId]: a } })),
+
+  notifyAgentFinished: (sessionId) => {
+    const focused = document.hasFocus()
+    // Already watching this session in a focused window → nothing to flag.
+    if (focused && get().selectedSessionId === sessionId) return
+    set((s) => ({ notifications: { ...s.notifications, [sessionId]: true } }))
+    // App in the background → light up the taskbar button (cleared on focus).
+    if (!focused) window.vivarium.setBadge(true)
+  },
 
   openAddProject: () => set({ dialog: 'addProject', ap: emptyDraft() }),
 
@@ -378,14 +395,18 @@ export const useStore = create<AppState>((set, get) => ({
 
   deleteProject: async (projectId) => {
     const config = await window.vivarium.deleteProject(projectId)
-    set((s) => ({
-      config,
-      selectedSessionId:
-        s.selectedSessionId &&
-        !config.projects.some((p) => p.sessions.some((x) => x.id === s.selectedSessionId))
-          ? null
-          : s.selectedSessionId
-    }))
+    set((s) => {
+      // drop notifications for sessions that no longer exist
+      const alive = new Set(config.projects.flatMap((p) => p.sessions.map((x) => x.id)))
+      const notifications: Record<string, boolean> = {}
+      for (const id of Object.keys(s.notifications)) if (alive.has(id)) notifications[id] = s.notifications[id]
+      return {
+        config,
+        notifications,
+        selectedSessionId:
+          s.selectedSessionId && !alive.has(s.selectedSessionId) ? null : s.selectedSessionId
+      }
+    })
     await get().refreshStates()
   },
 
@@ -455,11 +476,14 @@ export const useStore = create<AppState>((set, get) => ({
       )
       const live = { ...s.live }
       delete live[killTarget.sessionId]
+      const notifications = { ...s.notifications }
+      delete notifications[killTarget.sessionId]
       return {
         config,
         dialog: null,
         killTarget: null,
         live,
+        notifications,
         selectedSessionId: stillExists ? s.selectedSessionId : null
       }
     })

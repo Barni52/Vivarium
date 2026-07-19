@@ -49,6 +49,7 @@ export const CH = {
 
   // dialogs / window
   browseFolder: 'dialog:browse-folder',
+  setBadge: 'window:set-badge',
   windowMinimize: 'window:minimize',
   windowMaximize: 'window:maximize',
   windowClose: 'window:close'

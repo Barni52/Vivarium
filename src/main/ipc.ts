@@ -1,4 +1,4 @@
-import { ipcMain, dialog, BrowserWindow, clipboard, shell } from 'electron'
+import { ipcMain, dialog, BrowserWindow, clipboard, shell, nativeImage } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { watch, type FSWatcher } from 'node:fs'
 import { readdir, mkdir } from 'node:fs/promises'
@@ -375,4 +375,19 @@ export function registerIpc(win: BrowserWindow): void {
   ipcMain.on(CH.windowMinimize, () => win.minimize())
   ipcMain.on(CH.windowMaximize, () => (win.isMaximized() ? win.unmaximize() : win.maximize()))
   ipcMain.on(CH.windowClose, () => win.close())
+
+  // ---- taskbar attention badge (agent finished while unfocused) ----------
+  // Red "!" dot drawn on the taskbar button; cleared when the app is focused.
+  const BADGE = nativeImage.createFromDataURL(`data:image/png;base64,${BADGE_B64}`)
+  ipcMain.on(CH.setBadge, (_e, show: boolean) => {
+    if (win.isDestroyed()) return
+    win.setOverlayIcon(show ? BADGE : null, show ? 'Agent finished' : '')
+  })
+  win.on('focus', () => {
+    if (!win.isDestroyed()) win.setOverlayIcon(null, '')
+  })
 }
+
+// 32×32 red circle with a white "!" — the taskbar overlay dot (base64 PNG).
+const BADGE_B64 =
+  'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAwhJREFUWIXFlz1oFEEYhp+Z3fWONJ6lYhJSpQoJNmKlJOHAI4GgiEGEYLSLhWAqCVYpE7CxEUmIiD+IIigRgpFYiY3cYWUV7y5o6dnE+9v5LG73colnbvaMyVPtfrv7ve/M7Mx8o4iAiBwHzgADQA+QCB4VgHUgDawppTai5LURviwiqxJSLvvyNVs16YyYdEbka7Yq5bIvW6yKyGWb3KqF8AjGzKJ1P9mcb1beOtUPH6l8/tL0fa+vF/fUSXRy2Ke7y8GYDFrPKKVeRzYgInPATbI5v7qw5JSWV20aVCeWGsKdnKgZgXml1LS1ARF5DpyTp8/YnLsbSXgnHdNTqIsXAF4opc63NBCK+/N3KD55+U/iIfHxMZybN5qa2GYg7HYbcX3kMIfGUgCUXy5jfvy0NbFtOOoGRGQEeGXT7Soeo+PRfejsrAXyeTYvXUOKpV2/axiO0fDH1PWnxsySzfk2Yx47O7glDtDZWYu1YHPuLmRzPsbMhjFNMM/Rur+6sOS0zALgeXaxJlQXlhy07g/XibAHrpDN+VGnWjuUlldrvQBXAHSwvA6albd2rd8DAq1BETmug7Wd6oeP+6XfqHVGAwNUKuZvy+v/oPL5C1QqBhjQQA/fvsu+qYfUNHs0kJBCYd/GPyTQTGiLd/+kUrGLWaCBgkok/Cgfld68g3x+K5DP12IRCDQLLrDOsaO71gU7kWKJX1evb9sLWi3Df1DTXHeBNJ6nvb7evxYazTA/flJcfBxNNMDr6wXP00BaA2sA7qmTbSVrhwatNVcptSEi73Ry+DT3HljPhvhoEn1iAADzKU3x1Yq1AZ0c9oH3SqkNN4gt0t01GEsNYbMfxEeTOLdv1e+dkRRxsDIRSw0RlGmLhJuRUuohxmTcyQmr2RC2vFWsGe7khI8xGaXUQ7bVA1rP0N3ldExPWSVqh47pqVrrtZ6py4YXQYUyry5eID4+tmsi8yltFWskPj4WVkPzjWV620VplJ/QuijdaeJAyvIGEwd3MGkw8d+PZlYc2OG0iZE9P57/Bk8myA/46+s1AAAAAElFTkSuQmCC'

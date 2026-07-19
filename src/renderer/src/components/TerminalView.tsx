@@ -248,16 +248,23 @@ export function TerminalView({
     // lightweight agent status poll (idle vs working) — nice-to-have, step 7
     let poll: ReturnType<typeof setInterval> | null = null
     if (session.type === 'agent') {
+      let prevWorking = false
       poll = setInterval(() => {
         const buf = term.buffer.active
+        // Scan the whole visible screen, not just the last few lines: Claude
+        // Code's "esc to interrupt" spinner sits ABOVE its input box, so it's
+        // several rows up from the bottom — a small tail window misses it.
         let text = ''
-        for (let i = Math.max(0, buf.length - 6); i < buf.length; i++) {
+        for (let i = Math.max(0, buf.length - term.rows); i < buf.length; i++) {
           text += (buf.getLine(i)?.translateToString(true) ?? '') + '\n'
         }
-        // Claude Code shows "esc to interrupt" on its status line while running.
+        // "esc to interrupt" is only shown while a task is running.
         const working = /esc to interrupt/i.test(text)
         setActivity(session.id, working ? 'working' : 'idle')
-      }, 2500)
+        // working → idle = the agent just finished a task → notify.
+        if (prevWorking && !working) useStore.getState().notifyAgentFinished(session.id)
+        prevWorking = working
+      }, 2000)
     }
 
     return () => {

@@ -11,6 +11,7 @@ export function SessionRow({ project, session }: { project: Project; session: Se
   const editDraft = useStore((s) => s.editDraft)
   const live = useStore((s) => !!s.live[session.id])
   const activity = useStore((s) => s.activity[session.id])
+  const notified = useStore((s) => !!s.notifications[session.id])
   const select = useStore((s) => s.select)
   const startRename = useStore((s) => s.startRename)
   const setEditDraft = useStore((s) => s.setEditDraft)
@@ -195,7 +196,30 @@ export function SessionRow({ project, session }: { project: Project; session: Se
         </div>
       )}
 
-      {!hover && !editing && (
+      {!hover && !editing && notified && (
+        <span
+          title="Agent finished — click to view"
+          style={{
+            width: 16,
+            height: 16,
+            flex: 'none',
+            marginRight: 1,
+            borderRadius: '50%',
+            background: 'var(--danger)',
+            color: '#fff',
+            fontSize: 11,
+            fontWeight: 700,
+            lineHeight: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+        >
+          !
+        </span>
+      )}
+
+      {!hover && !editing && !notified && (
         <span
           title={dotTitle}
           style={{

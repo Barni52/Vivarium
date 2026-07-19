@@ -53,6 +53,9 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
   const openContextMenu = useStore((s) => s.openContextMenu)
   const hasOutput = useStore((s) => !!s.config.sharedOutputFolder)
   const runProjectDiff = useStore((s) => s.runProjectDiff)
+  // aggregate: any child session finished (shown when the project is collapsed,
+  // so a notification isn't hidden with its session rows)
+  const hasNotified = useStore((s) => project.sessions.some((x) => s.notifications[x.id]))
   const projectIds = useStore((s) => s.config.projects.map((p) => p.id))
   const dropIndicator = useStore((s) =>
     s.drag?.kind === 'project' && s.dropTarget?.id === project.id ? s.dropTarget.pos : null
@@ -216,6 +219,28 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
             )}
           </div>
         </div>
+
+        {!expanded && hasNotified && (
+          <span
+            title="An agent in this project finished"
+            style={{
+              width: 15,
+              height: 15,
+              flex: 'none',
+              borderRadius: '50%',
+              background: 'var(--danger)',
+              color: '#fff',
+              fontSize: 10.5,
+              fontWeight: 700,
+              lineHeight: 1,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+          >
+            !
+          </span>
+        )}
 
         {hover ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 1 }}>
