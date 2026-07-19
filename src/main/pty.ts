@@ -1,0 +1,149 @@
+import * as pty from 'node-pty'
+import { execFile } from 'child_process'
+import type { IPty } from 'node-pty'
+import type { Project, Session } from '@shared/types'
+import type { DockerService } from './docker'
+
+type Emit = (channel: string, payload: unknown) => void
+
+interface Tracked {
+  proc: IPty
+  session: Session
+}
+
+let pwshCache: string | undefined
+
+function resolvePwsh(): Promise<string> {
+  if (pwshCache !== undefined) return Promise.resolve(pwshCache)
+  return new Promise((resolve) => {
+    execFile('pwsh', ['-NoProfile', '-Command', 'exit'], { windowsHide: true }, (err) => {
+      pwshCache = err ? 'powershell.exe' : 'pwsh.exe'
+      resolve(pwshCache)
+    })
+  })
+}
+
+export class PtyManager {
+  private terms = new Map<string, Tracked>()
+
+  constructor(
+    private docker: DockerService,
+    private emit: Emit
+  ) {}
+
+  has(sessionId: string): boolean {
+    return this.terms.has(sessionId)
+  }
+
+  liveIds(): string[] {
+    return [...this.terms.keys()]
+  }
+
+  /**
+   * Spawn a pty for a session. `cols`/`rows` come from the renderer's initial
+   * xterm fit. Container sessions require the container to be running (checked
+   * by the caller). Returns false if the local binary could not be spawned.
+   */
+  async spawn(
+    session: Session,
+    project: Project,
+    cols: number,
+    rows: number
+  ): Promise<boolean> {
+    // Re-use an existing pty if one is already alive (selection re-attach).
+    if (this.terms.has(session.id)) return true
+
+    let file: string
+    let args: string[]
+    let cwd: string
+
+    const env = {
+      ...process.env,
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor'
+    } as Record<string, string>
+
+    if (session.type === 'host-shell') {
+      file = await resolvePwsh()
+      args = ['-NoLogo']
+      cwd = project.basePath
+    } else {
+      const bin = await this.docker.binaryName()
+      if (!bin) return false
+      file = bin
+      args = await this.docker.execArgs(
+        project,
+        session.type === 'agent' ? 'agent' : 'shell'
+      )
+      // cwd is irrelevant for the docker client; use a safe existing dir.
+      cwd = project.basePath
+    }
+
+    let proc: IPty
+    try {
+      proc = pty.spawn(file, args, {
+        name: 'xterm-256color',
+        cols: cols || 80,
+        rows: rows || 24,
+        cwd,
+        env,
+        useConpty: true
+      })
+    } catch {
+      return false
+    }
+
+    this.terms.set(session.id, { proc, session })
+
+    proc.onData((data) => this.emit('pty:data', { sessionId: session.id, data }))
+    proc.onExit(({ exitCode }) => {
+      this.terms.delete(session.id)
+      this.emit('pty:exit', { sessionId: session.id, exitCode })
+    })
+
+    return true
+  }
+
+  write(sessionId: string, data: string): void {
+    this.terms.get(sessionId)?.proc.write(data)
+  }
+
+  resize(sessionId: string, cols: number, rows: number): void {
+    const t = this.terms.get(sessionId)
+    if (t && cols > 0 && rows > 0) {
+      try {
+        t.proc.resize(cols, rows)
+      } catch {
+        /* pty may have just exited */
+      }
+    }
+  }
+
+  /** Kill a single session's pty (used by "Kill session"). */
+  kill(sessionId: string): void {
+    const t = this.terms.get(sessionId)
+    if (!t) return
+    try {
+      t.proc.kill()
+    } catch {
+      /* already gone */
+    }
+    this.terms.delete(sessionId)
+  }
+
+  /**
+   * On app quit: kill every tracked pty's LOCAL process. This never stops the
+   * container — for agents it only severs the docker-exec client (the agent
+   * process ends because it has no multiplexer, which is the accepted model).
+   */
+  killAll(): void {
+    for (const { proc } of this.terms.values()) {
+      try {
+        proc.kill()
+      } catch {
+        /* ignore */
+      }
+    }
+    this.terms.clear()
+  }
+}
