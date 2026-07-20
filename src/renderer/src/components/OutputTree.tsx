@@ -10,15 +10,30 @@ function OutputRow({ node, depth }: { node: OutputNode; depth: number }): React.
   const expanded = useStore((s) => !!s.outputExpanded[node.path])
   const toggleDir = useStore((s) => s.toggleOutputDir)
   const openFile = useStore((s) => s.openOutputFile)
+  const deleteOutputPath = useStore((s) => s.deleteOutputPath)
+  const openContextMenu = useStore((s) => s.openContextMenu)
 
   const isDir = node.type === 'dir'
   const html = !isDir && isHtml(node.name)
   const pad = 10 + depth * 14
 
+  const showMenu = (e: React.MouseEvent): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    openContextMenu(e.clientX, e.clientY, [
+      {
+        label: isDir ? 'Delete folder' : 'Delete file',
+        danger: true,
+        onSelect: () => void deleteOutputPath(node.path)
+      }
+    ])
+  }
+
   return (
     <>
       <div
         onClick={() => (isDir ? toggleDir(node.path) : openFile(node.path))}
+        onContextMenu={showMenu}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
         title={isDir ? node.path : html ? `Open ${node.name} in browser` : `Open ${node.name}`}

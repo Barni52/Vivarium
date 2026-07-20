@@ -33,10 +33,9 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
 
 ## Invariants — do not break
 
-- `claude-box.ps1` is the **read-only reference implementation** the docker logic was ported
-  from (the `(ref 123-456)` comments point at its line numbers). Never modify it; when
-  behavior is unclear, read it.
-- `Vivarium.html` in the root is a stale leftover — ignore it entirely.
+- The docker logic was ported from `claude-box.ps1` (since removed from the repo — see git
+  history if needed). The `(ref 123-456)` comments in `docker.ts` point at line numbers in that
+  original script.
 - Quitting the app **never stops containers** — only each project's explicit stop control does.
   App quit only kills local pty processes (`PtyManager.killAll`).
 - **No multiplexer by design** (tmux was deliberately removed). Agent sessions die with the app

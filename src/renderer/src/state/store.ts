@@ -31,6 +31,13 @@ export interface ContextMenuState {
   x: number
   y: number
   items: ContextMenuItem[]
+  /**
+   * Called after the menu closes via a keep-me-here gesture (item selection or
+   * Escape). The terminal passes this to restore its focus so the user can keep
+   * typing — sidebar/output menus omit it so they don't steal focus (e.g. from
+   * the rename input).
+   */
+  onClose?: () => void
 }
 
 export interface DragState {
@@ -116,6 +123,7 @@ interface AppState {
   setSharedOutput: (folder: string | null) => Promise<void>
   refreshOutputTree: () => Promise<void>
   openOutputFile: (abs: string) => void
+  deleteOutputPath: (abs: string) => Promise<void>
   toggleOutputDir: (path: string) => void
   toggleOutputPanel: () => void
 
@@ -151,7 +159,7 @@ interface AppState {
   confirmDeleteProject: () => Promise<void>
 
   // context menu
-  openContextMenu: (x: number, y: number, items: ContextMenuItem[]) => void
+  openContextMenu: (x: number, y: number, items: ContextMenuItem[], onClose?: () => void) => void
   closeContextMenu: () => void
 
   // drag reorder
@@ -260,6 +268,13 @@ export const useStore = create<AppState>((set, get) => ({
     void window.vivarium.openOutputFile(abs)
   },
 
+  deleteOutputPath: async (abs) => {
+    // Moves to the Recycle Bin (reversible). The fs.watch usually refreshes the
+    // tree on its own, but refresh explicitly so the row disappears immediately.
+    await window.vivarium.deleteOutputFile(abs)
+    void get().refreshOutputTree()
+  },
+
   toggleOutputDir: (path) =>
     set((s) => ({ outputExpanded: { ...s.outputExpanded, [path]: !s.outputExpanded[path] } })),
 
@@ -302,6 +317,11 @@ export const useStore = create<AppState>((set, get) => ({
   setActivity: (sessionId, a) => set((s) => ({ activity: { ...s.activity, [sessionId]: a } })),
 
   notifyAgentFinished: (sessionId) => {
+    // Only agent sessions get the "!" — host/container shells never do (a stray
+    // Stop hook for a shell session, if one ever arrived, must not light one up).
+    const proj = get().config.projects.find((p) => p.sessions.some((x) => x.id === sessionId))
+    const sess = proj?.sessions.find((x) => x.id === sessionId)
+    if (sess?.type !== 'agent') return
     const focused = document.hasFocus()
     // Already watching this session in a focused window → nothing to flag.
     if (focused && get().selectedSessionId === sessionId) return
@@ -435,7 +455,7 @@ export const useStore = create<AppState>((set, get) => ({
     set({ dialog: null, deleteTarget: null, st: null })
   },
 
-  openContextMenu: (x, y, items) => set({ contextMenu: { x, y, items } }),
+  openContextMenu: (x, y, items, onClose) => set({ contextMenu: { x, y, items, onClose } }),
   closeContextMenu: () => set({ contextMenu: null }),
 
   setDrag: (drag) => set({ drag }),

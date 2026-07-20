@@ -56,6 +56,7 @@ const api = {
     ipcRenderer.invoke(CH.setSharedOutput, folder),
   outputTree: (): Promise<OutputNode[]> => ipcRenderer.invoke(CH.outputTree),
   openOutputFile: (abs: string): Promise<string> => ipcRenderer.invoke(CH.openOutputFile, abs),
+  deleteOutputFile: (abs: string): Promise<string> => ipcRenderer.invoke(CH.deleteOutputFile, abs),
   onOutputChanged: (cb: () => void): (() => void) => {
     const h = (): void => cb()
     ipcRenderer.on(CH.outputChanged, h)

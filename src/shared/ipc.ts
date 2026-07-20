@@ -22,6 +22,7 @@ export const CH = {
   setSharedOutput: 'output:set-folder',
   outputTree: 'output:tree',
   openOutputFile: 'output:open-file',
+  deleteOutputFile: 'output:delete-file',
   outputChanged: 'output:changed',
 
   // docker / containers

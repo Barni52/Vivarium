@@ -199,17 +199,24 @@ export function TerminalView({
     const onContext = (ev: MouseEvent): void => {
       ev.preventDefault()
       const z = useStore.getState()
-      z.openContextMenu(ev.clientX, ev.clientY, [
-        { label: 'Copy', disabled: !term.hasSelection(), onSelect: () => doCopy() },
-        { label: 'Paste', onSelect: () => void doPaste() },
-        { label: 'Select all', onSelect: () => term.selectAll() },
-        { label: '---' },
-        { label: 'Zoom in', onSelect: () => z.zoomTerminal(1) },
-        { label: 'Zoom out', onSelect: () => z.zoomTerminal(-1) },
-        { label: 'Reset zoom', onSelect: () => z.resetTerminalZoom() },
-        { label: '---' },
-        { label: 'Clear', onSelect: () => term.clear() }
-      ])
+      z.openContextMenu(
+        ev.clientX,
+        ev.clientY,
+        [
+          { label: 'Copy', disabled: !term.hasSelection(), onSelect: () => doCopy() },
+          { label: 'Paste', onSelect: () => void doPaste() },
+          { label: 'Select all', onSelect: () => term.selectAll() },
+          { label: '---' },
+          { label: 'Zoom in', onSelect: () => z.zoomTerminal(1) },
+          { label: 'Zoom out', onSelect: () => z.zoomTerminal(-1) },
+          { label: 'Reset zoom', onSelect: () => z.resetTerminalZoom() },
+          { label: '---' },
+          { label: 'Clear', onSelect: () => term.clear() }
+        ],
+        // restore focus to this terminal when the menu closes (item / Escape),
+        // so pasting or any action leaves the user able to type immediately
+        () => term.focus()
+      )
     }
     el?.addEventListener('contextmenu', onContext)
 
@@ -228,6 +235,10 @@ export function TerminalView({
         setLive(session.id, true)
       } else if (res.reason === 'docker-missing') {
         term.write('\r\n\x1b[31mdocker not found on PATH — start Docker/Rancher Desktop.\x1b[0m\r\n')
+      } else if (res.reason === 'container-stopped') {
+        // The container isn't running — the TerminalHost placeholder normally
+        // covers this, but a state race can still land here. Don't auto-start.
+        term.write('\r\n\x1b[2mcontainer is stopped — start it to open this session.\x1b[0m\r\n')
       } else if (res.reason === 'container-failed') {
         term.write('\r\n\x1b[31mcontainer failed to start (see output above).\x1b[0m\r\n')
       } else {

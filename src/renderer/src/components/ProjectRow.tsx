@@ -55,7 +55,9 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
   const runProjectDiff = useStore((s) => s.runProjectDiff)
   // aggregate: any child session finished (shown when the project is collapsed,
   // so a notification isn't hidden with its session rows)
-  const hasNotified = useStore((s) => project.sessions.some((x) => s.notifications[x.id]))
+  const hasNotified = useStore((s) =>
+    project.sessions.some((x) => x.type === 'agent' && s.notifications[x.id])
+  )
   const projectIds = useStore((s) => s.config.projects.map((p) => p.id))
   const dropIndicator = useStore((s) =>
     s.drag?.kind === 'project' && s.dropTarget?.id === project.id ? s.dropTarget.pos : null

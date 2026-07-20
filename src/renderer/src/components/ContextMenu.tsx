@@ -1,6 +1,16 @@
 import React from 'react'
 import { useStore } from '../state/store'
 
+// xterm instances keyed by session id (registered in TerminalView). Typed to
+// the minimal focus/blur surface we need here so we don't import xterm.
+type FocusableTerm = { focus(): void; blur(): void }
+function selectedTerm(): FocusableTerm | undefined {
+  const id = useStore.getState().selectedSessionId
+  if (!id) return undefined
+  const terms = (window as unknown as { __vivTerms?: Record<string, FocusableTerm> }).__vivTerms
+  return terms?.[id]
+}
+
 // Single app-wide, dark-themed context menu driven by the store. Positioned at
 // the cursor (clamped to the viewport) and closed on select / outside click /
 // Escape / scroll / blur.
@@ -24,10 +34,20 @@ export function ContextMenu(): React.ReactElement | null {
     setPos({ left: Math.max(6, left), top: Math.max(6, top) })
   }, [menu])
 
+  // Opening a menu must take focus away from the terminal — xterm otherwise
+  // keeps DOM focus and keystrokes would leak into it while the menu is up.
+  React.useEffect(() => {
+    if (menu) selectedTerm()?.blur()
+  }, [menu])
+
   React.useEffect(() => {
     if (!menu) return
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') close()
+      if (e.key === 'Escape') {
+        const onClose = menu.onClose
+        close()
+        if (onClose) requestAnimationFrame(onClose) // return focus to the terminal
+      }
     }
     window.addEventListener('keydown', onKey)
     window.addEventListener('blur', close)
@@ -47,7 +67,17 @@ export function ContextMenu(): React.ReactElement | null {
   return (
     // full-screen catcher closes on any outside click (incl. right-click)
     <div
-      onClick={close}
+      onClick={(e) => {
+        const { clientX, clientY } = e
+        close()
+        // The catcher swallowed this click, so if it landed in a terminal the
+        // xterm never focused. After the catcher unmounts (next frame), focus
+        // the visible terminal so the user can type into it immediately.
+        requestAnimationFrame(() => {
+          const el = document.elementFromPoint(clientX, clientY)
+          if (el?.closest('[data-terminal-host]')) selectedTerm()?.focus()
+        })
+      }}
       onContextMenu={(e) => {
         e.preventDefault()
         close()
@@ -81,8 +111,12 @@ export function ContextMenu(): React.ReactElement | null {
               disabled={item.disabled}
               onSelect={() => {
                 if (item.disabled) return
+                const onClose = menu.onClose
                 close()
                 item.onSelect?.()
+                // Restore terminal focus after the action + catcher unmount, so
+                // e.g. Paste leaves you able to type without clicking again.
+                if (onClose) requestAnimationFrame(onClose)
               }}
             />
           )

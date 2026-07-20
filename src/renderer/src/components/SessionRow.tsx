@@ -196,7 +196,7 @@ export function SessionRow({ project, session }: { project: Project; session: Se
         </div>
       )}
 
-      {!hover && !editing && notified && (
+      {!hover && !editing && notified && isAgent && (
         <span
           title="Agent finished — click to view"
           style={{
@@ -219,7 +219,7 @@ export function SessionRow({ project, session }: { project: Project; session: Se
         </span>
       )}
 
-      {!hover && !editing && !notified && (
+      {!hover && !editing && isAgent && !notified && (
         <span
           title={dotTitle}
           style={{

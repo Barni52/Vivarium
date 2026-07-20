@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, Menu } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { registerIpc } from './ipc'
@@ -39,6 +39,19 @@ function createWindow(): void {
   })
 
   registerIpc(mainWindow)
+
+  // The default menu is hidden (frame: false) but its accelerators still fire,
+  // and they hijack keys terminals need — Ctrl+W (Close) would kill the window
+  // instead of doing a word-delete, Ctrl+R (reload) would clobber shell reverse-
+  // search, etc. Drop the menu entirely so every keystroke reaches the terminal.
+  // Clipboard is handled in the renderer (TerminalView), not via menu roles.
+  Menu.setApplicationMenu(null)
+
+  // Menu removal also drops the DevTools accelerator, so keep F12 as a toggle
+  // (unused by terminals, so no conflict) for debugging.
+  mainWindow.webContents.on('before-input-event', (_e, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') mainWindow?.webContents.toggleDevTools()
+  })
 
   mainWindow.on('ready-to-show', () => {
     if (!cdpPort) mainWindow?.show()

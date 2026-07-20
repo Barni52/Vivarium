@@ -1,6 +1,8 @@
 import React from 'react'
+import type { Project, Session } from '@shared/types'
 import { useStore } from '../state/store'
 import { ACCENT } from '../theme'
+import { TypeIcon } from './Icons'
 import { Logo } from './Logo'
 import { TerminalView } from './TerminalView'
 
@@ -32,6 +34,10 @@ export function TerminalHost(): React.ReactElement {
         ? 'running'
         : 'stopped'
     : ''
+  // A selected agent/container session whose container is stopped shows the
+  // "start the container" placeholder instead of a terminal (opening one must
+  // not auto-start the container — see main/ipc.ts openSession).
+  const selBlocked = !!sel && sel.session.type !== 'host-shell' && !running
 
   // clean up opened set when sessions disappear (avoids leaking dead views)
   React.useEffect(() => {
@@ -93,20 +99,115 @@ export function TerminalHost(): React.ReactElement {
           </div>
 
           {/* terminal body — one persistent xterm per opened session */}
-          <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-            {toRender.map(({ project, session }) => (
-              <TerminalView
-                key={session.id}
-                project={project}
-                session={session}
-                visible={session.id === selected}
-              />
-            ))}
+          {/* data-terminal-host lets the context-menu catcher detect a click
+              that lands in here and re-focus the visible terminal (ContextMenu). */}
+          <div data-terminal-host style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+            {toRender.map(({ project, session }) => {
+              // Don't mount an xterm for an agent/container session whose
+              // container is stopped — mounting would call openSession and
+              // (before this) auto-start it. The user starts it explicitly via
+              // the placeholder below. When the container starts, the view
+              // mounts and opens the pty. Host shells never need a container.
+              const blocked = session.type !== 'host-shell' && !states[project.id]?.running
+              if (blocked) return null
+              return (
+                <TerminalView
+                  key={session.id}
+                  project={project}
+                  session={session}
+                  visible={session.id === selected}
+                />
+              )
+            })}
+            {selBlocked && sel && (
+              <StoppedPlaceholder project={sel.project} session={sel.session} />
+            )}
           </div>
         </>
       ) : (
         <EmptyState />
       )}
+    </div>
+  )
+}
+
+// Shown in the terminal body when a selected agent/container session's
+// container is stopped. Opening a session never auto-starts the container
+// anymore (main/ipc.ts) — the user starts it explicitly from here. Once the
+// container is running the parent swaps this out for the real TerminalView.
+function StoppedPlaceholder({
+  project,
+  session
+}: {
+  project: Project
+  session: Session
+}): React.ReactElement {
+  const togglePower = useStore((s) => s.togglePower)
+  const [starting, setStarting] = React.useState(false)
+  const kind = session.type === 'agent' ? 'agent' : 'terminal'
+
+  const start = async (): Promise<void> => {
+    setStarting(true)
+    try {
+      await togglePower(project.id) // container is stopped → this starts it
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        inset: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 16,
+        padding: 40,
+        textAlign: 'center',
+        background: 'var(--terminal-bg)'
+      }}
+    >
+      <div
+        style={{
+          width: 60,
+          height: 60,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderRadius: 16,
+          border: '1px solid var(--border)',
+          background: 'var(--field-2)',
+          color: ACCENT[session.type]
+        }}
+      >
+        <TypeIcon type={session.type} size={26} />
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 7, alignItems: 'center' }}>
+        <div style={{ fontSize: 17, fontWeight: 600, color: 'var(--text)' }}>Container stopped</div>
+        <div style={{ fontSize: 13, color: 'var(--text-2)', maxWidth: 380, lineHeight: 1.55 }}>
+          Start <b style={{ color: 'var(--text)' }}>{project.name}</b>’s container to open this{' '}
+          {kind}.
+        </div>
+      </div>
+      <button
+        onClick={() => void start()}
+        disabled={starting}
+        style={{
+          height: 34,
+          padding: '0 18px',
+          background: starting ? 'var(--field-2)' : 'var(--accent)',
+          color: starting ? 'var(--text-3)' : '#fff',
+          border: 0,
+          fontSize: 13,
+          fontWeight: 500,
+          cursor: starting ? 'default' : 'pointer'
+        }}
+      >
+        {starting ? 'Starting…' : 'Start container'}
+      </button>
     </div>
   )
 }

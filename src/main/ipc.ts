@@ -347,6 +347,25 @@ export function registerIpc(win: BrowserWindow): void {
     return shell.openPath(target) // OS default app; '' on success
   })
 
+  ipcMain.handle(CH.deleteOutputFile, async (_e, abs: string): Promise<string> => {
+    const folder = store.get().sharedOutputFolder
+    if (!folder) return 'no-folder'
+    const root = resolve(folder)
+    const target = resolve(abs)
+    // Must be strictly inside the shared folder — never delete the root itself,
+    // never allow traversal outside it.
+    if (target === root) return 'is-root'
+    if (!target.startsWith(root + sep)) return 'outside'
+    // Recycle Bin, not permanent unlink: reversible, and handles non-empty dirs.
+    // The recursive fs.watch fires outputChanged → the tree refreshes itself.
+    try {
+      await shell.trashItem(target)
+      return ''
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  })
+
   // ---- pty / sessions ----------------------------------------------------
   ipcMain.handle(
     CH.openSession,
@@ -368,14 +387,13 @@ export function registerIpc(win: BrowserWindow): void {
         if (!(await docker.binaryName())) {
           return { ok: false, reason: 'docker-missing', message: 'docker not found on PATH' }
         }
-        // Always route through start(): it fast-paths when the container is
-        // already running, and transparently recreates pre-bridge containers
-        // whose missing /vivarium mount would break the agent's --settings.
-        // Build/create output streams straight into this session's terminal.
-        const sink = (data: string): void => emit(CH.ptyData, { sessionId, data })
-        const started = await docker.start(p, sink)
-        emit(CH.containerStateChanged, { projectId, running: started })
-        if (!started) return { ok: false, reason: 'container-failed' }
+        // Opening a session must NOT start a stopped container — starting is an
+        // explicit action via the project power control. If the container isn't
+        // running, tell the renderer to show the "start the container"
+        // placeholder instead of spawning (which would auto-start it).
+        if (!(await docker.isRunning(p))) {
+          return { ok: false, reason: 'container-stopped' }
+        }
       }
 
       const ok = await pty.spawn(s, p, cols, rows)
@@ -409,12 +427,33 @@ export function registerIpc(win: BrowserWindow): void {
   // ---- taskbar attention badge (agent finished while unfocused) ----------
   // Red "!" dot drawn on the taskbar button; cleared when the app is focused.
   const BADGE = nativeImage.createFromDataURL(`data:image/png;base64,${BADGE_B64}`)
+  // flashFrame(true) flashes until focus with no built-in duration, so a timer
+  // stops it after a few seconds (Discord-style burst). The red overlay dot
+  // persists until focus — only the flashing is time-limited.
+  let flashTimer: ReturnType<typeof setTimeout> | null = null
+  const stopFlash = (): void => {
+    if (flashTimer) {
+      clearTimeout(flashTimer)
+      flashTimer = null
+    }
+    if (!win.isDestroyed()) win.flashFrame(false)
+  }
   ipcMain.on(CH.setBadge, (_e, show: boolean) => {
     if (win.isDestroyed()) return
     win.setOverlayIcon(show ? BADGE : null, show ? 'Agent finished' : '')
+    if (show) {
+      // Discord-style attention flash — Windows FlashWindowEx (built-in).
+      win.flashFrame(true)
+      if (flashTimer) clearTimeout(flashTimer)
+      flashTimer = setTimeout(stopFlash, 4000)
+    } else {
+      stopFlash()
+    }
   })
   win.on('focus', () => {
-    if (!win.isDestroyed()) win.setOverlayIcon(null, '')
+    if (win.isDestroyed()) return
+    win.setOverlayIcon(null, '')
+    stopFlash() // stop flashing once the user looks at the app
   })
 }
 
