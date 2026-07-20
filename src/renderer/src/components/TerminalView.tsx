@@ -142,6 +142,14 @@ export function TerminalView({
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true
       const k = e.key.toLowerCase()
+      // The working/idle indicator is driven by Claude Code hook events (see
+      // main/bridge.ts), but the Stop hook does not fire on a user interrupt —
+      // so an Esc in an agent terminal optimistically resets the indicator
+      // (no notification; the user is right here). Esc still reaches the pty.
+      if (session.type === 'agent' && e.key === 'Escape') {
+        setActivity(session.id, 'idle')
+        return true
+      }
       // zoom: Ctrl +/-/0 (Windows Terminal / VS Code convention)
       if (e.ctrlKey && !e.altKey) {
         if (e.key === '=' || e.key === '+') {
@@ -245,28 +253,6 @@ export function TerminalView({
     ro.observe(hostRef.current!)
     window.addEventListener('resize', doFit)
 
-    // lightweight agent status poll (idle vs working) — nice-to-have, step 7
-    let poll: ReturnType<typeof setInterval> | null = null
-    if (session.type === 'agent') {
-      let prevWorking = false
-      poll = setInterval(() => {
-        const buf = term.buffer.active
-        // Scan the whole visible screen, not just the last few lines: Claude
-        // Code's "esc to interrupt" spinner sits ABOVE its input box, so it's
-        // several rows up from the bottom — a small tail window misses it.
-        let text = ''
-        for (let i = Math.max(0, buf.length - term.rows); i < buf.length; i++) {
-          text += (buf.getLine(i)?.translateToString(true) ?? '') + '\n'
-        }
-        // "esc to interrupt" is only shown while a task is running.
-        const working = /esc to interrupt/i.test(text)
-        setActivity(session.id, working ? 'working' : 'idle')
-        // working → idle = the agent just finished a task → notify.
-        if (prevWorking && !working) useStore.getState().notifyAgentFinished(session.id)
-        prevWorking = working
-      }, 2000)
-    }
-
     return () => {
       dataSub.dispose()
       offData()
@@ -277,7 +263,6 @@ export function TerminalView({
       ro.disconnect()
       window.removeEventListener('resize', doFit)
       if (t) clearTimeout(t)
-      if (poll) clearInterval(poll)
       term.dispose()
       termRef.current = null
       fitRef.current = null

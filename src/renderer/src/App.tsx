@@ -15,6 +15,7 @@ export function App(): React.ReactElement {
   const refreshStates = useStore((s) => s.refreshStates)
   const refreshBranches = useStore((s) => s.refreshBranches)
   const refreshOutputTree = useStore((s) => s.refreshOutputTree)
+  const handleAgentHook = useStore((s) => s.handleAgentHook)
   const dialog = useStore((s) => s.dialog)
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed)
 
@@ -29,12 +30,14 @@ export function App(): React.ReactElement {
     }, 3000)
     const off = window.vivarium.onContainerStateChanged(() => refreshStates())
     const offOutput = window.vivarium.onOutputChanged(() => refreshOutputTree())
+    const offHook = window.vivarium.onAgentHook((e) => handleAgentHook(e))
     return () => {
       clearInterval(poll)
       off()
       offOutput()
+      offHook()
     }
-  }, [init, refreshStates, refreshBranches, refreshOutputTree])
+  }, [init, refreshStates, refreshBranches, refreshOutputTree, handleAgentHook])
 
   return (
     <div

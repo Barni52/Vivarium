@@ -63,6 +63,14 @@ export interface ContainerState {
 
 export type AgentActivity = 'idle' | 'working'
 
+/** Claude Code hook events forwarded from the container bridge (see main/bridge.ts). */
+export type AgentHookKind = 'UserPromptSubmit' | 'Stop'
+
+export interface AgentHookEvent {
+  sessionId: string
+  kind: AgentHookKind
+}
+
 /** Result of trying to open a session's pty. */
 export interface SpawnResult {
   ok: boolean

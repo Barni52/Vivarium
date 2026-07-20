@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type {
+  AgentHookEvent,
   Config,
   ContainerState,
   DockerStatus,
@@ -131,6 +132,7 @@ interface AppState {
   setLive: (sessionId: string, live: boolean) => void
   setActivity: (sessionId: string, a: AgentActivity) => void
   notifyAgentFinished: (sessionId: string) => void
+  handleAgentHook: (e: AgentHookEvent) => void
 
   // dialogs
   openAddProject: () => void
@@ -306,6 +308,19 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => ({ notifications: { ...s.notifications, [sessionId]: true } }))
     // App in the background → light up the taskbar button (cleared on focus).
     if (!focused) window.vivarium.setBadge(true)
+  },
+
+  handleAgentHook: (e) => {
+    const s = get()
+    // Ignore events for sessions that were killed while the turn was running.
+    const exists = s.config.projects.some((p) => p.sessions.some((x) => x.id === e.sessionId))
+    if (!exists) return
+    if (e.kind === 'UserPromptSubmit') {
+      s.setActivity(e.sessionId, 'working')
+    } else {
+      s.setActivity(e.sessionId, 'idle')
+      s.notifyAgentFinished(e.sessionId)
+    }
   },
 
   openAddProject: () => set({ dialog: 'addProject', ap: emptyDraft() }),

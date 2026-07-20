@@ -14,6 +14,7 @@ import {
   slimDockerfile,
   fullDockerfile
 } from './dockerfiles'
+import { bridgeDir, ensureBridgeFiles } from './bridge'
 
 export type LineSink = (chunk: string) => void
 
@@ -300,6 +301,9 @@ export class DockerService {
     // Clip dir for image-paste (host-managed bind mount).
     args.push('--mount', `type=bind,source=${this.clipDir(project)},target=/clip`)
 
+    // Hook bridge: Claude Code hook settings + event log (see bridge.ts).
+    args.push('--mount', `type=bind,source=${bridgeDir(project.id)},target=/vivarium`)
+
     args.push('-w', '/workspace')
     args.push(this.imageName(project))
     // Keep-alive PID1 that first starts the socat relays, then sleeps forever.
@@ -324,6 +328,18 @@ export class DockerService {
     return r.stdout.trim() === 'true'
   }
 
+  /** Does an existing container have the /vivarium hook-bridge mount? */
+  private async hasBridgeMount(name: string): Promise<boolean> {
+    const r = await this.exec([
+      'inspect',
+      '-f',
+      '{{range .Mounts}}{{.Destination}}\n{{end}}',
+      name
+    ])
+    if (r.code !== 0) return false
+    return r.stdout.split('\n').some((l) => l.trim() === '/vivarium')
+  }
+
   /**
    * Start (or create) the project container. Builds the image first if needed;
    * all progress streams to `sink`. Returns true on success.
@@ -336,8 +352,20 @@ export class DockerService {
 
     const name = this.containerName(project)
 
+    // Upgrade path: containers created before the hook bridge existed lack the
+    // /vivarium mount, so agent sessions couldn't load /vivarium/hooks.json.
+    // Mounts can't be added to an existing container — recreate it (safe: all
+    // durable state lives in the named home/creds/shadow volumes).
+    if ((await this.containerExists(project)) && !(await this.hasBridgeMount(name))) {
+      sink(`\r\n==> Recreating ${name} to add the agent hook bridge mount\r\n`)
+      await this.exec(['rm', '-f', name])
+    }
+
     // Already running? Nothing to do.
     if (await this.isRunning(project)) return true
+
+    // Refresh hook script/settings + drop stale events before every start.
+    await ensureBridgeFiles(project.id)
 
     // Exists but stopped → just start it.
     if (await this.containerExists(project)) {
@@ -395,10 +423,25 @@ export class DockerService {
   }
 
   /** Build the argv (minus the leading binary) for a session's exec/attach. */
-  async execArgs(project: Project, kind: 'agent' | 'shell'): Promise<string[]> {
+  async execArgs(project: Project, kind: 'agent' | 'shell', sessionId: string): Promise<string[]> {
     const name = this.containerName(project)
     if (kind === 'agent') {
-      return ['exec', '-it', '-w', '/workspace', name, 'claude', '--dangerously-skip-permissions']
+      // VIVARIUM_SESSION_ID tags this exec's hook events with the owning
+      // session; --settings loads the bridge hooks without touching the shared
+      // /home/node/.claude settings (claude-box sessions stay hook-free).
+      return [
+        'exec',
+        '-it',
+        '-e',
+        `VIVARIUM_SESSION_ID=${sessionId}`,
+        '-w',
+        '/workspace',
+        name,
+        'claude',
+        '--dangerously-skip-permissions',
+        '--settings',
+        '/vivarium/hooks.json'
+      ]
     }
     return ['exec', '-it', '-w', '/workspace', name, 'bash']
   }

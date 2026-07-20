@@ -73,7 +73,8 @@ export class PtyManager {
       file = bin
       args = await this.docker.execArgs(
         project,
-        session.type === 'agent' ? 'agent' : 'shell'
+        session.type === 'agent' ? 'agent' : 'shell',
+        session.id
       )
       // cwd is irrelevant for the docker client; use a safe existing dir.
       cwd = project.basePath

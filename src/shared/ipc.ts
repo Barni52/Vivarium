@@ -41,6 +41,7 @@ export const CH = {
   ptyExit: 'pty:exit',
   containerOutput: 'container:output',
   containerStateChanged: 'container:state-changed',
+  agentHook: 'agent:hook',
 
   // clipboard
   pasteImage: 'clipboard:paste-image',

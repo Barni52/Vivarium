@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { CH } from '../shared/ipc'
 import type {
+  AgentHookEvent,
   Config,
   ContainerState,
   DiffResult,
@@ -105,6 +106,11 @@ const api = {
     const h = (_: unknown, p: ContainerStateChangedEvent): void => cb(p)
     ipcRenderer.on(CH.containerStateChanged, h)
     return () => ipcRenderer.removeListener(CH.containerStateChanged, h)
+  },
+  onAgentHook: (cb: (e: AgentHookEvent) => void): (() => void) => {
+    const h = (_: unknown, p: AgentHookEvent): void => cb(p)
+    ipcRenderer.on(CH.agentHook, h)
+    return () => ipcRenderer.removeListener(CH.agentHook, h)
   },
 
   // clipboard

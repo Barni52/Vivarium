@@ -18,6 +18,7 @@ import type {
 } from '@shared/types'
 import { ConfigStore } from './config'
 import { DockerService } from './docker'
+import { BridgeWatcher, bridgeDir } from './bridge'
 import { gitBranch, writeBranchDiff } from './git'
 import { PtyManager } from './pty'
 import { pasteImage } from './clipboard'
@@ -33,18 +34,42 @@ export function registerIpc(win: BrowserWindow): void {
   // Expose the pty manager for app-quit cleanup.
   ;(win as unknown as { __pty?: PtyManager }).__pty = pty
 
+  // ---- agent hook bridge --------------------------------------------------
+  // One watcher per project tails its bridge events.log (see bridge.ts) and
+  // forwards Claude Code hook events to the renderer, which derives the
+  // working/idle indicator and the agent-finished notification from them.
+  const bridges = new Map<string, BridgeWatcher>()
+
+  function syncBridgeWatchers(): void {
+    const ids = new Set(store.get().projects.map((p) => p.id))
+    for (const [id, w] of bridges) {
+      if (!ids.has(id)) {
+        w.close()
+        bridges.delete(id)
+      }
+    }
+    for (const id of ids) {
+      if (!bridges.has(id)) {
+        const w = new BridgeWatcher(bridgeDir(id), (e) => emit(CH.agentHook, e))
+        bridges.set(id, w)
+        void w.start()
+      }
+    }
+  }
+
   // ---- config / projects / sessions -------------------------------------
   ipcMain.handle(CH.loadConfig, async (): Promise<Config> => {
     const cfg = await store.load()
     // Apply the persisted shared output folder to docker + start watching it.
     docker.setSharedOutput(cfg.sharedOutputFolder)
     startOutputWatcher()
+    syncBridgeWatchers()
     return cfg
   })
 
   ipcMain.handle(CH.createProject, async (_e, input: NewProjectInput): Promise<Config> => {
     const id = randomUUID()
-    return store.mutate((cfg) => {
+    const cfg = await store.mutate((cfg) => {
       cfg.projects.push({
         id,
         name: input.name.trim() || 'untitled-project',
@@ -56,6 +81,8 @@ export function registerIpc(win: BrowserWindow): void {
       })
       return cfg
     })
+    syncBridgeWatchers()
+    return cfg
   })
 
   ipcMain.handle(CH.updateProject, async (_e, input: UpdateProjectInput): Promise<Config> => {
@@ -80,10 +107,12 @@ export function registerIpc(win: BrowserWindow): void {
       for (const s of project.sessions) pty.kill(s.id)
       await docker.remove(project)
     }
-    return store.mutate((cfg) => {
+    const cfg = await store.mutate((cfg) => {
       cfg.projects = cfg.projects.filter((p) => p.id !== id)
       return cfg
     })
+    syncBridgeWatchers()
+    return cfg
   })
 
   ipcMain.handle(
@@ -339,13 +368,14 @@ export function registerIpc(win: BrowserWindow): void {
         if (!(await docker.binaryName())) {
           return { ok: false, reason: 'docker-missing', message: 'docker not found on PATH' }
         }
-        if (!(await docker.isRunning(p))) {
-          // Stream build/create output straight into this session's terminal.
-          const sink = (data: string): void => emit(CH.ptyData, { sessionId, data })
-          const started = await docker.start(p, sink)
-          emit(CH.containerStateChanged, { projectId, running: started })
-          if (!started) return { ok: false, reason: 'container-failed' }
-        }
+        // Always route through start(): it fast-paths when the container is
+        // already running, and transparently recreates pre-bridge containers
+        // whose missing /vivarium mount would break the agent's --settings.
+        // Build/create output streams straight into this session's terminal.
+        const sink = (data: string): void => emit(CH.ptyData, { sessionId, data })
+        const started = await docker.start(p, sink)
+        emit(CH.containerStateChanged, { projectId, running: started })
+        if (!started) return { ok: false, reason: 'container-failed' }
       }
 
       const ok = await pty.spawn(s, p, cols, rows)
