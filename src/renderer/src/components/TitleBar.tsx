@@ -1,4 +1,5 @@
 import React from 'react'
+import type { UsageLimit } from '@shared/types'
 import { PanelToggle } from './Icons'
 import { Logo } from './Logo'
 import { useStore } from '../state/store'
@@ -39,6 +40,119 @@ function WinButton({
     >
       {children}
     </button>
+  )
+}
+
+function limitTitle(l: UsageLimit): string {
+  const what = l.kind === 'session' ? 'Session (5h) limit' : 'Weekly (7d) limit, all models'
+  const reset = l.resetsAt
+    ? ` — resets ${new Date(l.resetsAt).toLocaleString(undefined, {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit'
+      })}`
+    : ''
+  const sev = l.severity !== 'normal' ? ` (${l.severity})` : ''
+  return `${what}: ${Math.round(l.percent)}% used${sev}${reset}`
+}
+
+// Time until reset in "XXh XXm". Derived from the last API response's
+// resets_at against the local clock, so it ticks between polls and re-syncs
+// whenever a fresh snapshot lands. Clamped at zero — the next poll brings the
+// new window.
+function countdown(resetsAt: string | null, now: number): string | null {
+  if (!resetsAt) return null
+  const ms = Date.parse(resetsAt) - now
+  if (!Number.isFinite(ms)) return null
+  const mins = Math.max(0, Math.floor(ms / 60_000))
+  return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`
+}
+
+function UsageChip({
+  limit,
+  now,
+  staleNote
+}: {
+  limit: UsageLimit
+  now: number
+  staleNote: string
+}): React.ReactElement {
+  const pct = Math.max(0, Math.min(100, limit.percent))
+  const color = pct >= 90 ? 'var(--danger)' : pct >= 70 ? '#f1c21b' : '#42be65'
+  const cd = countdown(limit.resetsAt, now)
+  return (
+    <span
+      title={limitTitle(limit) + staleNote}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 5,
+        flex: 'none',
+        opacity: staleNote ? 0.55 : 1
+      }}
+    >
+      <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
+        {limit.kind === 'session' ? '5h' : '7d'}
+      </span>
+      <span
+        style={{
+          width: 26,
+          height: 4,
+          borderRadius: 2,
+          background: 'var(--border)',
+          overflow: 'hidden',
+          display: 'flex'
+        }}
+      >
+        <span style={{ width: `${pct}%`, background: color }} />
+      </span>
+      <span style={{ fontSize: 10.5, color: 'var(--text-2)', minWidth: 24 }}>
+        {Math.round(pct)}%
+      </span>
+      {cd && <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{cd}</span>}
+    </span>
+  )
+}
+
+// Claude plan usage chips (main/usage.ts via the store's 3-minute poll): the
+// 5h session window and the 7d all-models window — per-model limits
+// deliberately not rendered, the tooltip carries the detail. Rendered in the
+// title bar so limits are visible no matter which session is open.
+function UsageChips(): React.ReactElement | null {
+  const usage = useStore((s) => s.usage)
+  // Local 30s tick: between polls the countdown interpolates off the app
+  // clock; the values re-sync whenever refreshUsage lands a fresh snapshot.
+  const [now, setNow] = React.useState(() => Date.now())
+  React.useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(t)
+  }, [])
+  if (!usage) return null // first poll not landed yet
+  const shown = usage.limits.filter((l) => l.kind === 'session' || l.kind === 'weekly_all')
+  if (!usage.ok || shown.length === 0) {
+    const title =
+      usage.error === 'no-credentials'
+        ? 'No Claude credentials found (host ~/.claude or the claude-box-creds volume)'
+        : usage.error === 'auth-expired'
+          ? 'Claude sign-in expired — run any agent so claude refreshes the token'
+          : usage.error === 'rate-limited'
+            ? 'Usage endpoint rate-limited — backing off, retrying automatically'
+            : `Could not fetch Claude usage (${usage.error ?? 'empty response'})`
+    return <span style={{ fontSize: 10.5, color: 'var(--text-3)' }} title={title}>usage n/a</span>
+  }
+  // The store keeps the last good snapshot through failed polls — flag it once
+  // it's older than 1.5 poll intervals (a sync was missed), with the chips
+  // dimmed and the age in the tooltip. The countdown stays live regardless.
+  const ageMin = Math.round((now - usage.fetchedAt) / 60_000)
+  const staleNote = now - usage.fetchedAt > 270_000 ? ` — last synced ${ageMin}m ago` : ''
+  return (
+    <>
+      {shown.map((l) => (
+        <UsageChip key={l.kind} limit={l} now={now} staleNote={staleNote} />
+      ))}
+    </>
   )
 }
 
@@ -88,22 +202,27 @@ export function TitleBar(): React.ReactElement {
         <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '.3px' }}>Vivarium</span>
         <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 400 }}>session manager</span>
       </div>
-      <div style={{ display: 'flex', alignItems: 'stretch', height: 32 }}>
-        <WinButton onClick={() => v.windowMinimize()} hoverBg="var(--row-hover)">
-          <svg width="10" height="10" viewBox="0 0 10 10">
-            <path d="M0 5h10" stroke="currentColor" strokeWidth="1" />
-          </svg>
-        </WinButton>
-        <WinButton onClick={() => v.windowMaximize()} hoverBg="var(--row-hover)">
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-            <rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" />
-          </svg>
-        </WinButton>
-        <WinButton onClick={() => v.windowClose()} hoverBg="#da1e28" hoverColor="#fff">
-          <svg width="10" height="10" viewBox="0 0 10 10">
-            <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1" />
-          </svg>
-        </WinButton>
+      <div style={{ display: 'flex', alignItems: 'center', height: 32 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginRight: 14, ...noDrag }}>
+          <UsageChips />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'stretch', height: 32 }}>
+          <WinButton onClick={() => v.windowMinimize()} hoverBg="var(--row-hover)">
+            <svg width="10" height="10" viewBox="0 0 10 10">
+              <path d="M0 5h10" stroke="currentColor" strokeWidth="1" />
+            </svg>
+          </WinButton>
+          <WinButton onClick={() => v.windowMaximize()} hoverBg="var(--row-hover)">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+              <rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" />
+            </svg>
+          </WinButton>
+          <WinButton onClick={() => v.windowClose()} hoverBg="#da1e28" hoverColor="#fff">
+            <svg width="10" height="10" viewBox="0 0 10 10">
+              <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1" />
+            </svg>
+          </WinButton>
+        </div>
       </div>
     </div>
   )

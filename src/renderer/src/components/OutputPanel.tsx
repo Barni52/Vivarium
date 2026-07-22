@@ -41,10 +41,29 @@ export function OutputPanel(): React.ReactElement {
   const folder = useStore((s) => s.config.sharedOutputFolder)
   const tree = useStore((s) => s.outputTree)
   const collapsed = useStore((s) => s.outputCollapsed)
+  const height = useStore((s) => s.outputHeight)
   const setSharedOutput = useStore((s) => s.setSharedOutput)
   const refreshOutputTree = useStore((s) => s.refreshOutputTree)
   const toggleOutputPanel = useStore((s) => s.toggleOutputPanel)
+  const setOutputHeight = useStore((s) => s.setOutputHeight)
   const openContextMenu = useStore((s) => s.openContextMenu)
+
+  // Same drag pattern as the sidebar-width handle; dragging up = taller.
+  const startResize = (e: React.MouseEvent): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startY = e.clientY
+    const startH = height
+    const move = (ev: MouseEvent): void => setOutputHeight(startH + (startY - ev.clientY))
+    const up = (): void => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+      document.body.style.userSelect = ''
+    }
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
 
   const browse = async (): Promise<void> => {
     const dir = await window.vivarium.browseFolder()
@@ -111,9 +130,27 @@ export function OutputPanel(): React.ReactElement {
   }
 
   // --- folder configured ---
+  // Expanded: fixed user-dragged height (body scrolls beyond it); the
+  // percentage maxHeight keeps the project list alive if the window shrinks
+  // below the stored height. Collapsed: shrink-wraps to the header row.
   return (
     <>
-    <div style={{ ...border, display: 'flex', flexDirection: 'column', maxHeight: '42%', minHeight: collapsed ? undefined : 96 }}>
+    <div
+      style={{
+        ...border,
+        position: 'relative',
+        display: 'flex',
+        flexDirection: 'column',
+        height: collapsed ? undefined : height,
+        maxHeight: collapsed ? undefined : '70%'
+      }}
+    >
+      {!collapsed && (
+        <div
+          onMouseDown={startResize}
+          style={{ position: 'absolute', top: -3, left: 0, right: 0, height: 6, cursor: 'row-resize', zIndex: 5 }}
+        />
+      )}
       {/* header */}
       <div
         onClick={toggleOutputPanel}

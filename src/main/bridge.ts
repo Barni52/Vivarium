@@ -8,7 +8,8 @@ import type { AgentHookEvent } from '@shared/types'
 // host dir (one per project) bind-mounted at /vivarium. Vivarium writes a
 // Claude Code hooks settings file + a tiny shell script into it; the agent is
 // launched with `--settings /vivarium/hooks.json`, so Claude Code itself
-// reports UserPromptSubmit (turn started) and Stop (turn finished) by appending
+// reports UserPromptSubmit (turn started), Stop (turn finished) and
+// AskUserQuestion (agent blocked on a question to the user) by appending
 // a line to /vivarium/events.log, which the main process tails from the host
 // side. This replaces the old approach of scraping the xterm buffer for the
 // "esc to interrupt" spinner text, which silently broke when the Claude Code
@@ -33,7 +34,16 @@ const HOOKS_JSON = `${JSON.stringify(
       UserPromptSubmit: [
         { hooks: [{ type: 'command', command: 'sh /vivarium/hook.sh UserPromptSubmit' }] }
       ],
-      Stop: [{ hooks: [{ type: 'command', command: 'sh /vivarium/hook.sh Stop' }] }]
+      Stop: [{ hooks: [{ type: 'command', command: 'sh /vivarium/hook.sh Stop' }] }],
+      // AskUserQuestion has no dedicated hook event; its "execution" is showing
+      // the question UI, so PreToolUse fires exactly when the agent starts
+      // waiting for an answer.
+      PreToolUse: [
+        {
+          matcher: 'AskUserQuestion',
+          hooks: [{ type: 'command', command: 'sh /vivarium/hook.sh AskUserQuestion' }]
+        }
+      ]
     }
   },
   null,
@@ -152,7 +162,10 @@ export class BridgeWatcher {
 
     for (const line of chunk.subarray(0, nl).toString('utf8').split('\n')) {
       const [kind, sessionId] = line.split('\t')
-      if ((kind === 'UserPromptSubmit' || kind === 'Stop') && sessionId) {
+      if (
+        (kind === 'UserPromptSubmit' || kind === 'Stop' || kind === 'AskUserQuestion') &&
+        sessionId
+      ) {
         this.onEvent({ sessionId, kind })
       }
     }

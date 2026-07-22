@@ -8,8 +8,15 @@ import type {
   OutputNode,
   Project,
   SessionType,
-  AgentActivity
+  AgentActivity,
+  UsageSnapshot
 } from '@shared/types'
+
+/** Why an agent session is flagged: turn finished, or blocked on AskUserQuestion. */
+export type AttentionKind = 'finished' | 'question'
+
+/** Container lifecycle operation currently in flight for a project. */
+export type ContainerOp = 'start' | 'stop' | 'restart'
 
 export type DialogKind =
   | 'addProject'
@@ -92,6 +99,8 @@ interface AppState {
   outputTree: OutputNode[]
   outputExpanded: Record<string, boolean>
   outputCollapsed: boolean
+  /** user-dragged height of the shared-output panel body (px, session-only like sidebarWidth) */
+  outputHeight: number
   selectedSessionId: string | null
   expanded: Record<string, boolean>
   sidebarWidth: number
@@ -100,8 +109,14 @@ interface AppState {
   /** session ids that currently have a live pty */
   live: Record<string, boolean>
   activity: Record<string, AgentActivity>
-  /** agent sessions that finished while unwatched — a red "!" until opened */
-  notifications: Record<string, boolean>
+  /** agent sessions needing attention while unwatched — "!" (finished) or "?" (question) until opened */
+  notifications: Record<string, AttentionKind>
+  /** container start/stop/restart currently in flight, keyed by project id */
+  containerOps: Record<string, ContainerOp>
+  /** last failed container op's message, keyed by project id (auto-clears) */
+  containerErrors: Record<string, string>
+  /** claude plan usage shown in the title bar; null until the first poll lands */
+  usage: UsageSnapshot | null
 
   dialog: DialogKind
   ap: ProjectDraft
@@ -118,6 +133,7 @@ interface AppState {
   init: () => Promise<void>
   refreshStates: () => Promise<void>
   refreshBranches: () => Promise<void>
+  refreshUsage: () => Promise<void>
 
   // shared output folder
   setSharedOutput: (folder: string | null) => Promise<void>
@@ -126,6 +142,7 @@ interface AppState {
   deleteOutputPath: (abs: string) => Promise<void>
   toggleOutputDir: (path: string) => void
   toggleOutputPanel: () => void
+  setOutputHeight: (n: number) => void
 
   // git diff → changes.txt
   setDiffBase: (value: string) => Promise<void>
@@ -139,7 +156,7 @@ interface AppState {
   resetTerminalZoom: () => void
   setLive: (sessionId: string, live: boolean) => void
   setActivity: (sessionId: string, a: AgentActivity) => void
-  notifyAgentFinished: (sessionId: string) => void
+  notifyAgentAttention: (sessionId: string, kind: AttentionKind) => void
   handleAgentHook: (e: AgentHookEvent) => void
 
   // dialogs
@@ -178,6 +195,7 @@ interface AppState {
   // container power
   togglePower: (projectId: string) => Promise<void>
   restart: (projectId: string) => Promise<void>
+  runContainerOp: (projectId: string, op: ContainerOp) => Promise<void>
 }
 
 const emptyDraft = (): ProjectDraft => ({
@@ -200,6 +218,39 @@ function parsePort(v: string): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined
 }
 
+// Taskbar overlay disc with the outstanding-attention count. Drawn here — the
+// main process has no canvas — and shipped over IPC as a data URL.
+function badgeDataUrl(count: number): string {
+  const c = document.createElement('canvas')
+  c.width = 32
+  c.height = 32
+  const g = c.getContext('2d')
+  if (!g) return ''
+  g.beginPath()
+  g.arc(16, 16, 16, 0, Math.PI * 2)
+  g.fillStyle = '#fa4d56'
+  g.fill()
+  const label = count > 9 ? '9+' : String(count)
+  g.fillStyle = '#fff'
+  g.font = `bold ${label.length > 1 ? 16 : 20}px 'IBM Plex Sans', system-ui, sans-serif`
+  g.textAlign = 'center'
+  g.textBaseline = 'middle'
+  g.fillText(label, 16, 17)
+  return c.toDataURL('image/png')
+}
+
+// Mirror the notifications map onto the taskbar badge. Called after every
+// mutation of the map — the count only clears by viewing each flagged session,
+// not by focusing the window, so "how much stuff is done" stays glanceable.
+function pushBadge(notifications: Record<string, AttentionKind>, flash: boolean): void {
+  const count = Object.keys(notifications).length
+  window.vivarium.setBadge({
+    count,
+    dataUrl: count > 0 ? badgeDataUrl(count) : null,
+    flash
+  })
+}
+
 export const useStore = create<AppState>((set, get) => ({
   config: { version: 1, projects: [] },
   states: {},
@@ -208,6 +259,7 @@ export const useStore = create<AppState>((set, get) => ({
   outputTree: [],
   outputExpanded: {},
   outputCollapsed: false,
+  outputHeight: 200,
   selectedSessionId: null,
   expanded: {},
   sidebarWidth: 292,
@@ -216,6 +268,9 @@ export const useStore = create<AppState>((set, get) => ({
   live: {},
   activity: {},
   notifications: {},
+  containerOps: {},
+  containerErrors: {},
+  usage: null,
   dialog: null,
   ap: emptyDraft(),
   st: null,
@@ -254,6 +309,15 @@ export const useStore = create<AppState>((set, get) => ({
     set({ branches: await window.vivarium.projectBranches() })
   },
 
+  refreshUsage: async () => {
+    const next = await window.vivarium.fetchUsage()
+    // A failed poll must not wipe live chips: keep the last good snapshot and
+    // let the countdown keep interpolating off the app clock — the TitleBar
+    // surfaces staleness from the old fetchedAt. Errors only land when there
+    // is nothing better to show.
+    set((s) => (next.ok || !s.usage || !s.usage.ok ? { usage: next } : {}))
+  },
+
   setSharedOutput: async (folder) => {
     const config = await window.vivarium.setSharedOutput(folder)
     set({ config })
@@ -279,6 +343,10 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => ({ outputExpanded: { ...s.outputExpanded, [path]: !s.outputExpanded[path] } })),
 
   toggleOutputPanel: () => set((s) => ({ outputCollapsed: !s.outputCollapsed })),
+  // Clamp: never smaller than a few rows, never starving the project list —
+  // the render-side maxHeight keeps it sane if the window shrinks afterwards.
+  setOutputHeight: (n) =>
+    set({ outputHeight: Math.max(96, Math.min(Math.round(window.innerHeight * 0.7), n)) }),
 
   setDiffBase: async (value) => {
     const config = await window.vivarium.setDiffBase(value)
@@ -291,7 +359,7 @@ export const useStore = create<AppState>((set, get) => ({
     await window.vivarium.projectDiff(projectId)
   },
 
-  select: (sessionId) =>
+  select: (sessionId) => {
     set((s) => {
       // ensure the owning project is expanded
       const proj = s.config.projects.find((p) => p.sessions.some((x) => x.id === sessionId))
@@ -303,7 +371,9 @@ export const useStore = create<AppState>((set, get) => ({
         notifications,
         expanded: proj ? { ...s.expanded, [proj.id]: true } : s.expanded
       }
-    }),
+    })
+    pushBadge(get().notifications, false)
+  },
 
   toggle: (projectId) =>
     set((s) => ({ expanded: { ...s.expanded, [projectId]: !s.expanded[projectId] } })),
@@ -316,18 +386,20 @@ export const useStore = create<AppState>((set, get) => ({
   setLive: (sessionId, live) => set((s) => ({ live: { ...s.live, [sessionId]: live } })),
   setActivity: (sessionId, a) => set((s) => ({ activity: { ...s.activity, [sessionId]: a } })),
 
-  notifyAgentFinished: (sessionId) => {
+  notifyAgentAttention: (sessionId, kind) => {
     // Only agent sessions get the "!" — host/container shells never do (a stray
-    // Stop hook for a shell session, if one ever arrived, must not light one up).
+    // hook event for a shell session, if one ever arrived, must not light one up).
     const proj = get().config.projects.find((p) => p.sessions.some((x) => x.id === sessionId))
     const sess = proj?.sessions.find((x) => x.id === sessionId)
     if (sess?.type !== 'agent') return
     const focused = document.hasFocus()
     // Already watching this session in a focused window → nothing to flag.
     if (focused && get().selectedSessionId === sessionId) return
-    set((s) => ({ notifications: { ...s.notifications, [sessionId]: true } }))
-    // App in the background → light up the taskbar button (cleared on focus).
-    if (!focused) window.vivarium.setBadge(true)
+    // A later Stop overwrites a stale question flag — latest state wins.
+    set((s) => ({ notifications: { ...s.notifications, [sessionId]: kind } }))
+    // Badge always shows the outstanding count; flashing is reserved for
+    // events that arrive while the app is in the background.
+    pushBadge(get().notifications, !focused)
   },
 
   handleAgentHook: (e) => {
@@ -337,9 +409,14 @@ export const useStore = create<AppState>((set, get) => ({
     if (!exists) return
     if (e.kind === 'UserPromptSubmit') {
       s.setActivity(e.sessionId, 'working')
+    } else if (e.kind === 'AskUserQuestion') {
+      // Agent is blocked on a question. Activity stays 'working': the turn is
+      // still in flight, and no hook fires when the question is answered, so
+      // an 'idle' here would stick for the rest of the turn.
+      s.notifyAgentAttention(e.sessionId, 'question')
     } else {
       s.setActivity(e.sessionId, 'idle')
-      s.notifyAgentFinished(e.sessionId)
+      s.notifyAgentAttention(e.sessionId, 'finished')
     }
   },
 
@@ -433,7 +510,7 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => {
       // drop notifications for sessions that no longer exist
       const alive = new Set(config.projects.flatMap((p) => p.sessions.map((x) => x.id)))
-      const notifications: Record<string, boolean> = {}
+      const notifications: Record<string, AttentionKind> = {}
       for (const id of Object.keys(s.notifications)) if (alive.has(id)) notifications[id] = s.notifications[id]
       return {
         config,
@@ -442,6 +519,7 @@ export const useStore = create<AppState>((set, get) => ({
           s.selectedSessionId && !alive.has(s.selectedSessionId) ? null : s.selectedSessionId
       }
     })
+    pushBadge(get().notifications, false)
     await get().refreshStates()
   },
 
@@ -522,20 +600,57 @@ export const useStore = create<AppState>((set, get) => ({
         selectedSessionId: stillExists ? s.selectedSessionId : null
       }
     })
+    pushBadge(get().notifications, false)
   },
 
   togglePower: async (projectId) => {
+    if (get().containerOps[projectId]) return // an op is already in flight
     const running = !!get().states[projectId]?.running
-    if (running) {
-      await window.vivarium.stopContainer(projectId)
-    } else {
-      await window.vivarium.startContainer(projectId)
-    }
-    await get().refreshStates()
+    await get().runContainerOp(projectId, running ? 'stop' : 'start')
   },
 
   restart: async (projectId) => {
-    await window.vivarium.restartContainer(projectId)
-    await get().refreshStates()
+    if (get().containerOps[projectId]) return
+    await get().runContainerOp(projectId, 'restart')
+  },
+
+  runContainerOp: async (projectId, op) => {
+    // The in-flight op drives the amber pulsing square on the project row —
+    // a cold start (image build, mounts) can take minutes, and without it the
+    // only feedback was the 3s state poll eventually flipping the indicator.
+    set((s) => {
+      const containerErrors = { ...s.containerErrors }
+      delete containerErrors[projectId]
+      return { containerOps: { ...s.containerOps, [projectId]: op }, containerErrors }
+    })
+    try {
+      if (op === 'stop') await window.vivarium.stopContainer(projectId)
+      else if (op === 'start') await window.vivarium.startContainer(projectId)
+      else await window.vivarium.restartContainer(projectId)
+    } catch (err) {
+      // ipcRenderer.invoke wraps the real message in boilerplate — strip it.
+      const msg = String(err instanceof Error ? err.message : err).replace(
+        /^Error invoking remote method '[^']*': (Error: )?/,
+        ''
+      )
+      set((s) => ({ containerErrors: { ...s.containerErrors, [projectId]: msg } }))
+      // Transient feedback, not persistent state: revert the red square to the
+      // plain running/stopped indicator after a few seconds.
+      setTimeout(() => {
+        set((s) => {
+          if (s.containerErrors[projectId] !== msg) return {}
+          const containerErrors = { ...s.containerErrors }
+          delete containerErrors[projectId]
+          return { containerErrors }
+        })
+      }, 8000)
+    } finally {
+      set((s) => {
+        const containerOps = { ...s.containerOps }
+        delete containerOps[projectId]
+        return { containerOps }
+      })
+      await get().refreshStates()
+    }
   }
 }))

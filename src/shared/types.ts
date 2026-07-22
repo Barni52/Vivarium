@@ -64,11 +64,48 @@ export interface ContainerState {
 export type AgentActivity = 'idle' | 'working'
 
 /** Claude Code hook events forwarded from the container bridge (see main/bridge.ts). */
-export type AgentHookKind = 'UserPromptSubmit' | 'Stop'
+export type AgentHookKind = 'UserPromptSubmit' | 'Stop' | 'AskUserQuestion'
 
 export interface AgentHookEvent {
   sessionId: string
   kind: AgentHookKind
+}
+
+/**
+ * One rate-limit window from the (undocumented) Claude OAuth usage endpoint —
+ * `kind` is 'session' (5h) / 'weekly_all' / 'weekly_scoped' (per-model, see
+ * modelName) today, but treated as an open string since the API is unstable.
+ */
+export interface UsageLimit {
+  kind: string
+  /** 0-100 (the endpoint may report fractions) */
+  percent: number
+  /** 'normal' until Anthropic escalates it — surfaced in the tooltip only */
+  severity: string
+  /** ISO timestamp, null if the endpoint omitted it */
+  resetsAt: string | null
+  /** display name for weekly_scoped limits (e.g. "Fable"), null otherwise */
+  modelName: string | null
+  isActive: boolean
+}
+
+/** Claude plan usage fetched by main (see main/usage.ts). */
+export interface UsageSnapshot {
+  ok: boolean
+  /** when ok=false: 'no-credentials' | 'auth-expired' | 'network' | http status text */
+  error?: string
+  limits: UsageLimit[]
+  fetchedAt: number
+}
+
+/** Taskbar overlay badge pushed by the renderer (drawn there — main has no canvas). */
+export interface BadgePayload {
+  /** outstanding attention count (finished + asking agents); 0 clears the overlay */
+  count: number
+  /** 32×32 PNG data URL of the count disc, null when count is 0 */
+  dataUrl: string | null
+  /** flash the taskbar button — set for events arriving while unfocused */
+  flash: boolean
 }
 
 /** Result of trying to open a session's pty. */

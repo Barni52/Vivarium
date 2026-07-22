@@ -53,8 +53,9 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   `ConfigStore.mutate` (atomic temp-file + rename).
 - Mounts may only change while the container is stopped (`ipc.ts` enforces it); saving settings
   on a running container recreates it.
-- Agent idle/working detection and the finished-notification are driven by **Claude Code
-  hooks** (`UserPromptSubmit`/`Stop`), not by parsing terminal output. Agents launch with
+- Agent idle/working detection and the attention-notification are driven by **Claude Code
+  hooks** (`UserPromptSubmit`/`Stop`, plus a `PreToolUse` matcher on `AskUserQuestion` so a
+  waiting question also raises the "!"), not by parsing terminal output. Agents launch with
   `--settings /vivarium/hooks.json` + `-e VIVARIUM_SESSION_ID=<id>`; the hook script appends
   to `/vivarium/events.log`, which the main process tails (`bridge.ts`). Never scope the hooks
   via the shared `/home/node/.claude/settings.json` — that would leak them into claude-box

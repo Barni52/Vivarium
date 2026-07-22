@@ -49,6 +49,9 @@ export const CH = {
   clipboardReadText: 'clipboard:read-text',
   clipboardWriteText: 'clipboard:write-text',
 
+  // claude plan usage
+  fetchUsage: 'usage:fetch',
+
   // dialogs / window
   browseFolder: 'dialog:browse-folder',
   setBadge: 'window:set-badge',

@@ -14,6 +14,7 @@ export function App(): React.ReactElement {
   const init = useStore((s) => s.init)
   const refreshStates = useStore((s) => s.refreshStates)
   const refreshBranches = useStore((s) => s.refreshBranches)
+  const refreshUsage = useStore((s) => s.refreshUsage)
   const refreshOutputTree = useStore((s) => s.refreshOutputTree)
   const handleAgentHook = useStore((s) => s.handleAgentHook)
   const dialog = useStore((s) => s.dialog)
@@ -28,16 +29,23 @@ export function App(): React.ReactElement {
       refreshStates()
       refreshBranches()
     }, 3000)
+    // Plan usage: the endpoint allows ~5 requests per 5 minutes (measured
+    // 2026-07-22; tripping it = ~5 min lockout), so poll every 3 minutes —
+    // two per window, leaving headroom for this startup fetch and restarts.
+    // Between syncs the TitleBar countdown interpolates off the app clock.
+    refreshUsage()
+    const usagePoll = setInterval(() => refreshUsage(), 180_000)
     const off = window.vivarium.onContainerStateChanged(() => refreshStates())
     const offOutput = window.vivarium.onOutputChanged(() => refreshOutputTree())
     const offHook = window.vivarium.onAgentHook((e) => handleAgentHook(e))
     return () => {
       clearInterval(poll)
+      clearInterval(usagePoll)
       off()
       offOutput()
       offHook()
     }
-  }, [init, refreshStates, refreshBranches, refreshOutputTree, handleAgentHook])
+  }, [init, refreshStates, refreshBranches, refreshOutputTree, refreshUsage, handleAgentHook])
 
   return (
     <div
