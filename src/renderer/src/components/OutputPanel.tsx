@@ -1,7 +1,7 @@
 import React from 'react'
 import { useStore } from '../state/store'
 import { leaf } from '../paths'
-import { Chevron, Folder, Refresh } from './Icons'
+import { Chevron, Folder, OpenExternal, Refresh } from './Icons'
 import { OutputTree } from './OutputTree'
 
 function IconBtn({
@@ -47,6 +47,7 @@ export function OutputPanel(): React.ReactElement {
   const toggleOutputPanel = useStore((s) => s.toggleOutputPanel)
   const setOutputHeight = useStore((s) => s.setOutputHeight)
   const openContextMenu = useStore((s) => s.openContextMenu)
+  const openOutputFolder = useStore((s) => s.openOutputFolder)
 
   // Same drag pattern as the sidebar-width handle; dragging up = taller.
   const startResize = (e: React.MouseEvent): void => {
@@ -74,6 +75,7 @@ export function OutputPanel(): React.ReactElement {
     e.preventDefault()
     e.stopPropagation()
     openContextMenu(e.clientX, e.clientY, [
+      { label: 'Open in Explorer', onSelect: () => openOutputFolder() },
       { label: 'Change folder…', onSelect: () => void browse() },
       { label: 'Refresh', onSelect: () => void refreshOutputTree() },
       { label: '---' },
@@ -199,6 +201,9 @@ export function OutputPanel(): React.ReactElement {
           {leaf(folder)}
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 1 }} onClick={(e) => e.stopPropagation()}>
+          <IconBtn title="Open in Explorer" onClick={() => openOutputFolder()}>
+            <OpenExternal size={13} />
+          </IconBtn>
           <IconBtn title="Refresh" onClick={() => void refreshOutputTree()}>
             <Refresh size={13} />
           </IconBtn>

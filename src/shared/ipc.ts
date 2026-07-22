@@ -22,6 +22,7 @@ export const CH = {
   setSharedOutput: 'output:set-folder',
   outputTree: 'output:tree',
   openOutputFile: 'output:open-file',
+  openOutputFolder: 'output:open-folder',
   deleteOutputFile: 'output:delete-file',
   outputChanged: 'output:changed',
 
@@ -57,5 +58,10 @@ export const CH = {
   setBadge: 'window:set-badge',
   windowMinimize: 'window:minimize',
   windowMaximize: 'window:maximize',
-  windowClose: 'window:close'
+  windowClose: 'window:close',
+  // Confirm-on-quit handshake: main intercepts every close path and emits
+  // quitRequested; the renderer shows its dialog and sends confirmQuit back once
+  // the user accepts, which lets the real close through.
+  quitRequested: 'window:quit-requested',
+  confirmQuit: 'window:confirm-quit'
 } as const
