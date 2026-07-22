@@ -1,7 +1,7 @@
 import React from 'react'
 import type { OutputNode } from '@shared/types'
 import { useStore } from '../state/store'
-import { Chevron, Folder, File } from './Icons'
+import { Chevron, Folder, FileIcon } from './Icons'
 
 const isHtml = (name: string): boolean => /\.html?$/i.test(name)
 
@@ -68,10 +68,10 @@ function OutputRow({ node, depth }: { node: OutputNode; depth: number }): React.
             flex: 'none',
             display: 'flex',
             alignItems: 'center',
-            color: isDir ? 'var(--text-2)' : html ? 'var(--accent-2)' : 'var(--text-3)'
+            color: 'var(--text-2)'
           }}
         >
-          {isDir ? <Folder size={13} /> : <File size={13} />}
+          {isDir ? <Folder size={13} /> : <FileIcon name={node.name} size={13} />}
         </span>
         <span
           style={{

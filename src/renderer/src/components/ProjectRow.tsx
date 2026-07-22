@@ -1,7 +1,8 @@
 import React from 'react'
 import type { Project } from '@shared/types'
-import { useStore } from '../state/store'
-import { Chevron, Folder, Plus, GitBranch } from './Icons'
+import { useStore, type AttentionKind } from '../state/store'
+import { ACCENT } from '../theme'
+import { Chevron, Folder, Plus, GitBranch, ThinkingDots } from './Icons'
 import { SessionRow } from './SessionRow'
 
 function HeaderBtn({
@@ -53,10 +54,27 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
   const openContextMenu = useStore((s) => s.openContextMenu)
   const hasOutput = useStore((s) => !!s.config.sharedOutputFolder)
   const runProjectDiff = useStore((s) => s.runProjectDiff)
-  // aggregate: any child session finished (shown when the project is collapsed,
-  // so a notification isn't hidden with its session rows)
-  const hasNotified = useStore((s) =>
-    project.sessions.some((x) => x.type === 'agent' && s.notifications[x.id])
+  // aggregate: worst outstanding attention among child agents (shown when the
+  // project is collapsed, so a notification isn't hidden with its session
+  // rows); a question beats finished — an agent blocked on an answer is the
+  // more urgent state
+  const attention = useStore((s): AttentionKind | null => {
+    let worst: AttentionKind | null = null
+    for (const x of project.sessions) {
+      if (x.type !== 'agent') continue
+      const k = s.notifications[x.id]
+      if (k === 'question') return 'question'
+      if (k) worst = k
+    }
+    return worst
+  })
+  const op = useStore((s) => s.containerOps[project.id])
+  const opError = useStore((s) => s.containerErrors[project.id])
+  // aggregate: any child agent mid-turn (same collapsed-only rule as attention)
+  const hasWorking = useStore((s) =>
+    project.sessions.some(
+      (x) => x.type === 'agent' && s.activity[x.id] === 'working' && s.live[x.id]
+    )
   )
   const projectIds = useStore((s) => s.config.projects.map((p) => p.id))
   const dropIndicator = useStore((s) =>
@@ -75,8 +93,23 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
         onSelect: () => openAddSession(project.id, new DOMRect(e.clientX, e.clientY, 0, 0))
       },
       { label: 'Project settings', onSelect: () => openSettings(project.id) },
-      { label: running ? 'Stop container' : 'Start container', onSelect: () => togglePower(project.id) },
-      { label: 'Restart container', onSelect: () => restart(project.id) },
+      {
+        label:
+          op === 'start'
+            ? 'Starting container…'
+            : op === 'stop'
+              ? 'Stopping container…'
+              : running
+                ? 'Stop container'
+                : 'Start container',
+        disabled: !!op,
+        onSelect: () => togglePower(project.id)
+      },
+      {
+        label: op === 'restart' ? 'Restarting container…' : 'Restart container',
+        disabled: !!op,
+        onSelect: () => restart(project.id)
+      },
       { label: '---' },
       {
         label: hasOutput
@@ -222,15 +255,23 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
           </div>
         </div>
 
-        {!expanded && hasNotified && (
+        {!expanded && hasWorking && !attention && (
+          <ThinkingDots color={ACCENT.agent} title="An agent in this project is working" />
+        )}
+
+        {!expanded && attention && (
           <span
-            title="An agent in this project finished"
+            title={
+              attention === 'question'
+                ? 'An agent in this project asked a question'
+                : 'An agent in this project finished'
+            }
             style={{
               width: 15,
               height: 15,
               flex: 'none',
               borderRadius: '50%',
-              background: 'var(--danger)',
+              background: attention === 'question' ? ACCENT.agent : 'var(--danger)',
               color: '#fff',
               fontSize: 10.5,
               fontWeight: 700,
@@ -240,7 +281,7 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
               justifyContent: 'center'
             }}
           >
-            !
+            {attention === 'question' ? '?' : '!'}
           </span>
         )}
 
@@ -257,16 +298,35 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
             </HeaderBtn>
           </div>
         ) : (
+          /* a container is a box: rounded square (vs the circular session
+             dots), green with a steady soft glow while running — no animation,
+             infrastructure hums rather than thinks. Amber pulse while a
+             start/stop/restart is in flight (a cold start can take minutes);
+             red with the message in the tooltip when the last op failed. */
           <span
-            title={running ? 'Container running' : 'Container stopped'}
+            title={
+              op === 'start'
+                ? 'Starting container…'
+                : op === 'stop'
+                  ? 'Stopping container…'
+                  : op === 'restart'
+                    ? 'Restarting container…'
+                    : opError
+                      ? `Container operation failed: ${opError}`
+                      : running
+                        ? 'Container running'
+                        : 'Container stopped'
+            }
             style={{
-              width: 8,
-              height: 8,
+              width: 9,
+              height: 9,
               flex: 'none',
               marginRight: 3,
-              borderRadius: '50%',
-              background: running ? '#42be65' : 'transparent',
-              border: `1.5px solid ${running ? '#42be65' : '#6f7a92'}`
+              borderRadius: 2.5,
+              background: op ? '#f1c21b' : opError ? 'var(--danger)' : running ? '#42be65' : 'transparent',
+              border: `1.5px solid ${op ? '#f1c21b' : opError ? 'var(--danger)' : running ? '#42be65' : '#6f7a92'}`,
+              boxShadow: !op && !opError && running ? '0 0 6px rgba(66,190,101,.5)' : 'none',
+              animation: op ? 'vpending 1.2s ease-in-out infinite' : 'none'
             }}
           />
         )}

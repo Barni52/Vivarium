@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { CH } from '../shared/ipc'
 import type {
   AgentHookEvent,
+  BadgePayload,
   Config,
   ContainerState,
   DiffResult,
@@ -12,7 +13,8 @@ import type {
   PtyExitEvent,
   SessionType,
   SpawnResult,
-  UpdateProjectInput
+  UpdateProjectInput,
+  UsageSnapshot
 } from '../shared/types'
 
 export interface ContainerOutputEvent {
@@ -122,7 +124,8 @@ const api = {
 
   // dialogs / window
   browseFolder: (): Promise<string | null> => ipcRenderer.invoke(CH.browseFolder),
-  setBadge: (show: boolean): void => ipcRenderer.send(CH.setBadge, show),
+  fetchUsage: (): Promise<UsageSnapshot> => ipcRenderer.invoke(CH.fetchUsage),
+  setBadge: (b: BadgePayload): void => ipcRenderer.send(CH.setBadge, b),
   windowMinimize: (): void => ipcRenderer.send(CH.windowMinimize),
   windowMaximize: (): void => ipcRenderer.send(CH.windowMaximize),
   windowClose: (): void => ipcRenderer.send(CH.windowClose)

@@ -6,6 +6,7 @@ import { join, resolve, sep, extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { CH } from '@shared/ipc'
 import type {
+  BadgePayload,
   Config,
   ContainerState,
   DiffResult,
@@ -22,6 +23,7 @@ import { BridgeWatcher, bridgeDir } from './bridge'
 import { gitBranch, writeBranchDiff } from './git'
 import { PtyManager } from './pty'
 import { pasteImage } from './clipboard'
+import { UsageService } from './usage'
 
 export function registerIpc(win: BrowserWindow): void {
   const store = new ConfigStore()
@@ -30,6 +32,12 @@ export function registerIpc(win: BrowserWindow): void {
     if (!win.isDestroyed()) win.webContents.send(channel, payload)
   }
   const pty = new PtyManager(docker, emit)
+  const usage = new UsageService(docker)
+
+  // ---- claude plan usage --------------------------------------------------
+  // Polled by the renderer (TitleBar chips); all token/HTTP logic lives in
+  // UsageService.
+  ipcMain.handle(CH.fetchUsage, () => usage.fetch())
 
   // Expose the pty manager for app-quit cleanup.
   ;(win as unknown as { __pty?: PtyManager }).__pty = pty
@@ -424,12 +432,14 @@ export function registerIpc(win: BrowserWindow): void {
   ipcMain.on(CH.windowMaximize, () => (win.isMaximized() ? win.unmaximize() : win.maximize()))
   ipcMain.on(CH.windowClose, () => win.close())
 
-  // ---- taskbar attention badge (agent finished while unfocused) ----------
-  // Red "!" dot drawn on the taskbar button; cleared when the app is focused.
-  const BADGE = nativeImage.createFromDataURL(`data:image/png;base64,${BADGE_B64}`)
+  // ---- taskbar attention badge (agents finished / asking, with count) ----
+  // The renderer draws the count disc on a canvas (main has no canvas) and
+  // ships it as a data URL. The overlay mirrors the outstanding-notification
+  // count — it clears when every flagged session has been viewed (count 0),
+  // NOT on window focus, so the number stays glanceable while working.
   // flashFrame(true) flashes until focus with no built-in duration, so a timer
-  // stops it after a few seconds (Discord-style burst). The red overlay dot
-  // persists until focus — only the flashing is time-limited.
+  // stops it after a few seconds (Discord-style burst) — only the flashing is
+  // time-limited.
   let flashTimer: ReturnType<typeof setTimeout> | null = null
   const stopFlash = (): void => {
     if (flashTimer) {
@@ -438,25 +448,22 @@ export function registerIpc(win: BrowserWindow): void {
     }
     if (!win.isDestroyed()) win.flashFrame(false)
   }
-  ipcMain.on(CH.setBadge, (_e, show: boolean) => {
+  ipcMain.on(CH.setBadge, (_e, b: BadgePayload) => {
     if (win.isDestroyed()) return
-    win.setOverlayIcon(show ? BADGE : null, show ? 'Agent finished' : '')
-    if (show) {
+    win.setOverlayIcon(
+      b.dataUrl ? nativeImage.createFromDataURL(b.dataUrl) : null,
+      b.count > 0 ? `${b.count} agent session${b.count === 1 ? '' : 's'} need attention` : ''
+    )
+    if (b.flash) {
       // Discord-style attention flash — Windows FlashWindowEx (built-in).
       win.flashFrame(true)
       if (flashTimer) clearTimeout(flashTimer)
       flashTimer = setTimeout(stopFlash, 4000)
-    } else {
+    } else if (b.count === 0) {
       stopFlash()
     }
   })
   win.on('focus', () => {
-    if (win.isDestroyed()) return
-    win.setOverlayIcon(null, '')
-    stopFlash() // stop flashing once the user looks at the app
+    stopFlash() // stop flashing once the user looks at the app; the count stays
   })
 }
-
-// 32×32 red circle with a white "!" — the taskbar overlay dot (base64 PNG).
-const BADGE_B64 =
-  'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAwhJREFUWIXFlz1oFEEYhp+Z3fWONJ6lYhJSpQoJNmKlJOHAI4GgiEGEYLSLhWAqCVYpE7CxEUmIiD+IIigRgpFYiY3cYWUV7y5o6dnE+9v5LG73colnbvaMyVPtfrv7ve/M7Mx8o4iAiBwHzgADQA+QCB4VgHUgDawppTai5LURviwiqxJSLvvyNVs16YyYdEbka7Yq5bIvW6yKyGWb3KqF8AjGzKJ1P9mcb1beOtUPH6l8/tL0fa+vF/fUSXRy2Ke7y8GYDFrPKKVeRzYgInPATbI5v7qw5JSWV20aVCeWGsKdnKgZgXml1LS1ARF5DpyTp8/YnLsbSXgnHdNTqIsXAF4opc63NBCK+/N3KD55+U/iIfHxMZybN5qa2GYg7HYbcX3kMIfGUgCUXy5jfvy0NbFtOOoGRGQEeGXT7Soeo+PRfejsrAXyeTYvXUOKpV2/axiO0fDH1PWnxsySzfk2Yx47O7glDtDZWYu1YHPuLmRzPsbMhjFNMM/Rur+6sOS0zALgeXaxJlQXlhy07g/XibAHrpDN+VGnWjuUlldrvQBXAHSwvA6albd2rd8DAq1BETmug7Wd6oeP+6XfqHVGAwNUKuZvy+v/oPL5C1QqBhjQQA/fvsu+qYfUNHs0kJBCYd/GPyTQTGiLd/+kUrGLWaCBgkok/Cgfld68g3x+K5DP12IRCDQLLrDOsaO71gU7kWKJX1evb9sLWi3Df1DTXHeBNJ6nvb7evxYazTA/flJcfBxNNMDr6wXP00BaA2sA7qmTbSVrhwatNVcptSEi73Ry+DT3HljPhvhoEn1iAADzKU3x1Yq1AZ0c9oH3SqkNN4gt0t01GEsNYbMfxEeTOLdv1e+dkRRxsDIRSw0RlGmLhJuRUuohxmTcyQmr2RC2vFWsGe7khI8xGaXUQ7bVA1rP0N3ldExPWSVqh47pqVrrtZ6py4YXQYUyry5eID4+tmsi8yltFWskPj4WVkPzjWV620VplJ/QuijdaeJAyvIGEwd3MGkw8d+PZlYc2OG0iZE9P57/Bk8myA/46+s1AAAAAElFTkSuQmCC'

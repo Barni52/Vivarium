@@ -18,7 +18,8 @@ export const GLOBAL_CSS = `
   ::-webkit-scrollbar-thumb{background:var(--border);border:2px solid transparent;background-clip:padding-box}
   ::-webkit-scrollbar-thumb:hover{background:var(--text-3)}
   input,button,textarea{font-family:inherit}
-  @keyframes vpulse{0%{box-shadow:0 0 0 0 rgba(66,190,101,.5)}70%{box-shadow:0 0 0 5px rgba(66,190,101,0)}100%{box-shadow:0 0 0 0 rgba(66,190,101,0)}}
+  @keyframes vthink{0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:1;transform:translateY(-2px)}}
+  @keyframes vpending{0%,100%{opacity:.35}50%{opacity:1}}
   @keyframes vover{from{opacity:0}to{opacity:1}}
   @keyframes vdlg{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
   @keyframes vpop{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}

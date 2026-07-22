@@ -192,6 +192,40 @@ export class DockerService {
     }
   }
 
+  // ---- shared Claude credentials (for the usage endpoint) -----------------
+  /**
+   * Read `.credentials.json` out of the shared creds volume. Prefer `docker
+   * exec` into any running vivarium container (instant, no image needed); fall
+   * back to a throwaway busybox run mounting the volume read-only — busybox
+   * (~1 MB) is pulled once on first use. Returns null when docker is missing,
+   * nothing is running and busybox can't be pulled, or the file doesn't exist.
+   */
+  async readSharedCredentials(): Promise<string | null> {
+    try {
+      const ps = await this.exec(['ps', '--filter', 'name=vivarium-', '--format', '{{.Names}}'])
+      const name = ps.stdout
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean)[0]
+      if (ps.code === 0 && name) {
+        const r = await this.exec(['exec', name, 'cat', '/home/node/.claude/.credentials.json'])
+        if (r.code === 0 && r.stdout.trim()) return r.stdout
+      }
+      const r = await this.exec([
+        'run',
+        '--rm',
+        '-v',
+        `${CREDS_VOLUME}:/creds:ro`,
+        'busybox',
+        'cat',
+        '/creds/.credentials.json'
+      ])
+      return r.code === 0 && r.stdout.trim() ? r.stdout : null
+    } catch {
+      return null // docker-missing
+    }
+  }
+
   // ---- naming ------------------------------------------------------------
   containerName(project: Project): string {
     // One container per project; the id hash avoids collisions between projects

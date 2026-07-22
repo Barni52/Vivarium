@@ -2,7 +2,7 @@ import React from 'react'
 import type { Project, Session } from '@shared/types'
 import { useStore } from '../state/store'
 import { ACCENT } from '../theme'
-import { TypeIcon, Pencil, Close } from './Icons'
+import { TypeIcon, Pencil, Close, ThinkingDots } from './Icons'
 
 export function SessionRow({ project, session }: { project: Project; session: Session }): React.ReactElement {
   const [hover, setHover] = React.useState(false)
@@ -11,7 +11,7 @@ export function SessionRow({ project, session }: { project: Project; session: Se
   const editDraft = useStore((s) => s.editDraft)
   const live = useStore((s) => !!s.live[session.id])
   const activity = useStore((s) => s.activity[session.id])
-  const notified = useStore((s) => !!s.notifications[session.id])
+  const attention = useStore((s) => s.notifications[session.id])
   const select = useStore((s) => s.select)
   const startRename = useStore((s) => s.startRename)
   const setEditDraft = useStore((s) => s.setEditDraft)
@@ -63,17 +63,13 @@ export function SessionRow({ project, session }: { project: Project; session: Se
   const nameColor = selected ? 'var(--text)' : 'var(--text-2)'
 
   // state dot (shown when not hovering / not editing)
-  let dotBg = 'transparent'
+  // A working agent doesn't use this dot at all — it renders ThinkingDots in
+  // the agent accent instead, so "agent busy" (violet ellipsis) and "container
+  // up" (green square on the project header) can't be mistaken for each other.
   let dotBorder = '#6f7a92'
-  let dotAnim = 'none'
   let dotTitle = ''
   if (isAgent) {
-    dotTitle = working ? 'Agent working' : 'Agent idle'
-    if (working) {
-      dotBg = '#42be65'
-      dotBorder = '#42be65'
-      dotAnim = 'vpulse 1.8s infinite'
-    }
+    dotTitle = 'Agent idle'
   } else {
     dotTitle = live ? 'Session live' : 'Session idle'
     dotBorder = live ? '#42be65' : '#6f7a92'
@@ -196,16 +192,22 @@ export function SessionRow({ project, session }: { project: Project; session: Se
         </div>
       )}
 
-      {!hover && !editing && notified && isAgent && (
+      {!hover && !editing && attention && isAgent && (
+        /* "?" in the agent accent = blocked on a question (urgent — the whole
+           turn waits); red "!" = turn finished */
         <span
-          title="Agent finished — click to view"
+          title={
+            attention === 'question'
+              ? 'Agent asked a question — click to answer'
+              : 'Agent finished — click to view'
+          }
           style={{
             width: 16,
             height: 16,
             flex: 'none',
             marginRight: 1,
             borderRadius: '50%',
-            background: 'var(--danger)',
+            background: attention === 'question' ? accent : 'var(--danger)',
             color: '#fff',
             fontSize: 11,
             fontWeight: 700,
@@ -215,11 +217,15 @@ export function SessionRow({ project, session }: { project: Project; session: Se
             justifyContent: 'center'
           }}
         >
-          !
+          {attention === 'question' ? '?' : '!'}
         </span>
       )}
 
-      {!hover && !editing && isAgent && !notified && (
+      {!hover && !editing && isAgent && !attention && working && (
+        <ThinkingDots color={accent} title="Agent working" style={{ marginRight: 2 }} />
+      )}
+
+      {!hover && !editing && isAgent && !attention && !working && (
         <span
           title={dotTitle}
           style={{
@@ -228,9 +234,7 @@ export function SessionRow({ project, session }: { project: Project; session: Se
             flex: 'none',
             marginRight: 2,
             borderRadius: '50%',
-            background: dotBg,
-            border: `1.5px solid ${dotBorder}`,
-            animation: dotAnim
+            border: `1.5px solid ${dotBorder}`
           }}
         />
       )}

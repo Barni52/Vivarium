@@ -141,6 +141,96 @@ export const File = ({ size = 14, color = 'currentColor', style }: P): React.Rea
     style
   )
 
+// ---- file-type icons (shared output tree) ---------------------------------
+// Popular formats only — anything unknown falls back to the generic File.
+// Colors reuse the app palette so the tree stays cohesive.
+
+const ImageFile = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <>
+      <rect x="2.5" y="3.5" width="11" height="9" stroke={color} strokeWidth="1.1" />
+      <circle cx="5.8" cy="6.4" r="1" fill={color} />
+      <path d="M4 11l3-3 2 2 2.2-2.2 1.8 1.8" stroke={color} strokeWidth="1.1" strokeLinejoin="round" fill="none" />
+    </>,
+    style
+  )
+
+const Globe = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <>
+      <circle cx="8" cy="8" r="5.5" stroke={color} strokeWidth="1.1" fill="none" />
+      <path d="M2.5 8h11M8 2.5c-2.1 1.7-2.1 9.3 0 11 2.1-1.7 2.1-9.3 0-11z" stroke={color} strokeWidth="1.1" fill="none" />
+    </>,
+    style
+  )
+
+const DocLines = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <>
+      <path d="M4 2.2h5l3 3v8.6H4z" stroke={color} strokeWidth="1.1" strokeLinejoin="round" />
+      <path d="M9 2.2v3h3" stroke={color} strokeWidth="1.1" strokeLinejoin="round" />
+      <path d="M5.8 8.2h4.4M5.8 10.6h4.4" stroke={color} strokeWidth="1.1" strokeLinecap="round" />
+    </>,
+    style
+  )
+
+const CodeFile = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <path
+      d="M6.2 4.8L3.2 8l3 3.2M9.8 4.8l3 3.2-3 3.2"
+      stroke={color}
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      fill="none"
+    />,
+    style
+  )
+
+const TableFile = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <>
+      <rect x="2.5" y="3.5" width="11" height="9" stroke={color} strokeWidth="1.1" />
+      <path d="M2.5 6.5h11M7 6.5v6" stroke={color} strokeWidth="1.1" />
+    </>,
+    style
+  )
+
+const Archive = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <>
+      <rect x="3.5" y="2.5" width="9" height="11" stroke={color} strokeWidth="1.1" />
+      <path d="M8 4v1.2M8 6.8V8M8 9.6v1.2" stroke={color} strokeWidth="1.1" strokeLinecap="round" />
+    </>,
+    style
+  )
+
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp'])
+const CODE_EXTS = new Set([
+  'js', 'ts', 'tsx', 'jsx', 'json', 'css', 'scss', 'py', 'java', 'sh', 'ps1', 'bat', 'yml', 'yaml', 'xml'
+])
+const TABLE_EXTS = new Set(['csv', 'tsv', 'xls', 'xlsx'])
+const ARCHIVE_EXTS = new Set(['zip', '7z', 'rar', 'tar', 'gz'])
+
+export function FileIcon({ name, size = 14, style }: { name: string; size?: number; style?: React.CSSProperties }): React.ReactElement {
+  const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : ''
+  if (IMAGE_EXTS.has(ext)) return <ImageFile size={size} color="#a56eff" style={style} />
+  if (ext === 'html' || ext === 'htm') return <Globe size={size} color="var(--accent-2)" style={style} />
+  if (ext === 'md' || ext === 'markdown') return <DocLines size={size} color="#3ddbd9" style={style} />
+  if (ext === 'pdf') return <DocLines size={size} color="#fa4d56" style={style} />
+  if (ext === 'txt' || ext === 'log') return <DocLines size={size} color="var(--text-3)" style={style} />
+  if (CODE_EXTS.has(ext)) return <CodeFile size={size} color="#f1c21b" style={style} />
+  if (TABLE_EXTS.has(ext)) return <TableFile size={size} color="#42be65" style={style} />
+  if (ARCHIVE_EXTS.has(ext)) return <Archive size={size} color="var(--text-2)" style={style} />
+  return <File size={size} color="var(--text-3)" style={style} />
+}
+
 export const Refresh = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
   svg(
     size,
@@ -163,4 +253,36 @@ export const PanelToggle = ({ size = 15, color = 'currentColor', style }: P): Re
 
 export function TypeIcon({ type, size = 15, color }: { type: string; size?: number; color?: string }): React.ReactElement {
   return type === 'agent' ? <Sparkle size={size} color={color} /> : <Terminal size={size} color={color} />
+}
+
+// Three staggered bouncing dots — the "agent is thinking" indicator (chat
+// typing-ellipsis). Not an SVG, but it lives here so SessionRow and the
+// collapsed-project aggregate in ProjectRow share one look. Rendered in the
+// agent accent (violet) precisely so it can never be confused with the green
+// container-running square.
+export function ThinkingDots({
+  color,
+  title,
+  style
+}: {
+  color: string
+  title?: string
+  style?: React.CSSProperties
+}): React.ReactElement {
+  return (
+    <span title={title} style={{ display: 'flex', alignItems: 'center', gap: 2.5, flex: 'none', ...style }}>
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          style={{
+            width: 3.5,
+            height: 3.5,
+            borderRadius: '50%',
+            background: color,
+            animation: `vthink 1.1s ease-in-out ${i * 0.15}s infinite`
+          }}
+        />
+      ))}
+    </span>
+  )
 }
