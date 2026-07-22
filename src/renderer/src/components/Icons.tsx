@@ -23,6 +23,21 @@ export const Folder = ({ size = 15, color = 'currentColor', style }: P): React.R
     style
   )
 
+// Box with an arrow leaving its top-right corner — the OS "open in external app"
+// convention. Used to open the shared folder in Explorer.
+export const OpenExternal = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <path
+      d="M9 3.4H4a1 1 0 00-1 1v7a1 1 0 001 1h7a1 1 0 001-1v-5M8 8l4.5-4.5M9.2 3.4h3.4v3.4"
+      stroke={color}
+      strokeWidth="1.1"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />,
+    style
+  )
+
 export const Chevron = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
   svg(
     size,

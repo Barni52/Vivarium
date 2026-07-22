@@ -58,6 +58,7 @@ const api = {
     ipcRenderer.invoke(CH.setSharedOutput, folder),
   outputTree: (): Promise<OutputNode[]> => ipcRenderer.invoke(CH.outputTree),
   openOutputFile: (abs: string): Promise<string> => ipcRenderer.invoke(CH.openOutputFile, abs),
+  openOutputFolder: (): Promise<string> => ipcRenderer.invoke(CH.openOutputFolder),
   deleteOutputFile: (abs: string): Promise<string> => ipcRenderer.invoke(CH.deleteOutputFile, abs),
   onOutputChanged: (cb: () => void): (() => void) => {
     const h = (): void => cb()
@@ -128,7 +129,14 @@ const api = {
   setBadge: (b: BadgePayload): void => ipcRenderer.send(CH.setBadge, b),
   windowMinimize: (): void => ipcRenderer.send(CH.windowMinimize),
   windowMaximize: (): void => ipcRenderer.send(CH.windowMaximize),
-  windowClose: (): void => ipcRenderer.send(CH.windowClose)
+  windowClose: (): void => ipcRenderer.send(CH.windowClose),
+  // Confirm-on-quit: main asks (quitRequested), renderer confirms (confirmQuit).
+  onQuitRequested: (cb: () => void): (() => void) => {
+    const h = (): void => cb()
+    ipcRenderer.on(CH.quitRequested, h)
+    return () => ipcRenderer.removeListener(CH.quitRequested, h)
+  },
+  confirmQuit: (): void => ipcRenderer.send(CH.confirmQuit)
 }
 
 export type VivariumApi = typeof api

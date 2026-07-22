@@ -24,6 +24,7 @@ export type DialogKind =
   | 'addSession'
   | 'confirmKill'
   | 'confirmDeleteProject'
+  | 'confirmQuit'
   | null
 
 export interface ContextMenuItem {
@@ -139,6 +140,7 @@ interface AppState {
   setSharedOutput: (folder: string | null) => Promise<void>
   refreshOutputTree: () => Promise<void>
   openOutputFile: (abs: string) => void
+  openOutputFolder: () => void
   deleteOutputPath: (abs: string) => Promise<void>
   toggleOutputDir: (path: string) => void
   toggleOutputPanel: () => void
@@ -164,6 +166,8 @@ interface AppState {
   openSettings: (projectId: string) => void
   openAddSession: (projectId: string, anchor: DOMRect) => void
   closeDialog: () => void
+  requestQuit: () => void
+  confirmQuit: () => void
   setAp: (patch: Partial<ProjectDraft>) => void
   setSt: (patch: Partial<SettingsDraft>) => void
   setAddSession: (patch: Partial<AddSessionDraft>) => void
@@ -332,6 +336,10 @@ export const useStore = create<AppState>((set, get) => ({
     void window.vivarium.openOutputFile(abs)
   },
 
+  openOutputFolder: () => {
+    void window.vivarium.openOutputFolder()
+  },
+
   deleteOutputPath: async (abs) => {
     // Moves to the Recycle Bin (reversible). The fs.watch usually refreshes the
     // tree on its own, but refresh explicitly so the row disappears immediately.
@@ -460,6 +468,18 @@ export const useStore = create<AppState>((set, get) => ({
 
   closeDialog: () =>
     set({ dialog: null, addSession: null, killTarget: null, deleteTarget: null, st: null }),
+
+  // Main intercepted a window-close and is asking to confirm (see ipc.ts). Don't
+  // clobber a dialog that's already open — a modal being up doesn't change that
+  // the user wants to quit, and stacking over e.g. unsaved settings is fine.
+  requestQuit: () => set({ dialog: 'confirmQuit' }),
+
+  // User accepted the quit prompt: tell main to let the close through. Clearing
+  // the dialog is cosmetic — the window is about to go away.
+  confirmQuit: () => {
+    set({ dialog: null })
+    window.vivarium.confirmQuit()
+  },
 
   setAp: (patch) => set((s) => ({ ap: { ...s.ap, ...patch } })),
   setSt: (patch) => set((s) => (s.st ? { st: { ...s.st, ...patch } } : {})),

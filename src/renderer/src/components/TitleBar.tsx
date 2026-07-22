@@ -27,7 +27,7 @@ function WinButton({
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
-        width: 46,
+        width: 42,
         border: 0,
         background: hover ? hoverBg : 'transparent',
         color: hover && hoverColor ? hoverColor : 'var(--text-2)',
@@ -88,19 +88,19 @@ function UsageChip({
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 5,
+        gap: 7,
         flex: 'none',
         opacity: staleNote ? 0.55 : 1
       }}
     >
-      <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
+      <span style={{ fontSize: 13, color: 'var(--text-3)' }}>
         {limit.kind === 'session' ? '5h' : '7d'}
       </span>
       <span
         style={{
-          width: 26,
-          height: 4,
-          borderRadius: 2,
+          width: 62,
+          height: 8,
+          borderRadius: 4,
           background: 'var(--border)',
           overflow: 'hidden',
           display: 'flex'
@@ -108,10 +108,10 @@ function UsageChip({
       >
         <span style={{ width: `${pct}%`, background: color }} />
       </span>
-      <span style={{ fontSize: 10.5, color: 'var(--text-2)', minWidth: 24 }}>
+      <span style={{ fontSize: 13, color: 'var(--text-2)', minWidth: 29 }}>
         {Math.round(pct)}%
       </span>
-      {cd && <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{cd}</span>}
+      {cd && <span style={{ fontSize: 13, color: 'var(--text-3)' }}>{cd}</span>}
     </span>
   )
 }
@@ -140,7 +140,7 @@ function UsageChips(): React.ReactElement | null {
           : usage.error === 'rate-limited'
             ? 'Usage endpoint rate-limited — backing off, retrying automatically'
             : `Could not fetch Claude usage (${usage.error ?? 'empty response'})`
-    return <span style={{ fontSize: 10.5, color: 'var(--text-3)' }} title={title}>usage n/a</span>
+    return <span style={{ fontSize: 13, color: 'var(--text-3)' }} title={title}>usage n/a</span>
   }
   // The store keeps the last good snapshot through failed polls — flag it once
   // it's older than 1.5 poll intervals (a sync was missed), with the chips
@@ -149,8 +149,12 @@ function UsageChips(): React.ReactElement | null {
   const staleNote = now - usage.fetchedAt > 270_000 ? ` — last synced ${ageMin}m ago` : ''
   return (
     <>
-      {shown.map((l) => (
-        <UsageChip key={l.kind} limit={l} now={now} staleNote={staleNote} />
+      {shown.map((l, i) => (
+        <React.Fragment key={l.kind}>
+          {/* thin vertical rule so the 5h and 7d windows read as separate groups */}
+          {i > 0 && <span style={{ width: 1, height: 16, background: 'var(--border)', flex: 'none' }} />}
+          <UsageChip limit={l} now={now} staleNote={staleNote} />
+        </React.Fragment>
       ))}
     </>
   )
@@ -164,7 +168,7 @@ export function TitleBar(): React.ReactElement {
   return (
     <div
       style={{
-        height: 32,
+        height: 40,
         flex: 'none',
         display: 'flex',
         alignItems: 'center',
@@ -172,19 +176,19 @@ export function TitleBar(): React.ReactElement {
         background: 'var(--win)',
         borderBottom: '1px solid var(--border-2)',
         userSelect: 'none',
-        paddingLeft: 10,
+        paddingLeft: 12,
         ...drag
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
         <button
           title={collapsed ? 'Show sidebar' : 'Hide sidebar'}
           onClick={toggleSidebar}
           onMouseEnter={() => setToggleHover(true)}
           onMouseLeave={() => setToggleHover(false)}
           style={{
-            width: 28,
-            height: 24,
+            width: 36,
+            height: 30,
             border: 0,
             background: toggleHover ? 'var(--row-hover)' : 'transparent',
             color: collapsed ? 'var(--text-2)' : 'var(--accent-2)',
@@ -192,33 +196,35 @@ export function TitleBar(): React.ReactElement {
             alignItems: 'center',
             justifyContent: 'center',
             cursor: 'pointer',
-            borderRadius: 4,
+            borderRadius: 5,
             ...noDrag
           }}
         >
-          <PanelToggle />
+          <PanelToggle size={22} />
         </button>
-        <Logo size={18} style={{ flex: 'none' }} />
-        <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '.3px' }}>Vivarium</span>
-        <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 400 }}>session manager</span>
+        <Logo size={22} style={{ flex: 'none' }} />
+        <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: '.3px' }}>Vivarium</span>
+        <span style={{ fontSize: 13, color: 'var(--text-3)', fontWeight: 400 }}>session manager</span>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', height: 32 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginRight: 14, ...noDrag }}>
+      <div style={{ display: 'flex', alignItems: 'center', height: 40 }}>
+        {/* No noDrag here: the chips are hover-tooltip-only (no click targets), so
+            keep this region draggable — tooltips still fire over a drag region. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginRight: 16 }}>
           <UsageChips />
         </div>
-        <div style={{ display: 'flex', alignItems: 'stretch', height: 32 }}>
+        <div style={{ display: 'flex', alignItems: 'stretch', height: 40 }}>
           <WinButton onClick={() => v.windowMinimize()} hoverBg="var(--row-hover)">
-            <svg width="10" height="10" viewBox="0 0 10 10">
+            <svg width="11" height="11" viewBox="0 0 10 10">
               <path d="M0 5h10" stroke="currentColor" strokeWidth="1" />
             </svg>
           </WinButton>
           <WinButton onClick={() => v.windowMaximize()} hoverBg="var(--row-hover)">
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <svg width="11" height="11" viewBox="0 0 10 10" fill="none">
               <rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" />
             </svg>
           </WinButton>
           <WinButton onClick={() => v.windowClose()} hoverBg="#da1e28" hoverColor="#fff">
-            <svg width="10" height="10" viewBox="0 0 10 10">
+            <svg width="11" height="11" viewBox="0 0 10 10">
               <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1" />
             </svg>
           </WinButton>

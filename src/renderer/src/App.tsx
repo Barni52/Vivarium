@@ -8,6 +8,7 @@ import { ProjectSettings } from './components/dialogs/ProjectSettings'
 import { AddSessionPopover } from './components/dialogs/AddSessionPopover'
 import { ConfirmKill } from './components/dialogs/ConfirmKill'
 import { ConfirmDeleteProject } from './components/dialogs/ConfirmDeleteProject'
+import { ConfirmQuit } from './components/dialogs/ConfirmQuit'
 import { ContextMenu } from './components/ContextMenu'
 
 export function App(): React.ReactElement {
@@ -17,6 +18,7 @@ export function App(): React.ReactElement {
   const refreshUsage = useStore((s) => s.refreshUsage)
   const refreshOutputTree = useStore((s) => s.refreshOutputTree)
   const handleAgentHook = useStore((s) => s.handleAgentHook)
+  const requestQuit = useStore((s) => s.requestQuit)
   const dialog = useStore((s) => s.dialog)
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed)
 
@@ -38,14 +40,17 @@ export function App(): React.ReactElement {
     const off = window.vivarium.onContainerStateChanged(() => refreshStates())
     const offOutput = window.vivarium.onOutputChanged(() => refreshOutputTree())
     const offHook = window.vivarium.onAgentHook((e) => handleAgentHook(e))
+    // Main intercepts every window-close path and asks us to confirm first.
+    const offQuit = window.vivarium.onQuitRequested(() => requestQuit())
     return () => {
       clearInterval(poll)
       clearInterval(usagePoll)
       off()
       offOutput()
       offHook()
+      offQuit()
     }
-  }, [init, refreshStates, refreshBranches, refreshOutputTree, refreshUsage, handleAgentHook])
+  }, [init, refreshStates, refreshBranches, refreshOutputTree, refreshUsage, handleAgentHook, requestQuit])
 
   return (
     <div
@@ -74,6 +79,7 @@ export function App(): React.ReactElement {
       {dialog === 'addSession' && <AddSessionPopover />}
       {dialog === 'confirmKill' && <ConfirmKill />}
       {dialog === 'confirmDeleteProject' && <ConfirmDeleteProject />}
+      {dialog === 'confirmQuit' && <ConfirmQuit />}
       <ContextMenu />
     </div>
   )

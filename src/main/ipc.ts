@@ -355,6 +355,13 @@ export function registerIpc(win: BrowserWindow): void {
     return shell.openPath(target) // OS default app; '' on success
   })
 
+  // Reveal the shared-output root itself in Explorer (the header "open" button).
+  ipcMain.handle(CH.openOutputFolder, async (): Promise<string> => {
+    const folder = store.get().sharedOutputFolder
+    if (!folder) return 'no-folder'
+    return shell.openPath(resolve(folder)) // Explorer window; '' on success
+  })
+
   ipcMain.handle(CH.deleteOutputFile, async (_e, abs: string): Promise<string> => {
     const folder = store.get().sharedOutputFolder
     if (!folder) return 'no-folder'
@@ -431,6 +438,23 @@ export function registerIpc(win: BrowserWindow): void {
   ipcMain.on(CH.windowMinimize, () => win.minimize())
   ipcMain.on(CH.windowMaximize, () => (win.isMaximized() ? win.unmaximize() : win.maximize()))
   ipcMain.on(CH.windowClose, () => win.close())
+
+  // Confirm-on-quit: intercept every window-close path — the title-bar ✕ (which
+  // routes through windowClose → win.close()), Alt+F4, and the taskbar/Aero
+  // close — and ask the renderer to confirm before actually closing. The
+  // renderer sends confirmQuit back once the user accepts, which flips the flag
+  // and re-issues the close for real. The smoke-test harness (VIVARIUM_CDP_PORT)
+  // bypasses the prompt so automated teardown isn't blocked by the modal.
+  let closeConfirmed = Boolean(process.env['VIVARIUM_CDP_PORT'])
+  win.on('close', (e) => {
+    if (closeConfirmed) return
+    e.preventDefault()
+    win.webContents.send(CH.quitRequested)
+  })
+  ipcMain.on(CH.confirmQuit, () => {
+    closeConfirmed = true
+    win.close()
+  })
 
   // ---- taskbar attention badge (agents finished / asking, with count) ----
   // The renderer draws the count disc on a canvas (main has no canvas) and
