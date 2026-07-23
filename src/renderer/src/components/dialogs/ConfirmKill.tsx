@@ -23,11 +23,11 @@ export function ConfirmKill(): React.ReactElement | null {
           </div>
         </div>
         <div style={{ display: 'flex', borderTop: '1px solid var(--border-2)' }}>
-          <FooterButton height={48} onClick={closeDialog}>
-            Cancel
-          </FooterButton>
           <FooterButton height={48} danger onClick={confirmKill}>
             Kill session
+          </FooterButton>
+          <FooterButton height={48} onClick={closeDialog}>
+            Cancel
           </FooterButton>
         </div>
       </Panel>

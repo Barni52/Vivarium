@@ -8,6 +8,16 @@ export interface Session {
   id: string
   name: string
   type: SessionType
+  /**
+   * For `agent` sessions only: a stable UUID pinned as Claude Code's own
+   * conversation id (`claude --session-id <uuid>` on first launch, `--resume
+   * <uuid>` after). Lets an agent's conversation survive the container being
+   * stopped/recreated and the app restarting — the transcript persists on the
+   * claude-box-creds volume, so we re-attach the *conversation* without any
+   * multiplexer. Undefined for shell sessions (and legacy agent sessions until
+   * backfilled on config load).
+   */
+  claudeSessionId?: string
 }
 
 export interface Project {

@@ -21,11 +21,11 @@ export function ConfirmQuit(): React.ReactElement {
           </div>
         </div>
         <div style={{ display: 'flex', borderTop: '1px solid var(--border-2)' }}>
-          <FooterButton height={48} onClick={closeDialog}>
-            Cancel
-          </FooterButton>
           <FooterButton height={48} danger onClick={confirmQuit}>
             Quit
+          </FooterButton>
+          <FooterButton height={48} onClick={closeDialog}>
+            Cancel
           </FooterButton>
         </div>
       </Panel>
