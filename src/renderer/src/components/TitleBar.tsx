@@ -58,15 +58,20 @@ function limitTitle(l: UsageLimit): string {
   return `${what}: ${Math.round(l.percent)}% used${sev}${reset}`
 }
 
-// Time until reset in "XXh XXm". Derived from the last API response's
-// resets_at against the local clock, so it ticks between polls and re-syncs
-// whenever a fresh snapshot lands. Clamped at zero — the next poll brings the
-// new window.
-function countdown(resetsAt: string | null, now: number): string | null {
+// Time until reset. Derived from the last API response's resets_at against the
+// local clock, so it ticks between polls and re-syncs whenever a fresh snapshot
+// lands. Clamped at zero — the next poll brings the new window. The session (5h)
+// window reads "XXh XXm"; the weekly window can be days out, so `days` switches
+// it to "XXd XXh".
+function countdown(resetsAt: string | null, now: number, days = false): string | null {
   if (!resetsAt) return null
   const ms = Date.parse(resetsAt) - now
   if (!Number.isFinite(ms)) return null
   const mins = Math.max(0, Math.floor(ms / 60_000))
+  if (days) {
+    const hrs = Math.floor(mins / 60)
+    return `${Math.floor(hrs / 24)}d ${String(hrs % 24).padStart(2, '0')}h`
+  }
   return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`
 }
 
@@ -81,7 +86,7 @@ function UsageChip({
 }): React.ReactElement {
   const pct = Math.max(0, Math.min(100, limit.percent))
   const color = pct >= 90 ? 'var(--danger)' : pct >= 70 ? '#f1c21b' : '#42be65'
-  const cd = countdown(limit.resetsAt, now)
+  const cd = countdown(limit.resetsAt, now, limit.kind !== 'session')
   return (
     <span
       title={limitTitle(limit) + staleNote}

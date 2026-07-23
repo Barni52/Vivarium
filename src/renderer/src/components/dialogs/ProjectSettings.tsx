@@ -143,10 +143,10 @@ export function ProjectSettings(): React.ReactElement | null {
         </div>
 
         <div style={{ flex: 'none', display: 'flex', borderTop: '1px solid var(--border-2)' }}>
-          <FooterButton onClick={closeDialog}>Cancel</FooterButton>
           <FooterButton primary onClick={saveSettings}>
             Save changes
           </FooterButton>
+          <FooterButton onClick={closeDialog}>Cancel</FooterButton>
         </div>
       </Panel>
     </Overlay>

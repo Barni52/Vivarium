@@ -302,7 +302,8 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
              dots), green with a steady soft glow while running — no animation,
              infrastructure hums rather than thinks. Amber pulse while a
              start/stop/restart is in flight (a cold start can take minutes);
-             red with the message in the tooltip when the last op failed. */
+             stopped is a hollow red ring, a failed op a solid red fill (with
+             the message in its tooltip) — same hue, different weight. */
           <span
             title={
               op === 'start'
@@ -324,7 +325,7 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
               marginRight: 3,
               borderRadius: 2.5,
               background: op ? '#f1c21b' : opError ? 'var(--danger)' : running ? '#42be65' : 'transparent',
-              border: `1.5px solid ${op ? '#f1c21b' : opError ? 'var(--danger)' : running ? '#42be65' : '#6f7a92'}`,
+              border: `1.5px solid ${op ? '#f1c21b' : opError ? 'var(--danger)' : running ? '#42be65' : 'var(--danger)'}`,
               boxShadow: !op && !opError && running ? '0 0 6px rgba(66,190,101,.5)' : 'none',
               animation: op ? 'vpending 1.2s ease-in-out infinite' : 'none'
             }}

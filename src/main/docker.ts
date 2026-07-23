@@ -395,8 +395,11 @@ export class DockerService {
       await this.exec(['rm', '-f', name])
     }
 
-    // Already running? Nothing to do.
-    if (await this.isRunning(project)) return true
+    // Already running? Nothing to do (but still kick a throttled bg update).
+    if (await this.isRunning(project)) {
+      this.autoUpdateClaude(name)
+      return true
+    }
 
     // Refresh hook script/settings + drop stale events before every start.
     await ensureBridgeFiles(project.id)
@@ -405,6 +408,7 @@ export class DockerService {
     if (await this.containerExists(project)) {
       sink(`\r\n==> Starting existing container ${name}\r\n`)
       const code = await this.execStream(['start', name], sink)
+      if (code === 0) this.autoUpdateClaude(name)
       return code === 0
     }
 
@@ -431,6 +435,7 @@ export class DockerService {
       sink('\r\n[vivarium] docker run failed\r\n')
       return false
     }
+    this.autoUpdateClaude(name)
     return true
   }
 
@@ -452,6 +457,48 @@ export class DockerService {
     return this.start(project, sink)
   }
 
+  /**
+   * Fire-and-forget: keep the container's globally-installed Claude Code
+   * current. The image installs it as root under /usr/local/lib/node_modules,
+   * but the container runs as `node`, so Claude's own auto-updater can't write
+   * there — the version would otherwise stay pinned to image-build time. We
+   * update it out of band with the node user's passwordless sudo (see the
+   * sudoers line in dockerfiles.ts).
+   *
+   * Detached + unawaited so it never delays container start or session open.
+   * Throttled to ~once/20h per container via a stamp in the writable layer
+   * (survives stop/start; a fresh/recreated container has no stamp, so it runs
+   * once on first start). Output goes to a log file, never the session
+   * terminal. A running claude keeps its in-memory version; the next launched
+   * session picks up the new one. Set VIVARIUM_NO_CLAUDE_UPDATE to disable.
+   */
+  private autoUpdateClaude(name: string): void {
+    if (process.env['VIVARIUM_NO_CLAUDE_UPDATE']) return
+    // `find -mmin -1200` prints the stamp only if it was touched within 20h →
+    // non-empty means "checked recently, skip". Touch before installing so two
+    // near-simultaneous starts don't both run it.
+    const script =
+      'S=/var/tmp/.vivarium-claude-update; ' +
+      'if [ -z "$(find "$S" -mmin -1200 2>/dev/null)" ]; then ' +
+      'touch "$S"; ' +
+      'sudo npm install -g @anthropic-ai/claude-code@latest ' +
+      '>/var/tmp/vivarium-claude-update.log 2>&1; fi'
+    void this.detect().then((bin) => {
+      if (!bin) return
+      try {
+        const child = spawn(bin, ['exec', name, 'bash', '-lc', script], {
+          windowsHide: true,
+          detached: true,
+          stdio: 'ignore'
+        })
+        child.on('error', () => {}) // best-effort; never surface update failures
+        child.unref() // don't keep the app process alive for this
+      } catch {
+        /* ignore — an update attempt must never affect the app */
+      }
+    })
+  }
+
   async remove(project: Project): Promise<void> {
     await this.exec(['rm', '-f', this.containerName(project)])
   }
@@ -463,7 +510,7 @@ export class DockerService {
       // VIVARIUM_SESSION_ID tags this exec's hook events with the owning
       // session; --settings loads the bridge hooks without touching the shared
       // /home/node/.claude settings (claude-box sessions stay hook-free).
-      return [
+      const args = [
         'exec',
         '-it',
         '-e',
@@ -476,8 +523,45 @@ export class DockerService {
         '--settings',
         '/vivarium/hooks.json'
       ]
+      // Resume-across-restart: pin Claude's own conversation id. `--session-id`
+      // starts a fresh conversation with that id (and errors if it already
+      // exists); `--resume` re-attaches an existing one (and errors if it
+      // doesn't). So branch on whether the transcript already exists on the
+      // persistent .claude volume — this mirrors Claude's own "id already in
+      // use" test and self-heals a session that was opened but never messaged
+      // (no transcript yet → treat as fresh). Legacy sessions are backfilled
+      // with a claudeSessionId on config load; only truly-missing ids fall
+      // through to a bare (unpinned, non-resumable) claude.
+      const claudeId = project.sessions.find((s) => s.id === sessionId)?.claudeSessionId
+      if (claudeId) {
+        const resume = await this.claudeConversationExists(name, claudeId)
+        args.push(resume ? '--resume' : '--session-id', claudeId)
+      }
+      return args
     }
     return ['exec', '-it', '-w', '/workspace', name, 'bash']
+  }
+
+  /**
+   * Does a Claude Code conversation transcript for `uuid` already exist inside
+   * the container? Claude writes them to
+   * $CLAUDE_CONFIG_DIR/projects/<escaped-cwd>/<uuid>.jsonl on the persistent
+   * claude-box-creds volume (cwd is always /workspace here, escaping to
+   * `-workspace`). We glob across the projects dir rather than hardcoding the
+   * escaped-cwd folder, so a change to Claude's path-escaping can't silently
+   * break the check. A failed/again-unavailable exec returns false → we fall
+   * back to starting a fresh conversation. The uuid is Vivarium-generated
+   * (hex + hyphens), so it is safe to interpolate into the shell command.
+   */
+  private async claudeConversationExists(container: string, uuid: string): Promise<boolean> {
+    const res = await this.exec([
+      'exec',
+      container,
+      'sh',
+      '-c',
+      `ls /home/node/.claude/projects/*/${uuid}.jsonl 2>/dev/null`
+    ])
+    return res.code === 0 && res.stdout.trim() !== ''
   }
 
   async binaryName(): Promise<string | null> {

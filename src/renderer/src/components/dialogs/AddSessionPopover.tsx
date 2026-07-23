@@ -147,20 +147,6 @@ export function AddSessionPopover(): React.ReactElement | null {
 
         <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
           <button
-            onClick={closeDialog}
-            style={{
-              flex: 1,
-              height: 38,
-              border: '1px solid var(--border)',
-              background: 'transparent',
-              color: 'var(--text-2)',
-              fontSize: 13,
-              cursor: 'pointer'
-            }}
-          >
-            Cancel
-          </button>
-          <button
             onClick={confirm}
             style={{
               flex: 1,
@@ -174,6 +160,20 @@ export function AddSessionPopover(): React.ReactElement | null {
             }}
           >
             Create
+          </button>
+          <button
+            onClick={closeDialog}
+            style={{
+              flex: 1,
+              height: 38,
+              border: '1px solid var(--border)',
+              background: 'transparent',
+              color: 'var(--text-2)',
+              fontSize: 13,
+              cursor: 'pointer'
+            }}
+          >
+            Cancel
           </button>
         </div>
       </div>

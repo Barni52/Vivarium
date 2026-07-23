@@ -68,6 +68,19 @@ export function registerIpc(win: BrowserWindow): void {
   // ---- config / projects / sessions -------------------------------------
   ipcMain.handle(CH.loadConfig, async (): Promise<Config> => {
     const cfg = await store.load()
+    // Backfill: give any pre-existing agent session (created before the
+    // resume feature) a pinned Claude conversation id so it too gets
+    // resume-on-reopen from now on. Persist only if something changed.
+    let changed = false
+    for (const p of cfg.projects) {
+      for (const s of p.sessions) {
+        if (s.type === 'agent' && !s.claudeSessionId) {
+          s.claudeSessionId = randomUUID()
+          changed = true
+        }
+      }
+    }
+    if (changed) await store.save(cfg)
     // Apply the persisted shared output folder to docker + start watching it.
     docker.setSharedOutput(cfg.sharedOutputFolder)
     startOutputWatcher()
@@ -127,9 +140,14 @@ export function registerIpc(win: BrowserWindow): void {
     CH.addSession,
     async (_e, projectId: string, type: SessionType, name: string): Promise<Config> => {
       const id = randomUUID()
+      // Agent sessions get a second UUID pinned as Claude Code's conversation id
+      // so the conversation can be resumed across container/app restarts (see
+      // Session.claudeSessionId + docker.execArgs). Shell sessions have no
+      // conversation to resume, so they don't get one.
+      const claudeSessionId = type === 'agent' ? randomUUID() : undefined
       return store.mutate((cfg) => {
         const p = cfg.projects.find((x) => x.id === projectId)
-        if (p) p.sessions.push({ id, name, type })
+        if (p) p.sessions.push({ id, name, type, claudeSessionId })
         return cfg
       })
     }

@@ -150,6 +150,24 @@ export function TerminalView({
         setActivity(session.id, 'idle')
         return true
       }
+      // Claude Code: Shift+Enter and Ctrl+Enter insert a newline instead of
+      // submitting. xterm sends a bare CR for Enter regardless of modifiers, so
+      // translate these chords to ESC+CR — the sequence Claude Code treats as
+      // "insert newline" (the same one `claude`'s /terminal-setup installs for
+      // Shift+Enter). Plain Enter still submits.
+      //
+      // preventDefault is essential for Shift+Enter specifically: returning
+      // false from the keydown handler makes xterm skip its default, but it
+      // doesn't mark the event handled, so the browser still fires a follow-up
+      // `keypress` (charCode 13) that xterm would send as a second, bare CR —
+      // appending our newline AND submitting. preventDefault suppresses that
+      // keypress. (Ctrl+Enter emits no keypress, which is why it already
+      // worked.)
+      if (session.type === 'agent' && e.key === 'Enter' && (e.shiftKey || e.ctrlKey) && !e.altKey) {
+        e.preventDefault()
+        window.vivarium.writeSession(session.id, '\x1b\r')
+        return false
+      }
       // zoom: Ctrl +/-/0 (Windows Terminal / VS Code convention)
       if (e.ctrlKey && !e.altKey) {
         if (e.key === '=' || e.key === '+') {
@@ -164,6 +182,16 @@ export function TerminalView({
           useStore.getState().resetTerminalZoom()
           return false
         }
+      }
+      // Ctrl+Backspace → delete the previous word. xterm emits nothing useful
+      // for this chord on its own, so translate it to the byte each shell's
+      // line editor treats as backward-kill-word:
+      //   • bash (readline): ESC+DEL (M-DEL) → backward-kill-word, which stops
+      //     at punctuation (nicer than Ctrl+W's whitespace-only unix-word-rubout).
+      //   • PowerShell (PSReadLine) + Claude Code: Ctrl+W (0x17) → BackwardKillWord.
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key === 'Backspace') {
+        window.vivarium.writeSession(session.id, session.type === 'container-shell' ? '\x1b\x7f' : '\x17')
+        return false
       }
       // force copy / paste
       if (e.ctrlKey && e.shiftKey && k === 'c') {

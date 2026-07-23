@@ -125,10 +125,10 @@ export function AddProject(): React.ReactElement {
         </div>
 
         <div style={{ flex: 'none', display: 'flex', borderTop: '1px solid var(--border-2)' }}>
-          <FooterButton onClick={closeDialog}>Cancel</FooterButton>
           <FooterButton primary onClick={createProject}>
             Create project
           </FooterButton>
+          <FooterButton onClick={closeDialog}>Cancel</FooterButton>
         </div>
       </Panel>
     </Overlay>
