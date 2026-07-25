@@ -2,7 +2,18 @@ import React from 'react'
 import type { Project } from '@shared/types'
 import { useStore, type AttentionKind } from '../state/store'
 import { ACCENT } from '../theme'
-import { Chevron, Folder, Plus, GitBranch, ThinkingDots } from './Icons'
+import {
+  Chevron,
+  Folder,
+  Gear,
+  GitBranch,
+  Plus,
+  Power,
+  Sparkle,
+  Stop,
+  ThinkingDots,
+  Trash
+} from './Icons'
 import { SessionRow } from './SessionRow'
 
 function HeaderBtn({
@@ -49,7 +60,6 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
   const openAddSession = useStore((s) => s.openAddSession)
   const openSettings = useStore((s) => s.openSettings)
   const togglePower = useStore((s) => s.togglePower)
-  const restart = useStore((s) => s.restart)
   const requestDeleteProject = useStore((s) => s.requestDeleteProject)
   const openContextMenu = useStore((s) => s.openContextMenu)
   const hasOutput = useStore((s) => !!s.config.sharedOutputFolder)
@@ -91,9 +101,10 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
     openContextMenu(e.clientX, e.clientY, [
       {
         label: 'Add session',
+        icon: <Plus size={14} />,
         onSelect: () => openAddSession(project.id, new DOMRect(e.clientX, e.clientY, 0, 0))
       },
-      { label: 'Project settings', onSelect: () => openSettings(project.id) },
+      { label: 'Project settings', icon: <Gear size={14} />, onSelect: () => openSettings(project.id) },
       {
         label:
           op === 'start'
@@ -103,30 +114,36 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
               : running
                 ? 'Stop container'
                 : 'Start container',
+        // outline power ring when it's off, solid square when it's on — the icon
+        // shows the current state, the label says what the click does
+        // Stop only inks the middle half of its 16-box, so size 16 puts an 8px
+        // filled square next to the 14px outline glyphs — a solid shape reads
+        // heavier, so it wants to be the smaller one.
+        icon: running ? <Stop size={16} /> : <Power size={14} />,
         disabled: !!op,
         onSelect: () => togglePower(project.id)
       },
-      {
-        label: op === 'restart' ? 'Restarting container…' : 'Restart container',
-        disabled: !!op,
-        onSelect: () => restart(project.id)
-      },
+      // No "Restart container" here on purpose: stop-then-start is two clicks
+      // away, Project settings still has the button, and every *needed* restart
+      // (a mount or image change) already happens implicitly on save.
       { label: '---' },
       // Second way into the manual-update dialog (the title-bar version chip is
       // the first) — this is where you'd look when *this* project's agent seems
       // to be on an old Claude Code.
-      { label: 'Claude Code version…', onSelect: openClaudeUpdate },
+      { label: 'Claude Code version…', icon: <Sparkle size={13} />, onSelect: openClaudeUpdate },
       { label: '---' },
       {
         label: hasOutput
           ? 'Write branch diff → changes.txt'
           : 'Write branch diff (set an output folder first)',
+        icon: <GitBranch size={14} />,
         disabled: !hasOutput,
         onSelect: () => void runProjectDiff(project.id)
       },
       { label: '---' },
       {
         label: 'Delete project',
+        icon: <Trash size={14} />,
         danger: true,
         onSelect: () => requestDeleteProject(project.id, project.name)
       }
