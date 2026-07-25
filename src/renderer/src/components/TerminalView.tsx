@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import type { Project, Session } from '@shared/types'
 import { useStore } from '../state/store'
+import { Copy, Eraser, Paste, Refresh, SelectAll, ZoomIn, ZoomOut } from './Icons'
 
 // Windows console "Campbell" ANSI palette — makes colored program output
 // (PSReadLine highlighting, git, ls, npm, etc.) render the way it does in a
@@ -231,15 +232,25 @@ export function TerminalView({
         ev.clientX,
         ev.clientY,
         [
-          { label: 'Copy', disabled: !term.hasSelection(), onSelect: () => doCopy() },
-          { label: 'Paste', onSelect: () => void doPaste() },
-          { label: 'Select all', onSelect: () => term.selectAll() },
+          {
+            label: 'Copy',
+            icon: <Copy size={14} />,
+            disabled: !term.hasSelection(),
+            onSelect: () => doCopy()
+          },
+          { label: 'Paste', icon: <Paste size={14} />, onSelect: () => void doPaste() },
+          { label: 'Select all', icon: <SelectAll size={14} />, onSelect: () => term.selectAll() },
           { label: '---' },
-          { label: 'Zoom in', onSelect: () => z.zoomTerminal(1) },
-          { label: 'Zoom out', onSelect: () => z.zoomTerminal(-1) },
-          { label: 'Reset zoom', onSelect: () => z.resetTerminalZoom() },
+          { label: 'Zoom in', icon: <ZoomIn size={14} />, onSelect: () => z.zoomTerminal(1) },
+          { label: 'Zoom out', icon: <ZoomOut size={14} />, onSelect: () => z.zoomTerminal(-1) },
+          // a circular arrow rather than a third magnifier: "back to the default"
+          // is the action, and a magnifier with nothing in it reads as neither
+          // 16, not 14: Refresh's arc only fills the middle two-thirds of its
+          // viewBox, so it needs the extra size to weigh the same as the
+          // magnifiers above it
+          { label: 'Reset zoom', icon: <Refresh size={16} />, onSelect: () => z.resetTerminalZoom() },
           { label: '---' },
-          { label: 'Clear', onSelect: () => term.clear() }
+          { label: 'Clear', icon: <Eraser size={14} />, onSelect: () => term.clear() }
         ],
         // restore focus to this terminal when the menu closes (item / Escape),
         // so pasting or any action leaves the user able to type immediately

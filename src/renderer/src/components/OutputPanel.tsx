@@ -1,7 +1,7 @@
 import React from 'react'
 import { useStore } from '../state/store'
 import { leaf } from '../paths'
-import { Chevron, Folder, OpenExternal, Refresh } from './Icons'
+import { Chevron, Close, Folder, OpenExternal, Refresh } from './Icons'
 import { OutputTree } from './OutputTree'
 
 function IconBtn({
@@ -75,11 +75,19 @@ export function OutputPanel(): React.ReactElement {
     e.preventDefault()
     e.stopPropagation()
     openContextMenu(e.clientX, e.clientY, [
-      { label: 'Open in Explorer', onSelect: () => openOutputFolder() },
-      { label: 'Change folder…', onSelect: () => void browse() },
-      { label: 'Refresh', onSelect: () => void refreshOutputTree() },
+      { label: 'Open in Explorer', icon: <OpenExternal size={14} />, onSelect: () => openOutputFolder() },
+      { label: 'Change folder…', icon: <Folder size={14} />, onSelect: () => void browse() },
+      // see TerminalView's Reset zoom — Refresh's arc is inset in its viewBox
+      { label: 'Refresh', icon: <Refresh size={16} />, onSelect: () => void refreshOutputTree() },
       { label: '---' },
-      { label: 'Clear folder', danger: true, onSelect: () => void setSharedOutput(null) }
+      {
+        // an X, not a trash can: this only forgets the folder, it doesn't touch
+        // a single file inside it
+        label: 'Clear folder',
+        icon: <Close size={13} />,
+        danger: true,
+        onSelect: () => void setSharedOutput(null)
+      }
     ])
   }
 

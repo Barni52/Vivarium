@@ -1,7 +1,7 @@
 import React from 'react'
 import type { OutputNode } from '@shared/types'
 import { useStore } from '../state/store'
-import { Chevron, Folder, FileIcon } from './Icons'
+import { Chevron, Folder, FileIcon, Trash } from './Icons'
 
 const isHtml = (name: string): boolean => /\.html?$/i.test(name)
 
@@ -23,6 +23,7 @@ function OutputRow({ node, depth }: { node: OutputNode; depth: number }): React.
     openContextMenu(e.clientX, e.clientY, [
       {
         label: isDir ? 'Delete folder' : 'Delete file',
+        icon: <Trash size={14} />,
         danger: true,
         onSelect: () => void deleteOutputPath(node.path)
       }
