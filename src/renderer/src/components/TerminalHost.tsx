@@ -4,7 +4,55 @@ import { useStore } from '../state/store'
 import { ACCENT, SESSION_TYPES, typeLabel } from '../theme'
 import { TypeIcon } from './Icons'
 import { Logo } from './Logo'
+import { Elapsed, formatElapsed } from './Elapsed'
 import { TerminalView } from './TerminalView'
+
+// Agent turn state for the terminal header. This is the one part of the window
+// you are actually looking at while an agent works, and until now the only thing
+// it reported was the container's state — which the sidebar already shows.
+function AgentStatus({ sessionId }: { sessionId: string }): React.ReactElement | null {
+  const live = useStore((s) => !!s.live[sessionId])
+  const working = useStore((s) => s.activity[sessionId] === 'working')
+  const since = useStore((s) => s.agentSince[sessionId])
+  if (!live) return null // nothing is running; the state would be a leftover
+  return (
+    <>
+      <span
+        // Unlike the sidebar indicators this one is never swapped out on hover,
+        // so its tooltip is reachable and can carry the long phrasing.
+        title={
+          since
+            ? working
+              ? `This turn started ${formatElapsed(Date.now() - since)} ago`
+              : `Last turn finished ${formatElapsed(Date.now() - since)} ago`
+            : working
+              ? 'Agent is working'
+              : 'Agent is idle'
+        }
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 5,
+          fontSize: 11,
+          fontFamily: "'IBM Plex Mono', monospace",
+          color: working ? ACCENT.agent : 'var(--text-3)'
+        }}
+      >
+        {working ? 'working' : 'idle'}
+        {since && (
+          <>
+            {/* its own element, or it merges into the same anonymous flex item as
+                the word before it and only gets a gap on one side */}
+            <span style={{ opacity: 0.5 }}>·</span>
+            <Elapsed since={since} />
+          </>
+        )}
+      </span>
+      {/* same thin rule the title-bar chips use, so the two readings group apart */}
+      <span style={{ width: 1, height: 14, background: 'var(--border)', flex: 'none' }} />
+    </>
+  )
+}
 
 export function TerminalHost(): React.ReactElement {
   const projects = useStore((s) => s.config.projects)
@@ -86,15 +134,18 @@ export function TerminalHost(): React.ReactElement {
             </span>
             <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{sel.project.name}</span>
             <div style={{ flex: 1 }} />
-            <span
-              style={{
-                fontSize: 11,
-                color: 'var(--text-3)',
-                fontFamily: "'IBM Plex Mono', monospace"
-              }}
-            >
-              {mini}
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9, flex: 'none' }}>
+              {sel.session.type === 'agent' && <AgentStatus sessionId={sel.session.id} />}
+              <span
+                style={{
+                  fontSize: 11,
+                  color: 'var(--text-3)',
+                  fontFamily: "'IBM Plex Mono', monospace"
+                }}
+              >
+                {mini}
+              </span>
+            </div>
           </div>
 
           {/* terminal body — one persistent xterm per opened session */}

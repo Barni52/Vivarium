@@ -10,6 +10,7 @@ import { ConfirmKill } from './components/dialogs/ConfirmKill'
 import { ConfirmDeleteProject } from './components/dialogs/ConfirmDeleteProject'
 import { ConfirmQuit } from './components/dialogs/ConfirmQuit'
 import { ClaudeUpdate } from './components/dialogs/ClaudeUpdate'
+import { Volumes } from './components/dialogs/Volumes'
 import { ContextMenu } from './components/ContextMenu'
 
 export function App(): React.ReactElement {
@@ -102,6 +103,7 @@ export function App(): React.ReactElement {
       {dialog === 'confirmDeleteProject' && <ConfirmDeleteProject />}
       {dialog === 'confirmQuit' && <ConfirmQuit />}
       {dialog === 'claudeUpdate' && <ClaudeUpdate />}
+      {dialog === 'volumes' && <Volumes />}
       <ContextMenu />
     </div>
   )

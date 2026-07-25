@@ -28,6 +28,8 @@ export const CH = {
 
   // docker / containers
   dockerStatus: 'docker:status',
+  volumes: 'docker:volumes',
+  removeVolume: 'docker:volume-remove',
   containerStates: 'container:states',
   startContainer: 'container:start',
   stopContainer: 'container:stop',
@@ -58,6 +60,7 @@ export const CH = {
   claudeUpdate: 'claude:update',
 
   // dialogs / window
+  appInfo: 'app:info',
   browseFolder: 'dialog:browse-folder',
   setBadge: 'window:set-badge',
   windowMinimize: 'window:minimize',

@@ -110,6 +110,7 @@ export function ContextMenu(): React.ReactElement | null {
               key={i}
               label={item.label}
               icon={item.icon}
+              hint={item.hint}
               // one left edge for the labels: as soon as one item in this menu
               // brings a glyph, the iconless ones keep an empty slot rather than
               // sliding under the icons
@@ -136,6 +137,7 @@ export function ContextMenu(): React.ReactElement | null {
 function MenuRow({
   label,
   icon,
+  hint,
   gutter,
   danger,
   disabled,
@@ -143,6 +145,7 @@ function MenuRow({
 }: {
   label: string
   icon?: React.ReactNode
+  hint?: string
   gutter?: boolean
   danger?: boolean
   disabled?: boolean
@@ -198,6 +201,22 @@ function MenuRow({
         </span>
       )}
       {label}
+      {hint && (
+        // Pushed to the right edge with a guaranteed gap, so a long label never
+        // collides with its chord.
+        <span
+          style={{
+            marginLeft: 'auto',
+            paddingLeft: 18,
+            fontSize: 11.5,
+            color: 'var(--text-3)',
+            fontFamily: "'IBM Plex Mono', monospace",
+            flex: 'none'
+          }}
+        >
+          {hint}
+        </span>
+      )}
     </div>
   )
 }

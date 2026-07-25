@@ -79,6 +79,15 @@ export type AgentHookKind = 'UserPromptSubmit' | 'Stop' | 'AskUserQuestion'
 export interface AgentHookEvent {
   sessionId: string
   kind: AgentHookKind
+  /**
+   * Epoch ms, stamped on the HOST when the bridge read the line — not the
+   * container-side timestamp the hook writes into events.log. The container
+   * clock can drift from Windows (WSL2 VMs do this across host sleep), and
+   * these values are subtracted from `Date.now()` to show "working 4m", so a
+   * skewed clock would show a negative or wildly long turn. The log keeps its
+   * own timestamp for post-mortem reading; the UI runs on this one.
+   */
+  at: number
 }
 
 /**
@@ -139,6 +148,60 @@ export interface ClaudeUpdateResult {
   version: string | null
   /** short error tail when ok=false */
   message?: string
+}
+
+/**
+ * One docker volume, as shown in the Volumes dialog.
+ *
+ * Three kinds exist:
+ *  - `shared`   the claude-box-creds / claude-box-home pair. Auth, settings and
+ *               agent memory live here and they are deliberately shared with the
+ *               user's older claude-box setup — never removable from the UI.
+ *  - `shadow`   `vivarium-<hash>-<suffix>`: a container-local overlay on one
+ *               mounted folder's build output (node_modules, Maven target …).
+ *               `hash` identifies the host path, so a volume whose hash matches
+ *               no current mount is orphaned — its folder was unmounted or its
+ *               project deleted, and nothing else will ever clean it up.
+ *  - `other`    any remaining `vivarium-*` volume (dev leftovers, older naming).
+ */
+export interface VolumeInfo {
+  name: string
+  kind: 'shared' | 'shadow' | 'other'
+  /** docker's own human-readable size, e.g. "1.21GB"; null when unreported */
+  size: string | null
+  /** same size in bytes, for totals and sorting; null when unparseable */
+  bytes: number | null
+  /** containers currently using it — docker refuses to remove a volume in use */
+  links: number
+  /** what a shadow volume overlays ("node_modules"), null for the other kinds */
+  contents: string | null
+  /** projects whose mounts produced this volume; empty means orphaned */
+  projects: string[]
+  /** never offer removal (the shared pair) */
+  locked: boolean
+}
+
+/** Volumes plus whether the size sweep actually reported anything. */
+export interface VolumeReport {
+  volumes: VolumeInfo[]
+  /** false when `docker system df` failed — names are listed, sizes are null */
+  sized: boolean
+  error?: string
+}
+
+/** Result of removing one volume. */
+export interface VolumeRemoveResult {
+  ok: boolean
+  /** docker's message when ok=false (e.g. "volume is in use") */
+  message?: string
+}
+
+/** Versions shown on the title-bar chip — enough to paste into a bug report. */
+export interface AppInfo {
+  version: string
+  electron: string
+  chrome: string
+  node: string
 }
 
 /** Taskbar overlay badge pushed by the renderer (drawn there — main has no canvas). */

@@ -3,6 +3,17 @@ import type { Project, Session } from '@shared/types'
 import { useStore } from '../state/store'
 import { ACCENT } from '../theme'
 import { TypeIcon, Pencil, Close, ThinkingDots } from './Icons'
+import { Elapsed } from './Elapsed'
+
+// Turn duration next to an agent's indicator. Deliberately visible text, not a
+// tooltip: both indicators only render while the row is NOT hovered (the hover
+// controls take their place), so a title on them could never be read.
+const durationStyle: React.CSSProperties = {
+  flex: 'none',
+  fontFamily: "'IBM Plex Mono', monospace",
+  fontSize: 10.5,
+  color: 'var(--text-3)'
+}
 
 export function SessionRow({ project, session }: { project: Project; session: Session }): React.ReactElement {
   const [hover, setHover] = React.useState(false)
@@ -12,6 +23,7 @@ export function SessionRow({ project, session }: { project: Project; session: Se
   const live = useStore((s) => !!s.live[session.id])
   const activity = useStore((s) => s.activity[session.id])
   const attention = useStore((s) => s.notifications[session.id])
+  const since = useStore((s) => s.agentSince[session.id])
   const select = useStore((s) => s.select)
   const startRename = useStore((s) => s.startRename)
   const setEditDraft = useStore((s) => s.setEditDraft)
@@ -199,6 +211,12 @@ export function SessionRow({ project, session }: { project: Project; session: Se
         </div>
       )}
 
+      {/* How stale the flag is: a "!" you left sitting for an hour means
+          something different from one raised ten seconds ago. */}
+      {!hover && !editing && attention && isAgent && since && (
+        <Elapsed since={since} style={durationStyle} />
+      )}
+
       {!hover && !editing && attention && isAgent && (
         /* "?" in the agent accent = blocked on a question (urgent — the whole
            turn waits); red "!" = turn finished */
@@ -226,6 +244,12 @@ export function SessionRow({ project, session }: { project: Project; session: Se
         >
           {attention === 'question' ? '?' : '!'}
         </span>
+      )}
+
+      {/* How long this turn has been running — the number you want when
+          deciding which of several working agents to look in on. */}
+      {!hover && !editing && isAgent && !attention && working && since && (
+        <Elapsed since={since} style={durationStyle} />
       )}
 
       {!hover && !editing && isAgent && !attention && working && (
