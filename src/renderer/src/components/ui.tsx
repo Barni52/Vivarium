@@ -83,31 +83,35 @@ export function fieldStyle(mono?: boolean): React.CSSProperties {
 export function FooterButton({
   primary,
   danger,
+  disabled,
   onClick,
   children,
   height = 52
 }: {
   primary?: boolean
   danger?: boolean
+  disabled?: boolean
   onClick: () => void
   children: React.ReactNode
   height?: number
 }): React.ReactElement {
   const [hover, setHover] = React.useState(false)
+  const lit = hover && !disabled
   const bg = danger
-    ? hover
+    ? lit
       ? '#da1e28'
       : 'var(--danger)'
     : primary
-      ? hover
+      ? lit
         ? 'var(--accent-2)'
         : 'var(--accent)'
-      : hover
+      : lit
         ? 'var(--field)'
         : 'transparent'
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
@@ -118,7 +122,10 @@ export function FooterButton({
         color: primary || danger ? '#fff' : 'var(--text-2)',
         fontSize: 14,
         fontWeight: primary || danger ? 500 : 400,
-        cursor: 'pointer'
+        // Dim rather than grey out: the label still has to be readable, since
+        // it's usually explaining *why* it's unavailable.
+        opacity: disabled ? 0.45 : 1,
+        cursor: disabled ? 'default' : 'pointer'
       }}
     >
       {children}

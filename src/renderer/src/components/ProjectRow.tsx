@@ -54,6 +54,7 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
   const openContextMenu = useStore((s) => s.openContextMenu)
   const hasOutput = useStore((s) => !!s.config.sharedOutputFolder)
   const runProjectDiff = useStore((s) => s.runProjectDiff)
+  const openClaudeUpdate = useStore((s) => s.openClaudeUpdate)
   // aggregate: worst outstanding attention among child agents (shown when the
   // project is collapsed, so a notification isn't hidden with its session
   // rows); a question beats finished — an agent blocked on an answer is the
@@ -110,6 +111,11 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
         disabled: !!op,
         onSelect: () => restart(project.id)
       },
+      { label: '---' },
+      // Second way into the manual-update dialog (the title-bar version chip is
+      // the first) — this is where you'd look when *this* project's agent seems
+      // to be on an old Claude Code.
+      { label: 'Claude Code version…', onSelect: openClaudeUpdate },
       { label: '---' },
       {
         label: hasOutput

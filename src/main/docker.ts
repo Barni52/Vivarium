@@ -3,7 +3,7 @@ import { existsSync } from 'fs'
 import { join, basename } from 'path'
 import { createHash } from 'crypto'
 import { app } from 'electron'
-import type { Project } from '@shared/types'
+import type { ClaudeVersionInfo, Project } from '@shared/types'
 import {
   IMAGE_VERSION,
   SLIM_IMAGE,
@@ -18,7 +18,7 @@ import { bridgeDir, ensureBridgeFiles } from './bridge'
 
 export type LineSink = (chunk: string) => void
 
-interface ExecResult {
+export interface ExecResult {
   code: number
   stdout: string
   stderr: string
@@ -67,16 +67,31 @@ export class DockerService {
   }
 
   // ---- generic command runners -------------------------------------------
-  private async exec(args: string[]): Promise<ExecResult> {
+  // `timeoutMs` guards the commands that talk to a possibly-wedged container
+  // (version probe, npm install): docker exec has no timeout of its own and a
+  // hung child would leave the caller's spinner up forever.
+  private async exec(args: string[], timeoutMs?: number): Promise<ExecResult> {
     const bin = await this.docker()
     return new Promise((resolve) => {
       const child = spawn(bin, args, { windowsHide: true })
       let stdout = ''
       let stderr = ''
+      let timer: ReturnType<typeof setTimeout> | null = null
+      const done = (r: ExecResult): void => {
+        if (timer) clearTimeout(timer)
+        resolve(r)
+      }
+      if (timeoutMs) {
+        timer = setTimeout(() => {
+          child.kill()
+          // 124 mirrors coreutils `timeout` so callers can tell it apart.
+          done({ code: 124, stdout, stderr: stderr || 'timed out' })
+        }, timeoutMs)
+      }
       child.stdout.on('data', (d) => (stdout += d.toString()))
       child.stderr.on('data', (d) => (stderr += d.toString()))
-      child.on('close', (code) => resolve({ code: code ?? 0, stdout, stderr }))
-      child.on('error', () => resolve({ code: 1, stdout, stderr: stderr || 'spawn failed' }))
+      child.on('close', (code) => done({ code: code ?? 0, stdout, stderr }))
+      child.on('error', () => done({ code: 1, stdout, stderr: stderr || 'spawn failed' }))
     })
   }
 
@@ -395,11 +410,8 @@ export class DockerService {
       await this.exec(['rm', '-f', name])
     }
 
-    // Already running? Nothing to do (but still kick a throttled bg update).
-    if (await this.isRunning(project)) {
-      this.autoUpdateClaude(name)
-      return true
-    }
+    // Already running? Nothing to do.
+    if (await this.isRunning(project)) return true
 
     // Refresh hook script/settings + drop stale events before every start.
     await ensureBridgeFiles(project.id)
@@ -407,9 +419,7 @@ export class DockerService {
     // Exists but stopped → just start it.
     if (await this.containerExists(project)) {
       sink(`\r\n==> Starting existing container ${name}\r\n`)
-      const code = await this.execStream(['start', name], sink)
-      if (code === 0) this.autoUpdateClaude(name)
-      return code === 0
+      return (await this.execStream(['start', name], sink)) === 0
     }
 
     // Fresh create: ensure image + volumes, then run.
@@ -435,7 +445,6 @@ export class DockerService {
       sink('\r\n[vivarium] docker run failed\r\n')
       return false
     }
-    this.autoUpdateClaude(name)
     return true
   }
 
@@ -457,46 +466,58 @@ export class DockerService {
     return this.start(project, sink)
   }
 
+  // ---- Claude Code version (manual updates, see main/claude.ts) -----------
   /**
-   * Fire-and-forget: keep the container's globally-installed Claude Code
-   * current. The image installs it as root under /usr/local/lib/node_modules,
-   * but the container runs as `node`, so Claude's own auto-updater can't write
-   * there — the version would otherwise stay pinned to image-build time. We
-   * update it out of band with the node user's passwordless sudo (see the
-   * sudoers line in dockerfiles.ts).
-   *
-   * Detached + unawaited so it never delays container start or session open.
-   * Throttled to ~once/20h per container via a stamp in the writable layer
-   * (survives stop/start; a fresh/recreated container has no stamp, so it runs
-   * once on first start). Output goes to a log file, never the session
-   * terminal. A running claude keeps its in-memory version; the next launched
-   * session picks up the new one. Set VIVARIUM_NO_CLAUDE_UPDATE to disable.
+   * Read the Claude Code version installed inside a project's container.
+   * The CLI lives in the container's own filesystem, so this only works while
+   * it runs — a stopped or not-yet-created container has no version to report,
+   * and the reason is surfaced in the UI rather than guessed at.
    */
-  private autoUpdateClaude(name: string): void {
-    if (process.env['VIVARIUM_NO_CLAUDE_UPDATE']) return
-    // `find -mmin -1200` prints the stamp only if it was touched within 20h →
-    // non-empty means "checked recently, skip". Touch before installing so two
-    // near-simultaneous starts don't both run it.
-    const script =
-      'S=/var/tmp/.vivarium-claude-update; ' +
-      'if [ -z "$(find "$S" -mmin -1200 2>/dev/null)" ]; then ' +
-      'touch "$S"; ' +
-      'sudo npm install -g @anthropic-ai/claude-code@latest ' +
-      '>/var/tmp/vivarium-claude-update.log 2>&1; fi'
-    void this.detect().then((bin) => {
-      if (!bin) return
-      try {
-        const child = spawn(bin, ['exec', name, 'bash', '-lc', script], {
-          windowsHide: true,
-          detached: true,
-          stdio: 'ignore'
-        })
-        child.on('error', () => {}) // best-effort; never surface update failures
-        child.unref() // don't keep the app process alive for this
-      } catch {
-        /* ignore — an update attempt must never affect the app */
-      }
-    })
+  async claudeVersion(project: Project): Promise<ClaudeVersionInfo> {
+    const base = { projectId: project.id }
+    if (!(await this.detect())) return { ...base, installed: null, reason: 'docker-missing' }
+    if (!(await this.containerExists(project))) return { ...base, installed: null, reason: 'no-container' }
+    if (!(await this.isRunning(project))) return { ...base, installed: null, reason: 'stopped' }
+    const r = await this.exec(['exec', this.containerName(project), 'claude', '--version'], 20_000)
+    // `claude --version` prints e.g. "2.2.0 (Claude Code)" — take the semver.
+    const m = r.stdout.match(/\d+\.\d+\.\d+[^\s]*/)
+    if (r.code !== 0 || !m) return { ...base, installed: null, reason: 'error' }
+    return { ...base, installed: m[0] }
+  }
+
+  /**
+   * Install the newest Claude Code inside the container, replacing the copy
+   * baked into the image. The image installs it as root under
+   * /usr/local/lib/node_modules but the container runs as `node`, so Claude's
+   * own auto-updater can't write there — we install out of band with the node
+   * user's passwordless sudo (see the sudoers line in dockerfiles.ts). npm and
+   * node both sit in /usr/local/bin, which is on sudo's default secure_path.
+   *
+   * Awaited (unlike everything else here that shells out in the background):
+   * the caller drives a progress row and reports the outcome. Two consequences
+   * the UI has to spell out — a `claude` already running keeps its in-memory
+   * version until the session is relaunched, and because the install lands in
+   * the container's writable layer a later `recreate` (mount/image/port change)
+   * reverts it to the image's version. That's deliberate: the version chip
+   * re-flags it on the next check instead of silently self-healing.
+   */
+  async updateClaude(project: Project): Promise<ExecResult> {
+    // 6 min: a cold npm cache on a slow link genuinely takes minutes, and a
+    // half-finished install is worse than a slow one.
+    return this.exec(
+      [
+        'exec',
+        this.containerName(project),
+        'sudo',
+        'npm',
+        'install',
+        '-g',
+        '--no-fund',
+        '--no-audit',
+        '@anthropic-ai/claude-code@latest'
+      ],
+      360_000
+    )
   }
 
   async remove(project: Project): Promise<void> {

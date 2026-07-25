@@ -20,6 +20,8 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
   - `git.ts` — branch detection (reads `.git/HEAD` directly) + "Write branch diff" →
     `<sharedOutputFolder>/changes.txt`.
   - `clipboard.ts` — Ctrl+V image paste → PNG in the project clip dir (mounted at `/clip`).
+  - `claude.ts` — `ClaudeService`: npm-registry `latest` lookup (10-min cache) + per-container
+    installed-version probe, behind the manual Claude Code update UI.
 - `src/preload/index.ts` — the typed `window.vivarium` API. The renderer never touches
   `ipcRenderer` directly.
 - `src/shared/` — `ipc.ts` (channel names, `CH`) and `types.ts` (all cross-process types).
@@ -53,6 +55,14 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   `ConfigStore.mutate` (atomic temp-file + rename).
 - Mounts may only change while the container is stopped (`ipc.ts` enforces it); saving settings
   on a running container recreates it.
+- **Claude Code is never auto-updated.** It used to be (fire-and-forget `npm i -g` on every
+  container start, throttled by a stamp file) — invisible, and it changed the CLI version under
+  a live session. Now updates are strictly user-initiated: the title-bar version chip / project
+  context menu → the Claude Code dialog, which runs `sudo npm install -g …@latest` inside one
+  running container at a time. Consequences the UI states rather than hides: the CLI only exists
+  inside containers (a stopped one has no version to read), a `claude` already running keeps its
+  version until relaunched, and since the install lands in the writable layer a `recreate`
+  reverts it to the image's version — the chip re-flags it instead of silently self-healing.
 - Agent idle/working detection and the attention-notification are driven by **Claude Code
   hooks** (`UserPromptSubmit`/`Stop`, plus a `PreToolUse` matcher on `AskUserQuestion` so a
   waiting question also raises the "!"), not by parsing terminal output. Agents launch with

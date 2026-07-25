@@ -53,6 +53,10 @@ export const CH = {
   // claude plan usage
   fetchUsage: 'usage:fetch',
 
+  // claude code version / manual update
+  claudeStatus: 'claude:status',
+  claudeUpdate: 'claude:update',
+
   // dialogs / window
   browseFolder: 'dialog:browse-folder',
   setBadge: 'window:set-badge',

@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import type {
   AgentHookEvent,
+  ClaudeStatus,
+  ClaudeUpdateResult,
   Config,
   ContainerState,
   DockerStatus,
@@ -11,6 +13,7 @@ import type {
   AgentActivity,
   UsageSnapshot
 } from '@shared/types'
+import { behindIds } from '../claude'
 
 /** Why an agent session is flagged: turn finished, or blocked on AskUserQuestion. */
 export type AttentionKind = 'finished' | 'question'
@@ -25,6 +28,7 @@ export type DialogKind =
   | 'confirmKill'
   | 'confirmDeleteProject'
   | 'confirmQuit'
+  | 'claudeUpdate'
   | null
 
 export interface ContextMenuItem {
@@ -118,6 +122,14 @@ interface AppState {
   containerErrors: Record<string, string>
   /** claude plan usage shown in the title bar; null until the first poll lands */
   usage: UsageSnapshot | null
+  /** Claude Code versions (per container + npm's latest); null until first check */
+  claude: ClaudeStatus | null
+  /** a version check is in flight (drives the chip/dialog "checking…" state) */
+  claudeChecking: boolean
+  /** project ids whose container is mid-update */
+  claudeUpdating: Record<string, boolean>
+  /** last update outcome per project, kept until the dialog closes */
+  claudeResults: Record<string, ClaudeUpdateResult>
 
   dialog: DialogKind
   ap: ProjectDraft
@@ -135,6 +147,12 @@ interface AppState {
   refreshStates: () => Promise<void>
   refreshBranches: () => Promise<void>
   refreshUsage: () => Promise<void>
+
+  // claude code version / manual update
+  refreshClaude: (force?: boolean) => Promise<void>
+  openClaudeUpdate: () => void
+  updateClaudeIn: (projectId: string) => Promise<void>
+  updateClaudeAll: () => Promise<void>
 
   // shared output folder
   setSharedOutput: (folder: string | null) => Promise<void>
@@ -275,6 +293,10 @@ export const useStore = create<AppState>((set, get) => ({
   containerOps: {},
   containerErrors: {},
   usage: null,
+  claude: null,
+  claudeChecking: false,
+  claudeUpdating: {},
+  claudeResults: {},
   dialog: null,
   ap: emptyDraft(),
   st: null,
@@ -300,6 +322,9 @@ export const useStore = create<AppState>((set, get) => ({
       get().refreshBranches(),
       get().refreshOutputTree()
     ])
+    // Unawaited: the version chip is the least urgent thing on screen, and the
+    // container probes behind it are slow enough to hold up first paint.
+    void get().refreshClaude()
   },
 
   refreshStates: async () => {
@@ -320,6 +345,64 @@ export const useStore = create<AppState>((set, get) => ({
     // surfaces staleness from the old fetchedAt. Errors only land when there
     // is nothing better to show.
     set((s) => (next.ok || !s.usage || !s.usage.ok ? { usage: next } : {}))
+  },
+
+  // ---- claude code version / manual update --------------------------------
+  // No auto-update anywhere: this only ever *reads* versions. Installing is
+  // strictly a user action (updateClaudeIn / updateClaudeAll).
+  refreshClaude: async (force = false) => {
+    if (get().claudeChecking) return // coalesce overlapping checks
+    set({ claudeChecking: true })
+    try {
+      set({ claude: await window.vivarium.claudeStatus(force) })
+    } finally {
+      set({ claudeChecking: false })
+    }
+  },
+
+  // Always force-refresh on open: the dialog is the one place the numbers are
+  // read closely, and it's opened rarely enough that a live npm hit is free.
+  openClaudeUpdate: () => {
+    set({ dialog: 'claudeUpdate', claudeResults: {} })
+    void get().refreshClaude(true)
+  },
+
+  updateClaudeIn: async (projectId) => {
+    if (get().claudeUpdating[projectId]) return
+    set((s) => {
+      const claudeResults = { ...s.claudeResults }
+      delete claudeResults[projectId] // clear a previous failure's message
+      return { claudeUpdating: { ...s.claudeUpdating, [projectId]: true }, claudeResults }
+    })
+    const result = await window.vivarium.claudeUpdate(projectId)
+    set((s) => {
+      const claudeUpdating = { ...s.claudeUpdating }
+      delete claudeUpdating[projectId]
+      // Patch the version in place from what the install actually left behind,
+      // instead of re-probing every container just to refresh one row.
+      const claude = s.claude
+        ? {
+            ...s.claude,
+            containers: s.claude.containers.map((c) =>
+              c.projectId === projectId && result.ok && result.version
+                ? { projectId, installed: result.version }
+                : c
+            )
+          }
+        : s.claude
+      return {
+        claudeUpdating,
+        claude,
+        claudeResults: { ...s.claudeResults, [projectId]: result }
+      }
+    })
+  },
+
+  // Sequential on purpose: parallel npm installs would race the same registry
+  // for no wall-clock win worth the noisier failure modes, and the rows read
+  // better ticking over one at a time.
+  updateClaudeAll: async () => {
+    for (const id of behindIds(get().claude)) await get().updateClaudeIn(id)
   },
 
   setSharedOutput: async (folder) => {
@@ -467,7 +550,14 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   closeDialog: () =>
-    set({ dialog: null, addSession: null, killTarget: null, deleteTarget: null, st: null }),
+    set({
+      dialog: null,
+      addSession: null,
+      killTarget: null,
+      deleteTarget: null,
+      st: null,
+      claudeResults: {}
+    }),
 
   // Main intercepted a window-close and is asking to confirm (see ipc.ts). Don't
   // clobber a dialog that's already open — a modal being up doesn't change that

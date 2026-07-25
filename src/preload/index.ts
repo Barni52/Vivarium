@@ -3,6 +3,8 @@ import { CH } from '../shared/ipc'
 import type {
   AgentHookEvent,
   BadgePayload,
+  ClaudeStatus,
+  ClaudeUpdateResult,
   Config,
   ContainerState,
   DiffResult,
@@ -126,6 +128,13 @@ const api = {
   // dialogs / window
   browseFolder: (): Promise<string | null> => ipcRenderer.invoke(CH.browseFolder),
   fetchUsage: (): Promise<UsageSnapshot> => ipcRenderer.invoke(CH.fetchUsage),
+
+  // claude code version / manual update (force skips main's npm-registry cache)
+  claudeStatus: (force = false): Promise<ClaudeStatus> =>
+    ipcRenderer.invoke(CH.claudeStatus, force),
+  claudeUpdate: (projectId: string): Promise<ClaudeUpdateResult> =>
+    ipcRenderer.invoke(CH.claudeUpdate, projectId),
+
   setBadge: (b: BadgePayload): void => ipcRenderer.send(CH.setBadge, b),
   windowMinimize: (): void => ipcRenderer.send(CH.windowMinimize),
   windowMaximize: (): void => ipcRenderer.send(CH.windowMaximize),
