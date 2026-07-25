@@ -30,10 +30,17 @@ export function SessionRow({ project, session }: { project: Project; session: Se
     e.preventDefault()
     e.stopPropagation()
     openContextMenu(e.clientX, e.clientY, [
-      { label: 'Rename', onSelect: () => startRename(session.id, session.name) },
+      {
+        label: 'Rename',
+        icon: <Pencil size={13} />,
+        onSelect: () => startRename(session.id, session.name)
+      },
       { label: '---' },
       {
+        // same two glyphs as this row's hover controls, so the menu and the
+        // buttons it duplicates can't disagree
         label: 'Kill session',
+        icon: <Close size={13} />,
         danger: true,
         onSelect: () => requestKill(project.id, session.id, session.name)
       }

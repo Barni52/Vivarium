@@ -164,6 +164,90 @@ export const Power = ({ size = 15, color = 'currentColor', style }: P): React.Re
     style
   )
 
+// ---- terminal context-menu glyphs ----------------------------------------
+// Deliberately the conventional shapes (two sheets / clipboard / marquee
+// corners / magnifier ± / eraser) rather than anything invented: these are the
+// items where a wrong guess is cheap but a moment of "which one was it" isn't.
+
+// Two offset sheets. The back one is drawn as an open L so the sheets read as
+// stacked without needing a fill to hide the overlap.
+export const Copy = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <>
+      <rect x="5.6" y="5.6" width="7.9" height="7.9" rx="1.4" stroke={color} strokeWidth="1.15" />
+      <path
+        d="M10.6 5.6V3.5a1 1 0 00-1-1H3.5a1 1 0 00-1 1v6.1a1 1 0 001 1h2.1"
+        stroke={color}
+        strokeWidth="1.15"
+        strokeLinecap="round"
+      />
+    </>,
+    style
+  )
+
+export const Paste = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <>
+      <rect x="3.4" y="4.2" width="9.2" height="9.6" rx="1.3" stroke={color} strokeWidth="1.15" />
+      {/* the clip, overlapping the board's top edge the way a real one does */}
+      <rect x="5.9" y="2" width="4.2" height="2.8" rx="1" stroke={color} strokeWidth="1.15" />
+    </>,
+    style
+  )
+
+// Marquee corners — a selection outline with nothing inside, so it can't be
+// mistaken for the host-shell window frame.
+export const SelectAll = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <path
+      d="M2.6 5.8V3.6a1 1 0 011-1h2.2M10.2 2.6h2.2a1 1 0 011 1v2.2M13.4 10.2v2.2a1 1 0 01-1 1h-2.2M5.8 13.4H3.6a1 1 0 01-1-1v-2.2"
+      stroke={color}
+      strokeWidth="1.25"
+      strokeLinecap="round"
+    />,
+    style
+  )
+
+const magnifier = (color: string, plus: boolean): React.ReactNode => (
+  <>
+    <circle cx="7" cy="7" r="4.4" stroke={color} strokeWidth="1.15" />
+    <path d="M10.3 10.3l3 3" stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+    <path
+      d={plus ? 'M7 5.1v3.8M5.1 7h3.8' : 'M5.1 7h3.8'}
+      stroke={color}
+      strokeWidth="1.2"
+      strokeLinecap="round"
+    />
+  </>
+)
+
+export const ZoomIn = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(size, magnifier(color, true), style)
+
+export const ZoomOut = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(size, magnifier(color, false), style)
+
+// A slanted eraser on the line it's wiping — "Clear" throws away scrollback,
+// which is neither a delete (Trash) nor a reload (Refresh).
+export const Eraser = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <>
+      <path
+        d="M2.4 9.6L7.6 4.4l3.6 3.6-5.2 5.2z"
+        stroke={color}
+        strokeWidth="1.15"
+        strokeLinejoin="round"
+      />
+      <path d="M5.5 6.5l3.6 3.6" stroke={color} strokeWidth="1.15" />
+      <path d="M3.4 14.4h10.2" stroke={color} strokeWidth="1.15" strokeLinecap="round" />
+    </>,
+    style
+  )
+
 export const Restart = ({ size = 15, color = 'currentColor', style }: P): React.ReactElement =>
   svg(
     size,
