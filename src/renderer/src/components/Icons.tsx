@@ -9,8 +9,22 @@ const svg = (size: number, children: React.ReactNode, style?: React.CSSPropertie
   </svg>
 )
 
+// Agent. A four-point star with *concave* sides plus a small second spark —
+// Claude's mark, and a spiky silhouette that can't be confused with the
+// host window or the container cube at 15px. The old version was a convex
+// diamond-ish star that just read as a blob next to the terminal glyph.
 export const Sparkle = ({ size = 15, color = 'currentColor', style }: P): React.ReactElement =>
-  svg(size, <path d="M8 1.5l1.5 4.4 4.4 1.6-4.4 1.6L8 13.5 6.5 9.1 2.1 7.5 6.5 5.9z" fill={color} />, style)
+  svg(
+    size,
+    <>
+      <path
+        d="M7.1 1.1C7.5 4.5 9.4 6.4 12.9 6.9 9.4 7.4 7.5 9.3 7.1 12.7 6.7 9.3 4.8 7.4 1.3 6.9 4.8 6.4 6.7 4.5 7.1 1.1Z"
+        fill={color}
+      />
+      <path d="M12.5 9.6l.7 1.85 1.85.7-1.85.7-.7 1.85-.7-1.85-1.85-.7 1.85-.7z" fill={color} />
+    </>,
+    style
+  )
 
 export const Folder = ({ size = 15, color = 'currentColor', style }: P): React.ReactElement =>
   svg(
@@ -45,10 +59,48 @@ export const Chevron = ({ size = 14, color = 'currentColor', style }: P): React.
     style
   )
 
-export const Terminal = ({ size = 15, color = 'currentColor', style }: P): React.ReactElement =>
+// Host shell (PowerShell on Windows). A window frame with a title bar and a
+// prompt inside: "a terminal window on the desktop". The frame is what tells
+// it apart from the container cube — one bare `>_` glyph used to serve both
+// shell types, leaving color as the only difference between them.
+export const HostWindow = ({ size = 15, color = 'currentColor', style }: P): React.ReactElement =>
   svg(
     size,
-    <path d="M3.5 5l2.6 3-2.6 3M8.2 11h4.3" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />,
+    <>
+      <rect x="1.5" y="2.6" width="13" height="10.8" rx="1.5" stroke={color} strokeWidth="1.15" />
+      <path d="M1.5 5.6h13" stroke={color} strokeWidth="1.15" />
+      <path
+        d="M4.7 8.1l1.6 1.6-1.6 1.6"
+        stroke={color}
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M8.4 11.3h2.9" stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+    </>,
+    style
+  )
+
+// Container shell (bash inside the container). An isometric cube — the app's
+// whole mental model is "this runs in the box", and a hexagonal outline is the
+// third clearly distinct silhouette after the star and the window.
+export const ContainerCube = ({ size = 15, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <>
+      <path
+        d="M8 1.9l5.7 2.85v6.5L8 14.1l-5.7-2.85v-6.5z"
+        stroke={color}
+        strokeWidth="1.15"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M2.3 4.75L8 7.6l5.7-2.85M8 7.6v6.5"
+        stroke={color}
+        strokeWidth="1.15"
+        strokeLinejoin="round"
+      />
+    </>,
     style
   )
 
@@ -266,8 +318,12 @@ export const PanelToggle = ({ size = 15, color = 'currentColor', style }: P): Re
     style
   )
 
+// One glyph per session type — three different silhouettes, so the sidebar,
+// the terminal header and the new-session picker all read without color.
 export function TypeIcon({ type, size = 15, color }: { type: string; size?: number; color?: string }): React.ReactElement {
-  return type === 'agent' ? <Sparkle size={size} color={color} /> : <Terminal size={size} color={color} />
+  if (type === 'agent') return <Sparkle size={size} color={color} />
+  if (type === 'host-shell') return <HostWindow size={size} color={color} />
+  return <ContainerCube size={size} color={color} />
 }
 
 // Three staggered bouncing dots — the "agent is thinking" indicator (chat

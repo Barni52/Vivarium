@@ -14,6 +14,7 @@ import type {
   UsageSnapshot
 } from '@shared/types'
 import { behindIds } from '../claude'
+import { ADD_SESSION_POPOVER } from '../theme'
 
 /** Why an agent session is flagged: turn finished, or blocked on AskUserQuestion. */
 export type AttentionKind = 'finished' | 'question'
@@ -135,6 +136,12 @@ interface AppState {
   ap: ProjectDraft
   st: SettingsDraft | null
   addSession: AddSessionDraft | null
+  /**
+   * Type the picker preselects — the last one that was actually created.
+   * Session-only on purpose: it's a "carry on doing what you were doing" hint,
+   * not a setting, and it shouldn't outlive the app run.
+   */
+  lastSessionType: SessionType
   killTarget: KillTarget | null
   deleteTarget: DeleteProjectTarget | null
   editingSessionId: string | null
@@ -229,7 +236,7 @@ const emptyDraft = (): ProjectDraft => ({
   port: ''
 })
 
-function defaultSessionName(project: Project | undefined, type: SessionType): string {
+export function defaultSessionName(project: Project | undefined, type: SessionType): string {
   const base = type === 'agent' ? 'agent' : type === 'container-shell' ? 'bash' : 'ps-host'
   const n = (project?.sessions.filter((s) => s.type === type).length ?? 0) + 1
   return `${base}-${n}`
@@ -301,6 +308,7 @@ export const useStore = create<AppState>((set, get) => ({
   ap: emptyDraft(),
   st: null,
   addSession: null,
+  lastSessionType: 'agent',
   killTarget: null,
   deleteTarget: null,
   editingSessionId: null,
@@ -535,16 +543,21 @@ export const useStore = create<AppState>((set, get) => ({
 
   openAddSession: (projectId, anchor) => {
     const p = get().config.projects.find((x) => x.id === projectId)
-    const top = Math.max(40, Math.min(anchor.top, window.innerHeight - 380))
-    const left = Math.min(anchor.right + 8, window.innerWidth - 316)
+    // Keep the whole panel on screen: below the title bar, and clear of the
+    // right/bottom edges by its own size (ADD_SESSION_POPOVER, so the two can't
+    // drift apart).
+    const { width, height } = ADD_SESSION_POPOVER
+    const top = Math.max(40, Math.min(anchor.top, window.innerHeight - height - 8))
+    const left = Math.min(anchor.right + 8, window.innerWidth - width - 16)
+    const type = get().lastSessionType
     set({
       dialog: 'addSession',
       addSession: {
         projectId,
         top,
         left,
-        type: 'agent',
-        name: defaultSessionName(p, 'agent')
+        type,
+        name: defaultSessionName(p, type)
       }
     })
   },
@@ -671,6 +684,7 @@ export const useStore = create<AppState>((set, get) => ({
       config: next,
       dialog: null,
       addSession: null,
+      lastSessionType: addSession.type,
       selectedSessionId: created ? created.id : s.selectedSessionId,
       expanded: { ...s.expanded, [addSession.projectId]: true }
     }))
