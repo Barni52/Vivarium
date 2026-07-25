@@ -108,6 +108,39 @@ export interface UsageSnapshot {
   fetchedAt: number
 }
 
+/**
+ * Claude Code version state for one project's container. The CLI is installed
+ * *inside* the container (image layer + whatever a manual update put in the
+ * writable layer), so there is nothing to read while it isn't running.
+ */
+export interface ClaudeVersionInfo {
+  projectId: string
+  /** version read from the container, null when it couldn't be read */
+  installed: string | null
+  /** why `installed` is null: 'stopped' | 'no-container' | 'docker-missing' | 'error' */
+  reason?: 'stopped' | 'no-container' | 'docker-missing' | 'error'
+}
+
+/** Snapshot behind the title-bar version chip and the Claude Code dialog. */
+export interface ClaudeStatus {
+  /** newest version published on npm, null when the check failed */
+  latest: string | null
+  /** why `latest` is null: 'network' | 'offline' | `http-<status>` */
+  latestError?: string
+  /** epoch ms of the last successful npm check; 0 = never succeeded */
+  checkedAt: number
+  containers: ClaudeVersionInfo[]
+}
+
+/** Result of one manual "update Claude Code in this container" run. */
+export interface ClaudeUpdateResult {
+  ok: boolean
+  /** version read back after the install, null when unreadable */
+  version: string | null
+  /** short error tail when ok=false */
+  message?: string
+}
+
 /** Taskbar overlay badge pushed by the renderer (drawn there — main has no canvas). */
 export interface BadgePayload {
   /** outstanding attention count (finished + asking agents); 0 clears the overlay */

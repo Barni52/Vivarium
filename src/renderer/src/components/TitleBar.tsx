@@ -3,6 +3,7 @@ import type { UsageLimit } from '@shared/types'
 import { PanelToggle } from './Icons'
 import { Logo } from './Logo'
 import { useStore } from '../state/store'
+import { chipSummary } from '../claude'
 
 // Frameless custom title bar (mockup lines 308-322). The bar is draggable via
 // -webkit-app-region; buttons opt out so they stay clickable.
@@ -165,6 +166,80 @@ function UsageChips(): React.ReactElement | null {
   )
 }
 
+// Claude Code version chip + the only entry point to the manual-update dialog.
+// Updates are rare (months apart), so this stays deliberately quiet: muted grey
+// text while every container is current, and it only earns colour + a dot when
+// something is actually behind npm's latest. No badge, no toast, no nagging —
+// glance at it or don't.
+function ClaudeChip(): React.ReactElement | null {
+  const status = useStore((s) => s.claude)
+  const checking = useStore((s) => s.claudeChecking)
+  const openClaudeUpdate = useStore((s) => s.openClaudeUpdate)
+  const names = useStore((s) => {
+    const out: Record<string, string> = {}
+    for (const p of s.config.projects) out[p.id] = p.name
+    return out
+  })
+  const [hover, setHover] = React.useState(false)
+
+  const chip = chipSummary(status, names)
+  if (!chip) return null // first check hasn't landed / nothing to say
+  const behind = chip.behind > 0
+
+  return (
+    <>
+      {/* same thin rule the usage windows use, so the two groups read apart */}
+      <span style={{ width: 1, height: 16, background: 'var(--border)', flex: 'none' }} />
+      <button
+        title={chip.tooltip}
+        onClick={openClaudeUpdate}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          height: 24,
+          padding: '0 8px',
+          border: 0,
+          borderRadius: 4,
+          background: hover ? 'var(--row-hover)' : 'transparent',
+          color: behind ? 'var(--text)' : 'var(--text-3)',
+          fontSize: 13,
+          cursor: 'pointer',
+          flex: 'none',
+          opacity: checking ? 0.6 : 1,
+          ...noDrag
+        }}
+      >
+        {behind && (
+          <span
+            style={{ width: 6, height: 6, borderRadius: '50%', background: '#f1c21b', flex: 'none' }}
+          />
+        )}
+        <span style={{ color: behind ? 'var(--text-2)' : 'inherit' }}>claude</span>
+        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5 }}>
+          {chip.label}
+          {/* mixed versions across containers: the chip shows the oldest, the
+              tooltip lists them all — the marker stops it reading as the truth */}
+          {chip.mixed && '+'}
+        </span>
+        {behind && status?.latest && (
+          <span
+            style={{
+              color: 'var(--accent-2)',
+              fontFamily: "'IBM Plex Mono', monospace",
+              fontSize: 12.5
+            }}
+          >
+            → {status.latest}
+          </span>
+        )}
+      </button>
+    </>
+  )
+}
+
 export function TitleBar(): React.ReactElement {
   const v = window.vivarium
   const collapsed = useStore((s) => s.sidebarCollapsed)
@@ -212,10 +287,14 @@ export function TitleBar(): React.ReactElement {
         <span style={{ fontSize: 13, color: 'var(--text-3)', fontWeight: 400 }}>session manager</span>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', height: 40 }}>
-        {/* No noDrag here: the chips are hover-tooltip-only (no click targets), so
-            keep this region draggable — tooltips still fire over a drag region. */}
+        {/* No noDrag on the wrapper: the usage chips are hover-tooltip-only, so
+            the region stays draggable (tooltips still fire over a drag region).
+            The version chip opts out on its own — it's the one click target. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginRight: 16 }}>
+          {/* usage chips first so their position doesn't shift when the version
+              chip appears or disappears — they're the ones read at a glance */}
           <UsageChips />
+          <ClaudeChip />
         </div>
         <div style={{ display: 'flex', alignItems: 'stretch', height: 40 }}>
           <WinButton onClick={() => v.windowMinimize()} hoverBg="var(--row-hover)">

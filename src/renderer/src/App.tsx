@@ -9,6 +9,7 @@ import { AddSessionPopover } from './components/dialogs/AddSessionPopover'
 import { ConfirmKill } from './components/dialogs/ConfirmKill'
 import { ConfirmDeleteProject } from './components/dialogs/ConfirmDeleteProject'
 import { ConfirmQuit } from './components/dialogs/ConfirmQuit'
+import { ClaudeUpdate } from './components/dialogs/ClaudeUpdate'
 import { ContextMenu } from './components/ContextMenu'
 
 export function App(): React.ReactElement {
@@ -16,6 +17,7 @@ export function App(): React.ReactElement {
   const refreshStates = useStore((s) => s.refreshStates)
   const refreshBranches = useStore((s) => s.refreshBranches)
   const refreshUsage = useStore((s) => s.refreshUsage)
+  const refreshClaude = useStore((s) => s.refreshClaude)
   const refreshOutputTree = useStore((s) => s.refreshOutputTree)
   const handleAgentHook = useStore((s) => s.handleAgentHook)
   const requestQuit = useStore((s) => s.requestQuit)
@@ -37,7 +39,16 @@ export function App(): React.ReactElement {
     // Between syncs the TitleBar countdown interpolates off the app clock.
     refreshUsage()
     const usagePoll = setInterval(() => refreshUsage(), 180_000)
-    const off = window.vivarium.onContainerStateChanged(() => refreshStates())
+    // A container that just came up (or was recreated, which reverts Claude Code
+    // to the image's version) is the only time the installed version can change
+    // behind our back — re-read it, debounced so a burst of starts costs one
+    // sweep. The npm side is cached in main, so this is cheap.
+    let claudeDebounce: ReturnType<typeof setTimeout> | null = null
+    const off = window.vivarium.onContainerStateChanged(() => {
+      refreshStates()
+      if (claudeDebounce) clearTimeout(claudeDebounce)
+      claudeDebounce = setTimeout(() => refreshClaude(), 2000)
+    })
     const offOutput = window.vivarium.onOutputChanged(() => refreshOutputTree())
     const offHook = window.vivarium.onAgentHook((e) => handleAgentHook(e))
     // Main intercepts every window-close path and asks us to confirm first.
@@ -45,12 +56,22 @@ export function App(): React.ReactElement {
     return () => {
       clearInterval(poll)
       clearInterval(usagePoll)
+      if (claudeDebounce) clearTimeout(claudeDebounce)
       off()
       offOutput()
       offHook()
       offQuit()
     }
-  }, [init, refreshStates, refreshBranches, refreshOutputTree, refreshUsage, handleAgentHook, requestQuit])
+  }, [
+    init,
+    refreshStates,
+    refreshBranches,
+    refreshOutputTree,
+    refreshUsage,
+    refreshClaude,
+    handleAgentHook,
+    requestQuit
+  ])
 
   return (
     <div
@@ -80,6 +101,7 @@ export function App(): React.ReactElement {
       {dialog === 'confirmKill' && <ConfirmKill />}
       {dialog === 'confirmDeleteProject' && <ConfirmDeleteProject />}
       {dialog === 'confirmQuit' && <ConfirmQuit />}
+      {dialog === 'claudeUpdate' && <ClaudeUpdate />}
       <ContextMenu />
     </div>
   )

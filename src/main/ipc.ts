@@ -7,6 +7,8 @@ import { pathToFileURL } from 'node:url'
 import { CH } from '@shared/ipc'
 import type {
   BadgePayload,
+  ClaudeStatus,
+  ClaudeUpdateResult,
   Config,
   ContainerState,
   DiffResult,
@@ -24,6 +26,7 @@ import { gitBranch, writeBranchDiff } from './git'
 import { PtyManager } from './pty'
 import { pasteImage } from './clipboard'
 import { UsageService } from './usage'
+import { ClaudeService } from './claude'
 
 export function registerIpc(win: BrowserWindow): void {
   const store = new ConfigStore()
@@ -33,11 +36,25 @@ export function registerIpc(win: BrowserWindow): void {
   }
   const pty = new PtyManager(docker, emit)
   const usage = new UsageService(docker)
+  const claude = new ClaudeService(docker)
 
   // ---- claude plan usage --------------------------------------------------
   // Polled by the renderer (TitleBar chips); all token/HTTP logic lives in
   // UsageService.
   ipcMain.handle(CH.fetchUsage, () => usage.fetch())
+
+  // ---- claude code version / manual update -------------------------------
+  // Updates are user-initiated only (no auto-updater): status feeds the
+  // title-bar version chip, update runs npm inside one project's container.
+  ipcMain.handle(CH.claudeStatus, (_e, force: boolean): Promise<ClaudeStatus> =>
+    claude.status(store.get().projects, force)
+  )
+
+  ipcMain.handle(CH.claudeUpdate, async (_e, projectId: string): Promise<ClaudeUpdateResult> => {
+    const p = store.getProject(projectId)
+    if (!p) return { ok: false, version: null, message: 'project not found' }
+    return claude.update(p)
+  })
 
   // Expose the pty manager for app-quit cleanup.
   ;(win as unknown as { __pty?: PtyManager }).__pty = pty
