@@ -166,6 +166,29 @@ function UsageChips(): React.ReactElement | null {
   )
 }
 
+// Which build this is. The app ships as an installer and updates by reinstalling,
+// so there was previously no way to tell one build from another — including in a
+// bug report. The runtime versions ride along in the tooltip for the same reason.
+function AppVersion(): React.ReactElement | null {
+  const info = useStore((s) => s.appInfo)
+  if (!info) return null
+  return (
+    <span
+      title={`Vivarium ${info.version}\nElectron ${info.electron} · Chromium ${info.chrome} · Node ${info.node}`}
+      style={{
+        fontSize: 11.5,
+        color: 'var(--text-3)',
+        fontFamily: "'IBM Plex Mono', monospace",
+        // Sits with the wordmark, not with the live chips on the right — this is
+        // identity, not status, and it must never draw the eye.
+        opacity: 0.75
+      }}
+    >
+      v{info.version}
+    </span>
+  )
+}
+
 // Claude Code version chip + the only entry point to the manual-update dialog.
 // Updates are rare (months apart), so this stays deliberately quiet: muted grey
 // text while every container is current, and it only earns colour + a dot when
@@ -285,6 +308,7 @@ export function TitleBar(): React.ReactElement {
         <Logo size={22} style={{ flex: 'none' }} />
         <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: '.3px' }}>Vivarium</span>
         <span style={{ fontSize: 13, color: 'var(--text-3)', fontWeight: 400 }}>session manager</span>
+        <AppVersion />
       </div>
       <div style={{ display: 'flex', alignItems: 'center', height: 40 }}>
         {/* No noDrag on the wrapper: the usage chips are hover-tooltip-only, so

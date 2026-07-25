@@ -160,13 +160,17 @@ export class BridgeWatcher {
     if (nl < 0) return
     this.offset += nl + 1
 
+    // The line's third field is the container's own timestamp; it stays in the
+    // log for post-mortem reading but never reaches the UI — see
+    // AgentHookEvent.at for why the host stamps these instead.
+    const at = Date.now()
     for (const line of chunk.subarray(0, nl).toString('utf8').split('\n')) {
       const [kind, sessionId] = line.split('\t')
       if (
         (kind === 'UserPromptSubmit' || kind === 'Stop' || kind === 'AskUserQuestion') &&
         sessionId
       ) {
-        this.onEvent({ sessionId, kind })
+        this.onEvent({ sessionId, kind, at })
       }
     }
   }

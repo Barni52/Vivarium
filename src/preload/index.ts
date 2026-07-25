@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { CH } from '../shared/ipc'
 import type {
   AgentHookEvent,
+  AppInfo,
   BadgePayload,
   ClaudeStatus,
   ClaudeUpdateResult,
@@ -16,7 +17,9 @@ import type {
   SessionType,
   SpawnResult,
   UpdateProjectInput,
-  UsageSnapshot
+  UsageSnapshot,
+  VolumeRemoveResult,
+  VolumeReport
 } from '../shared/types'
 
 export interface ContainerOutputEvent {
@@ -80,6 +83,11 @@ const api = {
   recreateContainer: (projectId: string): Promise<boolean> =>
     ipcRenderer.invoke(CH.recreateContainer, projectId),
 
+  // volume housekeeping (slow: listing measures every volume on disk)
+  volumes: (): Promise<VolumeReport> => ipcRenderer.invoke(CH.volumes),
+  removeVolume: (name: string): Promise<VolumeRemoveResult> =>
+    ipcRenderer.invoke(CH.removeVolume, name),
+
   // pty / sessions
   openSession: (
     projectId: string,
@@ -126,6 +134,7 @@ const api = {
   clipboardWriteText: (text: string): void => ipcRenderer.send(CH.clipboardWriteText, text),
 
   // dialogs / window
+  appInfo: (): Promise<AppInfo> => ipcRenderer.invoke(CH.appInfo),
   browseFolder: (): Promise<string | null> => ipcRenderer.invoke(CH.browseFolder),
   fetchUsage: (): Promise<UsageSnapshot> => ipcRenderer.invoke(CH.fetchUsage),
 

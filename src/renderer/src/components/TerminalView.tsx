@@ -2,9 +2,10 @@ import React from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import type { Project, Session } from '@shared/types'
 import { useStore } from '../state/store'
-import { Copy, Eraser, Paste, Refresh, SelectAll, ZoomIn, ZoomOut } from './Icons'
+import { Chevron, Close, Copy, Paste, Refresh, Search, SelectAll, ZoomIn, ZoomOut } from './Icons'
 
 // Windows console "Campbell" ANSI palette — makes colored program output
 // (PSReadLine highlighting, git, ls, npm, etc.) render the way it does in a
@@ -112,6 +113,24 @@ function wheelLines(term: Terminal, ev: WheelEvent): number {
 const MIN_FIT_W = 40
 const MIN_FIT_H = 30
 
+/**
+ * Match highlighting for the find bar. xterm composites these itself and only
+ * accepts plain #RRGGBB here — no alpha — so they are pre-mixed against the
+ * terminal background instead of reusing the translucent selection blue.
+ * The overview-ruler entries are required by the type but inert: that ruler only
+ * draws when `overviewRulerWidth` is set, which it isn't.
+ */
+const SEARCH_OPTS: ISearchOptions = {
+  decorations: {
+    matchBackground: '#2c3c52',
+    matchBorder: '#3d5271',
+    matchOverviewRuler: '#5a769f',
+    activeMatchBackground: '#5a769f',
+    activeMatchBorder: '#93aacb',
+    activeMatchColorOverviewRuler: '#c7cfda'
+  }
+}
+
 // One long-lived xterm bound to a single session's pty. It is created once and
 // never destroyed on selection change — only hidden — so scrollback survives
 // switching (plan: TerminalHost). Visibility is driven by `visible`.
@@ -132,6 +151,35 @@ export function TerminalView({
   visibleRef.current = visible
   const setLive = useStore((s) => s.setLive)
   const setActivity = useStore((s) => s.setActivity)
+
+  // --- find bar (Ctrl+F) ---
+  // The addon is reached through a ref because the key handler that opens the
+  // bar is installed once, inside the mount effect; only the bar's own state has
+  // to live in React.
+  const searchRef = React.useRef<SearchAddon | null>(null)
+  const findInputRef = React.useRef<HTMLInputElement>(null)
+  const [find, setFind] = React.useState({ open: false, term: '', caseSensitive: false })
+  const [results, setResults] = React.useState({ index: -1, count: 0 })
+  // Mirror, so the callbacks below and the key handler installed once at mount
+  // can read the current term without being rebuilt on every keystroke.
+  const findRef = React.useRef(find)
+  findRef.current = find
+
+  const closeFind = React.useCallback((): void => {
+    setFind((f) => ({ ...f, open: false }))
+    searchRef.current?.clearDecorations() // don't leave highlights behind
+    termRef.current?.focus()
+  }, [])
+
+  /** Jump to the next/previous match for the current term. */
+  const stepFind = React.useCallback((back: boolean): void => {
+    const search = searchRef.current
+    const { term, caseSensitive } = findRef.current
+    if (!search || !term) return
+    const opts = { ...SEARCH_OPTS, caseSensitive }
+    if (back) search.findPrevious(term, opts)
+    else search.findNext(term, opts)
+  }, [])
 
   // --- create the terminal + pty once ---
   React.useEffect(() => {
@@ -158,6 +206,28 @@ export function TerminalView({
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(hostRef.current!)
+
+    // Search over the scrollback. The match highlighting — and the counter that
+    // rides on its onDidChangeResults event — is proposed API, which this
+    // terminal already opts into (allowProposedApi above).
+    const search = new SearchAddon()
+    term.loadAddon(search)
+    searchRef.current = search
+    const resultsSub = search.onDidChangeResults(({ resultIndex, resultCount }) =>
+      setResults({ index: resultIndex, count: resultCount })
+    )
+
+    // Ctrl+F, from the key handler installed further down or the context menu.
+    const openFind = (): void => {
+      // Seed from the selection: the common case is "I highlighted this, now
+      // show me the next one". Multi-line selections aren't search terms.
+      const sel = term.getSelection()
+      setFind((f) => ({ ...f, open: true, term: sel && !sel.includes('\n') ? sel : f.term }))
+      // If the bar was already open its input is mounted, so select the term the
+      // way a browser's find does; if it wasn't, autoFocus handles the first
+      // frame and this is a no-op.
+      requestAnimationFrame(() => findInputRef.current?.select())
+    }
 
     // --- the one way to resize this terminal -------------------------------
     // Two guards have to hold on every resize path, so they all come through
@@ -308,6 +378,15 @@ export function TerminalView({
           return false
         }
       }
+      // Ctrl+F opens the find bar. This does take the chord from the shell
+      // (readline's forward-char, which the arrow keys already cover) — a
+      // deliberate trade against 50k lines of agent scrollback that previously
+      // had no way to be searched at all. Ctrl+Shift+F does the same, for
+      // Windows Terminal muscle memory.
+      if (e.ctrlKey && !e.altKey && k === 'f') {
+        openFind()
+        return false
+      }
       // Ctrl+Backspace → delete the previous word. xterm emits nothing useful
       // for this chord on its own, so translate it to the byte each shell's
       // line editor treats as backward-kill-word:
@@ -359,22 +438,34 @@ export function TerminalView({
           {
             label: 'Copy',
             icon: <Copy size={14} />,
+            hint: 'Ctrl+C',
             disabled: !term.hasSelection(),
             onSelect: () => doCopy()
           },
-          { label: 'Paste', icon: <Paste size={14} />, onSelect: () => void doPaste() },
+          { label: 'Paste', icon: <Paste size={14} />, hint: 'Ctrl+V', onSelect: () => void doPaste() },
           { label: 'Select all', icon: <SelectAll size={14} />, onSelect: () => term.selectAll() },
           { label: '---' },
-          { label: 'Zoom in', icon: <ZoomIn size={14} />, onSelect: () => z.zoomTerminal(1) },
-          { label: 'Zoom out', icon: <ZoomOut size={14} />, onSelect: () => z.zoomTerminal(-1) },
+          // The plain lens of the magnifier family the zoom items use below.
+          { label: 'Find…', icon: <Search size={14} />, hint: 'Ctrl+F', onSelect: () => openFind() },
+          { label: '---' },
+          { label: 'Zoom in', icon: <ZoomIn size={14} />, hint: 'Ctrl++', onSelect: () => z.zoomTerminal(1) },
+          { label: 'Zoom out', icon: <ZoomOut size={14} />, hint: 'Ctrl+-', onSelect: () => z.zoomTerminal(-1) },
           // a circular arrow rather than a third magnifier: "back to the default"
-          // is the action, and a magnifier with nothing in it reads as neither
+          // is the action, and a magnifier with nothing in it now means Find
           // 16, not 14: Refresh's arc only fills the middle two-thirds of its
           // viewBox, so it needs the extra size to weigh the same as the
           // magnifiers above it
-          { label: 'Reset zoom', icon: <Refresh size={16} />, onSelect: () => z.resetTerminalZoom() },
-          { label: '---' },
-          { label: 'Clear', icon: <Eraser size={14} />, onSelect: () => term.clear() }
+          {
+            label: 'Reset zoom',
+            icon: <Refresh size={16} />,
+            hint: 'Ctrl+0',
+            onSelect: () => z.resetTerminalZoom()
+          }
+          // No "Clear" here: xterm's clear() drops the entire 50k-line
+          // scrollback, which made it the only irreversible action in a menu of
+          // harmless ones — one row below Paste, with no confirmation. The
+          // shell's own `clear`/`cls` is still right there for anyone who wants
+          // a clean screen.
         ],
         // restore focus to this terminal when the menu closes (item / Escape),
         // so pasting or any action leaves the user able to type immediately
@@ -471,6 +562,8 @@ export function TerminalView({
 
     return () => {
       dataSub.dispose()
+      resultsSub.dispose()
+      searchRef.current = null
       offData()
       offExit()
       offCO()
@@ -499,6 +592,24 @@ export function TerminalView({
     })
     return () => cancelAnimationFrame(raf)
   }, [visible, session.id])
+
+  // --- run the search as the term / options change ---
+  React.useEffect(() => {
+    const search = searchRef.current
+    if (!search || !find.open) return
+    if (!find.term) {
+      search.clearDecorations()
+      setResults({ index: -1, count: 0 })
+      return
+    }
+    // incremental keeps the current match while the term is being extended,
+    // instead of hopping to the next one on every keystroke
+    search.findNext(find.term, {
+      ...SEARCH_OPTS,
+      caseSensitive: find.caseSensitive,
+      incremental: true
+    })
+  }, [find.open, find.term, find.caseSensitive])
 
   // --- apply terminal zoom (global font size) + refit ---
   const fontSize = useStore((s) => s.terminalFontSize)
@@ -537,6 +648,183 @@ export function TerminalView({
       }}
     >
       <div ref={hostRef} style={{ width: '100%', height: '100%' }} />
+      {find.open && (
+        <FindBar
+          state={find}
+          results={results}
+          inputRef={findInputRef}
+          onTerm={(term) => setFind((f) => ({ ...f, term }))}
+          onToggleCase={() => setFind((f) => ({ ...f, caseSensitive: !f.caseSensitive }))}
+          onStep={stepFind}
+          onClose={closeFind}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * Floating find bar. Absolutely positioned on purpose: anything that took layout
+ * space here would change the terminal's size, and every size change resizes the
+ * pty and makes a TUI repaint (see fitNow). It sits clear of xterm's scrollbar,
+ * which owns the last ~10px before the right gutter.
+ */
+function FindBar({
+  state,
+  results,
+  inputRef,
+  onTerm,
+  onToggleCase,
+  onStep,
+  onClose
+}: {
+  state: { term: string; caseSensitive: boolean }
+  results: { index: number; count: number }
+  inputRef: React.RefObject<HTMLInputElement>
+  onTerm: (term: string) => void
+  onToggleCase: () => void
+  onStep: (back: boolean) => void
+  onClose: () => void
+}): React.ReactElement {
+  const empty = !state.term
+  const none = !empty && results.count === 0
+  // The addon reports index -1 once the highlight limit is passed — say "1000+"
+  // rather than a position it can't actually track.
+  const counter = empty
+    ? ''
+    : none
+      ? 'no results'
+      : results.index >= 0
+        ? `${results.index + 1}/${results.count}`
+        : `${results.count}+`
+
+  return (
+    <div
+      // Wheel/context events here belong to the bar, not to the terminal
+      // underneath it.
+      onWheel={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.stopPropagation()}
+      style={{
+        position: 'absolute',
+        top: 8,
+        right: 26,
+        zIndex: 6,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 4,
+        height: 32,
+        padding: '0 4px 0 9px',
+        background: 'var(--panel)',
+        border: '1px solid var(--border)',
+        boxShadow: '0 12px 30px -14px rgba(0,0,0,.8)'
+      }}
+    >
+      <span style={{ display: 'flex', color: 'var(--text-3)', flex: 'none' }}>
+        <Search size={13} />
+      </span>
+      <input
+        ref={inputRef}
+        value={state.term}
+        autoFocus
+        spellCheck={false}
+        placeholder="Find in terminal"
+        onChange={(e) => onTerm(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            onStep(e.shiftKey)
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault()
+            onClose()
+          }
+          // Ctrl+F while the bar is already up re-selects the term, as a
+          // browser's find does, instead of doing nothing.
+          if (e.ctrlKey && e.key.toLowerCase() === 'f') {
+            e.preventDefault()
+            inputRef.current?.select()
+          }
+        }}
+        style={{
+          width: 158,
+          height: 24,
+          background: 'transparent',
+          border: 0,
+          color: 'var(--text)',
+          fontFamily: "'IBM Plex Mono', monospace",
+          fontSize: 12.5,
+          padding: 0,
+          outline: 'none',
+          // Opts out of the global focus ring: this input is focused for as long
+          // as the bar exists, so a ring says nothing, and its bloom crowds a
+          // 32px-tall bar. The buttons beside it still ring, so Tab stays
+          // traceable.
+          boxShadow: 'none'
+        }}
+      />
+      <span
+        style={{
+          minWidth: 58,
+          textAlign: 'right',
+          fontSize: 11,
+          fontFamily: "'IBM Plex Mono', monospace",
+          color: none ? 'var(--danger)' : 'var(--text-3)',
+          flex: 'none'
+        }}
+      >
+        {counter}
+      </span>
+      <FindBtn title="Match case" active={state.caseSensitive} onClick={onToggleCase}>
+        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '.3px' }}>Aa</span>
+      </FindBtn>
+      <FindBtn title="Previous match (Shift+Enter)" onClick={() => onStep(true)}>
+        <Chevron size={13} style={{ transform: 'rotate(-90deg)' }} />
+      </FindBtn>
+      <FindBtn title="Next match (Enter)" onClick={() => onStep(false)}>
+        <Chevron size={13} style={{ transform: 'rotate(90deg)' }} />
+      </FindBtn>
+      <FindBtn title="Close (Esc)" onClick={onClose}>
+        <Close size={12} />
+      </FindBtn>
+    </div>
+  )
+}
+
+function FindBtn({
+  title,
+  active,
+  onClick,
+  children
+}: {
+  title: string
+  active?: boolean
+  onClick: () => void
+  children: React.ReactNode
+}): React.ReactElement {
+  const [hover, setHover] = React.useState(false)
+  return (
+    <button
+      title={title}
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      // The bar lives inside the terminal, so a click here must not pull DOM
+      // focus off the input the user is typing into.
+      onMouseDown={(e) => e.preventDefault()}
+      style={{
+        width: 24,
+        height: 24,
+        flex: 'none',
+        border: 0,
+        background: active ? 'var(--sel)' : hover ? 'var(--field-2)' : 'transparent',
+        color: active ? 'var(--text)' : hover ? 'var(--text)' : 'var(--text-2)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        cursor: 'pointer'
+      }}
+    >
+      {children}
+    </button>
   )
 }

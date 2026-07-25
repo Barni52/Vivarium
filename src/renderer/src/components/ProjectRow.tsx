@@ -4,6 +4,7 @@ import { useStore, type AttentionKind } from '../state/store'
 import { ACCENT } from '../theme'
 import {
   Chevron,
+  Disks,
   Folder,
   Gear,
   GitBranch,
@@ -65,6 +66,7 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
   const hasOutput = useStore((s) => !!s.config.sharedOutputFolder)
   const runProjectDiff = useStore((s) => s.runProjectDiff)
   const openClaudeUpdate = useStore((s) => s.openClaudeUpdate)
+  const openVolumes = useStore((s) => s.openVolumes)
   // aggregate: worst outstanding attention among child agents (shown when the
   // project is collapsed, so a notification isn't hidden with its session
   // rows); a question beats finished — an agent blocked on an answer is the
@@ -131,6 +133,11 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
       // the first) — this is where you'd look when *this* project's agent seems
       // to be on an old Claude Code.
       { label: 'Claude Code version…', icon: <Sparkle size={13} />, onSelect: openClaudeUpdate },
+      // App-wide rather than per-project, like the item above it: the build
+      // caches a project's mounts create outlive the project, so the dialog has
+      // to be reachable from any of them (and this is where you'd look after
+      // deleting one).
+      { label: 'Docker volumes…', icon: <Disks size={14} />, onSelect: openVolumes },
       { label: '---' },
       {
         label: hasOutput

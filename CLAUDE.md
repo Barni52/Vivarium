@@ -11,7 +11,8 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
 - `src/main/` — Electron main process.
   - `ipc.ts` — `registerIpc()`: every IPC handler, the output-folder watcher, the taskbar badge.
   - `docker.ts` — `DockerService`: container lifecycle, `docker run` arg construction, image
-    builds streamed line-by-line into the session terminal.
+    builds streamed line-by-line into the session terminal, plus the volume inventory behind
+    the Volumes dialog (`listVolumes` / `removeVolume`).
   - `dockerfiles.ts` — inline slim/full Dockerfiles, `IMAGE_VERSION`, shared volume names.
   - `pty.ts` — `PtyManager`: node-pty processes keyed by session id.
   - `bridge.ts` — the agent hook bridge: per-project host dir (bind-mounted at `/vivarium`)
@@ -30,7 +31,10 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
   deselect, never destroyed, so scrollback survives switching. `theme.ts` owns the palette *and*
   `SESSION_TYPES` — the one place session-type wording, hue and popover geometry are defined;
   the picker, sidebar, terminal header and empty state all read from it, and `TypeIcon` gives
-  each type its own silhouette so they never depend on color alone.
+  each type its own silhouette so they never depend on color alone. `Elapsed.tsx` is the only
+  thing in the UI that ticks: it re-renders three characters of duration instead of its host
+  row, and its interval follows the granularity on screen (1s while showing seconds, 15s once
+  only minutes can change).
 
 **Adding an IPC feature** touches four places in order: channel name in `src/shared/ipc.ts` →
 handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → renderer call via
@@ -74,6 +78,33 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   inside containers (a stopped one has no version to read), a `claude` already running keeps its
   version until relaunched, and since the install lands in the writable layer a `recreate`
   reverts it to the image's version — the chip re-flags it instead of silently self-healing.
+- **Agent turn durations run on the host clock.** `hook.sh` writes a container-side timestamp
+  into `events.log`, and `bridge.ts` deliberately ignores it: the events are stamped with
+  `Date.now()` when the host *reads* the line (`AgentHookEvent.at`). A WSL2 VM's clock drifts
+  from Windows across host sleep, and these values are subtracted from the renderer's clock to
+  show "working 4m" — a skewed one would print a negative or absurd turn. The log keeps its own
+  timestamp for post-mortem reading only. `agentSince` (store) is stamped on real transitions
+  only, so a pty exit reporting idle for an already-idle agent can't claim its turn just ended;
+  `UserPromptSubmit` re-stamps unconditionally, since a queued prompt starts a new turn while
+  the state is already `working`.
+- **Volumes are only ever removed from the Volumes dialog.** Nothing else in the app removes
+  one — deleting a project drops its container, not the shadow build caches its mounts created
+  (`shadowMounts`), which are keyed by a hash of the *host path* and so are stranded by a
+  rename or an unmount. `SHADOW_KINDS` is shared between the run-arg builder and the
+  classifier so the names can't drift. `claude-box-creds`/`claude-box-home` are reported but
+  never removable (the Claude sign-in and every agent's memory live there) — the guard is in
+  `DockerService.removeVolume` as well as the UI, because the name arrives over IPC. Sizes come
+  from `docker system df -v`, the only command that reports them; it walks every volume
+  directory, so the dialog shows a loading state and the renderer drops a removed row instead
+  of re-sweeping.
+- **No "Clear" in the terminal context menu.** xterm's `clear()` drops the entire 50k-line
+  scrollback, which made it the one irreversible item in a menu of harmless ones, two rows
+  under Paste and with no confirmation. The shell's own `clear`/`cls` covers the intent.
+- **The focus ring is a `box-shadow`, not an `outline`** (`GLOBAL_CSS`). Every field in this app
+  sets `outline:none` *inline* and inline styles win, so an outline rule would silently do
+  nothing on exactly the controls that need it. It is `:focus-visible`, so pointer input never
+  lights it up; the find bar's input opts out with an inline `boxShadow:'none'` because it is
+  focused for as long as the bar exists.
 - Agent idle/working detection and the attention-notification are driven by **Claude Code
   hooks** (`UserPromptSubmit`/`Stop`, plus a `PreToolUse` matcher on `AskUserQuestion` so a
   waiting question also raises the "!"), not by parsing terminal output. Agents launch with

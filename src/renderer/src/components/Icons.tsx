@@ -211,39 +211,52 @@ export const SelectAll = ({ size = 14, color = 'currentColor', style }: P): Reac
     style
   )
 
-const magnifier = (color: string, plus: boolean): React.ReactNode => (
+// One glass, three marks: nothing (find), plus, minus. Sharing the lens keeps
+// Find and the two zoom items reading as the same family in one menu.
+const magnifier = (color: string, mark: 'none' | 'plus' | 'minus'): React.ReactNode => (
   <>
     <circle cx="7" cy="7" r="4.4" stroke={color} strokeWidth="1.15" />
     <path d="M10.3 10.3l3 3" stroke={color} strokeWidth="1.3" strokeLinecap="round" />
-    <path
-      d={plus ? 'M7 5.1v3.8M5.1 7h3.8' : 'M5.1 7h3.8'}
-      stroke={color}
-      strokeWidth="1.2"
-      strokeLinecap="round"
-    />
+    {mark !== 'none' && (
+      <path
+        d={mark === 'plus' ? 'M7 5.1v3.8M5.1 7h3.8' : 'M5.1 7h3.8'}
+        stroke={color}
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      />
+    )}
   </>
 )
 
+export const Search = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(size, magnifier(color, 'none'), style)
+
 export const ZoomIn = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
-  svg(size, magnifier(color, true), style)
+  svg(size, magnifier(color, 'plus'), style)
 
 export const ZoomOut = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
-  svg(size, magnifier(color, false), style)
+  svg(size, magnifier(color, 'minus'), style)
 
-// A slanted eraser on the line it's wiping — "Clear" throws away scrollback,
-// which is neither a delete (Trash) nor a reload (Refresh).
-export const Eraser = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+// Stacked disks — the conventional read for storage, and deliberately nothing
+// like Folder (host paths) or the rounded square (containers): a docker volume
+// is neither of those.
+export const Disks = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
   svg(
     size,
     <>
+      <ellipse cx="8" cy="4.3" rx="5" ry="2.1" stroke={color} strokeWidth="1.15" />
       <path
-        d="M2.4 9.6L7.6 4.4l3.6 3.6-5.2 5.2z"
+        d="M3 4.3v7.4c0 1.16 2.24 2.1 5 2.1s5-.94 5-2.1V4.3"
         stroke={color}
         strokeWidth="1.15"
-        strokeLinejoin="round"
+        strokeLinecap="round"
       />
-      <path d="M5.5 6.5l3.6 3.6" stroke={color} strokeWidth="1.15" />
-      <path d="M3.4 14.4h10.2" stroke={color} strokeWidth="1.15" strokeLinecap="round" />
+      <path
+        d="M3 8c0 1.16 2.24 2.1 5 2.1s5-.94 5-2.1"
+        stroke={color}
+        strokeWidth="1.15"
+        strokeLinecap="round"
+      />
     </>,
     style
   )

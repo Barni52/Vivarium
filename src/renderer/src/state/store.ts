@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { ReactNode } from 'react'
 import type {
   AgentHookEvent,
+  AppInfo,
   ClaudeStatus,
   ClaudeUpdateResult,
   Config,
@@ -12,7 +13,8 @@ import type {
   Project,
   SessionType,
   AgentActivity,
-  UsageSnapshot
+  UsageSnapshot,
+  VolumeInfo
 } from '@shared/types'
 import { behindIds } from '../claude'
 import { ADD_SESSION_POPOVER } from '../theme'
@@ -31,6 +33,7 @@ export type DialogKind =
   | 'confirmDeleteProject'
   | 'confirmQuit'
   | 'claudeUpdate'
+  | 'volumes'
   | null
 
 export interface ContextMenuItem {
@@ -41,6 +44,13 @@ export interface ContextMenuItem {
    * every row reserves the slot so the labels stay on one left edge.
    */
   icon?: ReactNode
+  /**
+   * Keyboard equivalent, shown right-aligned and dimmed. This is where a chord
+   * gets taught — the terminal takes several keys from the shell (Ctrl+F, the
+   * zoom chords) and a menu that performs the same action is the only place a
+   * user would find out.
+   */
+  hint?: string
   danger?: boolean
   disabled?: boolean
   onSelect?: () => void
@@ -121,6 +131,13 @@ interface AppState {
   /** session ids that currently have a live pty */
   live: Record<string, boolean>
   activity: Record<string, AgentActivity>
+  /**
+   * When each agent's current state began (epoch ms) — a turn start for
+   * 'working', the turn's end for 'idle'. Drives "working 4m" in the sidebar and
+   * "finished 12m ago" on the attention badge. Session-only: a duration is only
+   * meaningful for a state this app run has actually observed.
+   */
+  agentSince: Record<string, number>
   /** agent sessions needing attention while unwatched — "!" (finished) or "?" (question) until opened */
   notifications: Record<string, AttentionKind>
   /** container start/stop/restart currently in flight, keyed by project id */
@@ -137,6 +154,21 @@ interface AppState {
   claudeUpdating: Record<string, boolean>
   /** last update outcome per project, kept until the dialog closes */
   claudeResults: Record<string, ClaudeUpdateResult>
+  /** app + runtime versions for the title-bar chip; null until init lands */
+  appInfo: AppInfo | null
+
+  // docker volumes (housekeeping dialog)
+  /** null until the first sweep; [] genuinely means "no Vivarium volumes" */
+  volumes: VolumeInfo[] | null
+  /** a sweep is in flight — it measures every volume on disk, so it's slow */
+  volumesLoading: boolean
+  /** false when docker couldn't report sizes (names still listed) */
+  volumesSized: boolean
+  volumesError?: string
+  /** volumes currently being removed */
+  volumeBusy: Record<string, boolean>
+  /** last removal failure per volume (docker's own message) */
+  volumeErrors: Record<string, string>
 
   dialog: DialogKind
   ap: ProjectDraft
@@ -167,6 +199,12 @@ interface AppState {
   updateClaudeIn: (projectId: string) => Promise<void>
   updateClaudeAll: () => Promise<void>
 
+  // docker volume housekeeping
+  openVolumes: () => void
+  refreshVolumes: () => Promise<void>
+  removeVolume: (name: string) => Promise<void>
+  removeOrphanVolumes: () => Promise<void>
+
   // shared output folder
   setSharedOutput: (folder: string | null) => Promise<void>
   refreshOutputTree: () => Promise<void>
@@ -188,7 +226,8 @@ interface AppState {
   zoomTerminal: (delta: number) => void
   resetTerminalZoom: () => void
   setLive: (sessionId: string, live: boolean) => void
-  setActivity: (sessionId: string, a: AgentActivity) => void
+  /** `at` (from a hook event) keeps the turn clock on main's timestamp */
+  setActivity: (sessionId: string, a: AgentActivity, at?: number) => void
   notifyAgentAttention: (sessionId: string, kind: AttentionKind) => void
   handleAgentHook: (e: AgentHookEvent) => void
 
@@ -302,6 +341,7 @@ export const useStore = create<AppState>((set, get) => ({
   terminalFontSize: 13,
   live: {},
   activity: {},
+  agentSince: {},
   notifications: {},
   containerOps: {},
   containerErrors: {},
@@ -310,6 +350,12 @@ export const useStore = create<AppState>((set, get) => ({
   claudeChecking: false,
   claudeUpdating: {},
   claudeResults: {},
+  appInfo: null,
+  volumes: null,
+  volumesLoading: false,
+  volumesSized: true,
+  volumeBusy: {},
+  volumeErrors: {},
   dialog: null,
   ap: emptyDraft(),
   st: null,
@@ -324,13 +370,14 @@ export const useStore = create<AppState>((set, get) => ({
   dropTarget: null,
 
   init: async () => {
-    const [config, docker] = await Promise.all([
+    const [config, docker, appInfo] = await Promise.all([
       window.vivarium.loadConfig(),
-      window.vivarium.dockerStatus()
+      window.vivarium.dockerStatus(),
+      window.vivarium.appInfo()
     ])
     const expanded: Record<string, boolean> = {}
     for (const p of config.projects) expanded[p.id] = true
-    set({ config, docker, expanded })
+    set({ config, docker, appInfo, expanded })
     await Promise.all([
       get().refreshStates(),
       get().refreshBranches(),
@@ -419,6 +466,62 @@ export const useStore = create<AppState>((set, get) => ({
     for (const id of behindIds(get().claude)) await get().updateClaudeIn(id)
   },
 
+  // ---- docker volume housekeeping -----------------------------------------
+  // Nothing else in Vivarium ever removes a volume, so this dialog is the only
+  // way the per-mount build caches (and anything left behind by a deleted
+  // project) become visible or reclaimable.
+  openVolumes: () => {
+    set({ dialog: 'volumes', volumeErrors: {} })
+    void get().refreshVolumes()
+  },
+
+  refreshVolumes: async () => {
+    if (get().volumesLoading) return // the sweep is slow; never run two
+    set({ volumesLoading: true })
+    try {
+      const report = await window.vivarium.volumes()
+      set({
+        volumes: report.volumes,
+        volumesSized: report.sized,
+        volumesError: report.error
+      })
+    } finally {
+      set({ volumesLoading: false })
+    }
+  },
+
+  removeVolume: async (name) => {
+    if (get().volumeBusy[name]) return
+    set((s) => {
+      const volumeErrors = { ...s.volumeErrors }
+      delete volumeErrors[name] // clear a previous failure's message
+      return { volumeBusy: { ...s.volumeBusy, [name]: true }, volumeErrors }
+    })
+    const res = await window.vivarium.removeVolume(name)
+    set((s) => {
+      const volumeBusy = { ...s.volumeBusy }
+      delete volumeBusy[name]
+      // Drop the row on success rather than re-sweeping every volume on disk
+      // (that walk costs seconds); a failure keeps the row and shows why.
+      return {
+        volumeBusy,
+        volumes: res.ok ? (s.volumes ?? []).filter((v) => v.name !== name) : s.volumes,
+        volumeErrors: res.ok
+          ? s.volumeErrors
+          : { ...s.volumeErrors, [name]: res.message ?? 'removal failed' }
+      }
+    })
+  },
+
+  // Sequential: docker serialises volume removal anyway, and the rows read
+  // better ticking over one at a time (same reasoning as updateClaudeAll).
+  removeOrphanVolumes: async () => {
+    const orphans = (get().volumes ?? []).filter(
+      (v) => !v.locked && v.links === 0 && v.projects.length === 0
+    )
+    for (const v of orphans) await get().removeVolume(v.name)
+  },
+
   setSharedOutput: async (folder) => {
     const config = await window.vivarium.setSharedOutput(folder)
     set({ config })
@@ -489,7 +592,18 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => ({ terminalFontSize: Math.max(8, Math.min(32, s.terminalFontSize + delta)) })),
   resetTerminalZoom: () => set({ terminalFontSize: 13 }),
   setLive: (sessionId, live) => set((s) => ({ live: { ...s.live, [sessionId]: live } })),
-  setActivity: (sessionId, a) => set((s) => ({ activity: { ...s.activity, [sessionId]: a } })),
+
+  setActivity: (sessionId, a, at) =>
+    set((s) => {
+      // Only stamp real transitions. A pty exit reports 'idle' for an agent that
+      // was already idle, and re-stamping there would claim its last turn just
+      // ended — the one thing the duration must never lie about.
+      if (s.activity[sessionId] === a) return {}
+      return {
+        activity: { ...s.activity, [sessionId]: a },
+        agentSince: { ...s.agentSince, [sessionId]: at ?? Date.now() }
+      }
+    }),
 
   notifyAgentAttention: (sessionId, kind) => {
     // Only agent sessions get the "!" — host/container shells never do (a stray
@@ -513,14 +627,18 @@ export const useStore = create<AppState>((set, get) => ({
     const exists = s.config.projects.some((p) => p.sessions.some((x) => x.id === e.sessionId))
     if (!exists) return
     if (e.kind === 'UserPromptSubmit') {
-      s.setActivity(e.sessionId, 'working')
+      s.setActivity(e.sessionId, 'working', e.at)
+      // A queued prompt lands while the indicator is already 'working', where
+      // setActivity deliberately no-ops — restart the clock explicitly so the
+      // duration always means "this turn", not "this busy streak".
+      set((st) => ({ agentSince: { ...st.agentSince, [e.sessionId]: e.at } }))
     } else if (e.kind === 'AskUserQuestion') {
       // Agent is blocked on a question. Activity stays 'working': the turn is
       // still in flight, and no hook fires when the question is answered, so
       // an 'idle' here would stick for the rest of the turn.
       s.notifyAgentAttention(e.sessionId, 'question')
     } else {
-      s.setActivity(e.sessionId, 'idle')
+      s.setActivity(e.sessionId, 'idle', e.at)
       s.notifyAgentAttention(e.sessionId, 'finished')
     }
   },
@@ -637,13 +755,16 @@ export const useStore = create<AppState>((set, get) => ({
   deleteProject: async (projectId) => {
     const config = await window.vivarium.deleteProject(projectId)
     set((s) => {
-      // drop notifications for sessions that no longer exist
+      // drop notifications + turn clocks for sessions that no longer exist
       const alive = new Set(config.projects.flatMap((p) => p.sessions.map((x) => x.id)))
       const notifications: Record<string, AttentionKind> = {}
       for (const id of Object.keys(s.notifications)) if (alive.has(id)) notifications[id] = s.notifications[id]
+      const agentSince: Record<string, number> = {}
+      for (const id of Object.keys(s.agentSince)) if (alive.has(id)) agentSince[id] = s.agentSince[id]
       return {
         config,
         notifications,
+        agentSince,
         selectedSessionId:
           s.selectedSessionId && !alive.has(s.selectedSessionId) ? null : s.selectedSessionId
       }
@@ -721,12 +842,15 @@ export const useStore = create<AppState>((set, get) => ({
       delete live[killTarget.sessionId]
       const notifications = { ...s.notifications }
       delete notifications[killTarget.sessionId]
+      const agentSince = { ...s.agentSince }
+      delete agentSince[killTarget.sessionId]
       return {
         config,
         dialog: null,
         killTarget: null,
         live,
         notifications,
+        agentSince,
         selectedSessionId: stillExists ? s.selectedSessionId : null
       }
     })

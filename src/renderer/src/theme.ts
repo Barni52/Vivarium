@@ -11,9 +11,20 @@ export const GLOBAL_CSS = `
     --text:#eef1f5;--text-2:#9aa6b6;--text-3:#6a7686;
     --accent:#5a769f;--accent-2:#6d88ad;--danger:#fa4d56;--overlay:rgba(2,4,7,.66);
     --terminal-bg:#0a0d12;--terminal-text:#c7cfda;
+    --focus:#7f9dc4;--focus-soft:rgba(122,154,196,.20);
   }
   body{font-family:'IBM Plex Sans',system-ui,sans-serif;color:var(--text)}
   ::selection{background:rgba(69,137,255,.32)}
+  /* Keyboard focus. Every field in this app sets outline:none inline and inline
+     styles win, so the ring is drawn with box-shadow instead: a hairline in the
+     accent hue plus a soft bloom, square like the controls it wraps. :focus-visible
+     rather than :focus, so clicking never lights anything up — this is only for
+     people driving the app from the keyboard, who until now had nothing at all. */
+  :focus{outline:none}
+  :focus-visible{outline:none;box-shadow:0 0 0 1px var(--focus),0 0 0 4px var(--focus-soft)}
+  /* xterm parks a hidden textarea at the cursor and keeps it focused the whole
+     time a terminal is active — a ring there would just follow the caret. */
+  .xterm textarea:focus-visible{box-shadow:none}
   ::-webkit-scrollbar{width:10px;height:10px}
   ::-webkit-scrollbar-track{background:transparent}
   ::-webkit-scrollbar-thumb{background:var(--border);border:2px solid transparent;background-clip:padding-box}

@@ -1,4 +1,4 @@
-import { ipcMain, dialog, BrowserWindow, clipboard, shell, nativeImage } from 'electron'
+import { app, ipcMain, dialog, BrowserWindow, clipboard, shell, nativeImage } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { watch, type FSWatcher } from 'node:fs'
 import { readdir, mkdir } from 'node:fs/promises'
@@ -6,6 +6,7 @@ import { join, resolve, sep, extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { CH } from '@shared/ipc'
 import type {
+  AppInfo,
   BadgePayload,
   ClaudeStatus,
   ClaudeUpdateResult,
@@ -17,7 +18,9 @@ import type {
   OutputNode,
   SessionType,
   SpawnResult,
-  UpdateProjectInput
+  UpdateProjectInput,
+  VolumeRemoveResult,
+  VolumeReport
 } from '@shared/types'
 import { ConfigStore } from './config'
 import { DockerService } from './docker'
@@ -254,6 +257,18 @@ export function registerIpc(win: BrowserWindow): void {
     }
   })
 
+  // ---- volume housekeeping ------------------------------------------------
+  // Nothing else in the app ever removes a volume, so this is the only place
+  // the shadow build caches (and any leftovers from older naming) can be seen
+  // or reclaimed. Ownership is derived from the current projects' mounts —
+  // whatever doesn't match is orphaned.
+  ipcMain.handle(CH.volumes, (): Promise<VolumeReport> => docker.listVolumes(store.get().projects))
+
+  ipcMain.handle(
+    CH.removeVolume,
+    (_e, name: string): Promise<VolumeRemoveResult> => docker.removeVolume(name)
+  )
+
   ipcMain.handle(CH.containerStates, async (): Promise<ContainerState[]> => {
     const cfg = store.get()
     const out: ContainerState[] = []
@@ -465,6 +480,18 @@ export function registerIpc(win: BrowserWindow): void {
   ipcMain.on(CH.clipboardWriteText, (_e, text: string) => clipboard.writeText(text))
 
   // ---- dialogs / window --------------------------------------------------
+  // Version chip in the title bar. The runtime versions ride along because the
+  // one time you want them is when writing up a bug, and they're free here.
+  ipcMain.handle(
+    CH.appInfo,
+    (): AppInfo => ({
+      version: app.getVersion(),
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      node: process.versions.node
+    })
+  )
+
   ipcMain.handle(CH.browseFolder, async (): Promise<string | null> => {
     const res = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
     return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]

@@ -3,7 +3,13 @@ import { existsSync } from 'fs'
 import { join, basename } from 'path'
 import { createHash } from 'crypto'
 import { app } from 'electron'
-import type { ClaudeVersionInfo, Project } from '@shared/types'
+import type {
+  ClaudeVersionInfo,
+  Project,
+  VolumeInfo,
+  VolumeRemoveResult,
+  VolumeReport
+} from '@shared/types'
 import {
   IMAGE_VERSION,
   SLIM_IMAGE,
@@ -31,6 +37,49 @@ function shortHash(input: string): string {
 
 function sanitize(name: string): string {
   return name.replace(/[^A-Za-z0-9._-]/g, '_')
+}
+
+/**
+ * Shadow-volume suffix → what it overlays. Read by shadowMounts (which builds
+ * the names) *and* by listVolumes (which explains them back to the user), so
+ * the two can't drift apart — a suffix that isn't in here won't compile.
+ */
+const SHADOW_KINDS = {
+  nm: 'node_modules',
+  ngcache: '.angular cache',
+  extnm: 'extensions/node_modules',
+  target: 'Maven target'
+} as const
+
+/**
+ * Volume-name prefix for one mounted host folder's shadow volumes. The hash is
+ * of the absolute path, which is what lets listVolumes tell a live cache from
+ * an orphan: no current mount hashes to it → nothing will ever use it again.
+ */
+function shadowPrefix(abs: string): string {
+  return `vivarium-${shortHash(abs)}`
+}
+
+/** docker reports sizes as "0B" / "461.4kB" / "1.21GB" — back to bytes. */
+function parseSize(size: string): number | null {
+  const m = size.trim().match(/^([\d.]+)\s*([a-zA-Z]+)$/)
+  if (!m) return null
+  const units: Record<string, number> = {
+    b: 1,
+    kb: 1e3,
+    mb: 1e6,
+    gb: 1e9,
+    tb: 1e12,
+    // docker uses decimal units, but accept binary ones so a CLI that switches
+    // reports a wrong-by-2.4% total instead of no total at all
+    kib: 1024,
+    mib: 1024 ** 2,
+    gib: 1024 ** 3,
+    tib: 1024 ** 4
+  }
+  const mult = units[m[2].toLowerCase()]
+  const n = Number(m[1])
+  return mult && Number.isFinite(n) ? Math.round(n * mult) : null
 }
 
 export class DockerService {
@@ -261,15 +310,20 @@ export class DockerService {
   // in-container installs/builds are fast and never touch the Windows checkout.
   private shadowMounts(hostDir: string, target: string, volPrefix: string): string[] {
     const vols: string[] = []
+    // Suffixes are keyed off SHADOW_KINDS so the Volumes dialog can always name
+    // what it found.
+    const shadow = (suffix: keyof typeof SHADOW_KINDS, at: string): void => {
+      vols.push('-v', `${volPrefix}-${suffix}:${at}`)
+    }
     if (existsSync(join(hostDir, 'package.json'))) {
-      vols.push('-v', `${volPrefix}-nm:${target}/node_modules`)
-      vols.push('-v', `${volPrefix}-ngcache:${target}/.angular`)
+      shadow('nm', `${target}/node_modules`)
+      shadow('ngcache', `${target}/.angular`)
       if (existsSync(join(hostDir, 'extensions', 'package.json'))) {
-        vols.push('-v', `${volPrefix}-extnm:${target}/extensions/node_modules`)
+        shadow('extnm', `${target}/extensions/node_modules`)
       }
     }
     if (existsSync(join(hostDir, 'pom.xml'))) {
-      vols.push('-v', `${volPrefix}-target:${target}/target`)
+      shadow('target', `${target}/target`)
     }
     return vols
   }
@@ -344,7 +398,7 @@ export class DockerService {
       usedNames.add(leaf)
       const target = `/workspace/${leaf}`
       args.push('--mount', `type=bind,source=${abs},target=${target}`)
-      args.push(...this.shadowMounts(abs, target, `vivarium-${shortHash(abs)}`))
+      args.push(...this.shadowMounts(abs, target, shadowPrefix(abs)))
     }
 
     // Clip dir for image-paste (host-managed bind mount).
@@ -522,6 +576,123 @@ export class DockerService {
 
   async remove(project: Project): Promise<void> {
     await this.exec(['rm', '-f', this.containerName(project)])
+  }
+
+  // ---- volume housekeeping -----------------------------------------------
+  /**
+   * List the volumes Vivarium is responsible for, with sizes and ownership.
+   *
+   * Why this exists: every mounted folder can spawn up to four shadow volumes
+   * (see shadowMounts) and *nothing* has ever removed one — deleting a project
+   * drops its container, never its node_modules or Maven caches. They are a
+   * slow, invisible disk leak, and a mount that gets renamed or removed strands
+   * its caches under a hash nobody can read.
+   *
+   * Sizes only come from `docker system df -v`; `volume inspect` doesn't report
+   * them. That walks every volume directory, so it can take seconds on a large
+   * node_modules — the caller shows a loading state rather than pretending it's
+   * instant. `--format {{json .Volumes}}` keeps us off the human table layout,
+   * but the fields are still read defensively (Links arrives as a *string*, Size
+   * as "1.21GB"), and if the sweep fails we fall back to `volume ls` so the
+   * dialog can still list and remove volumes, just without sizes.
+   */
+  async listVolumes(projects: Project[]): Promise<VolumeReport> {
+    if (!(await this.detect())) return { volumes: [], sized: false, error: 'docker not found' }
+
+    // prefix → project names, so a shadow volume can say whose mount made it
+    const owners = new Map<string, Set<string>>()
+    for (const p of projects) {
+      for (const abs of p.mounts) {
+        const key = shadowPrefix(abs)
+        const set = owners.get(key) ?? new Set<string>()
+        set.add(p.name)
+        owners.set(key, set)
+      }
+    }
+
+    let sized = true
+    let error: string | undefined
+    let rows: Array<{ name: string; size: string | null; links: number }> = []
+
+    // 90s: a directory walk over every volume on the machine, not a metadata read.
+    const df = await this.exec(['system', 'df', '-v', '--format', '{{json .Volumes}}'], 90_000)
+    if (df.code === 0) {
+      try {
+        const parsed: unknown = JSON.parse(df.stdout.trim() || '[]')
+        for (const entry of Array.isArray(parsed) ? parsed : []) {
+          // Every field is optional as far as we're concerned: this is an
+          // undocumented format from a CLI that has changed it before.
+          const v = entry as { Name?: unknown; Size?: unknown; Links?: unknown }
+          if (typeof v.Name !== 'string' || !v.Name) continue
+          rows.push({
+            name: v.Name,
+            size: typeof v.Size === 'string' ? v.Size : null,
+            links: Number(v.Links) || 0
+          })
+        }
+      } catch {
+        sized = false
+        error = 'could not parse docker system df output'
+      }
+    } else {
+      sized = false
+      error = (df.stderr || df.stdout).trim().split('\n')[0] || `docker system df exited ${df.code}`
+    }
+
+    if (!sized) {
+      const ls = await this.exec(['volume', 'ls', '--format', '{{.Name}}'])
+      rows = ls.stdout
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((name) => ({ name, size: null, links: 0 }))
+    }
+
+    const volumes: VolumeInfo[] = []
+    for (const row of rows) {
+      const shared = row.name === CREDS_VOLUME || row.name === HOME_VOLUME
+      if (!shared && !row.name.startsWith('vivarium-')) continue // not ours
+
+      // `vivarium-<8 hex>-<suffix>` is a shadow volume; anything else under the
+      // prefix is a leftover from older naming or a dev run, which is worth
+      // showing precisely *because* nothing accounts for it.
+      const m = row.name.match(/^(vivarium-[0-9a-f]{8})-(.+)$/)
+      const contents = m ? SHADOW_KINDS[m[2] as keyof typeof SHADOW_KINDS] : undefined
+      const isShadow = !!m && !!contents
+
+      volumes.push({
+        name: row.name,
+        kind: shared ? 'shared' : isShadow ? 'shadow' : 'other',
+        size: row.size,
+        bytes: row.size ? parseSize(row.size) : null,
+        links: row.links,
+        contents: isShadow ? contents : null,
+        projects: isShadow ? [...(owners.get(m[1]) ?? [])] : [],
+        locked: shared
+      })
+    }
+    return { volumes, sized, error }
+  }
+
+  /**
+   * Remove one volume. Docker refuses while a container still references it,
+   * which is the behaviour we want — the message goes straight to the UI.
+   */
+  async removeVolume(name: string): Promise<VolumeRemoveResult> {
+    // Belt to the renderer's braces: the shared pair holds the Claude sign-in
+    // and every agent's memory, and nothing outside `vivarium-*` is ours to
+    // delete — this runs on a name that arrived over IPC.
+    if (name === CREDS_VOLUME || name === HOME_VOLUME) {
+      return { ok: false, message: 'shared Claude volume — never removed from here' }
+    }
+    if (!name.startsWith('vivarium-')) return { ok: false, message: 'not a Vivarium volume' }
+    const r = await this.exec(['volume', 'rm', name], 30_000)
+    if (r.code === 0) return { ok: true }
+    const raw = (r.stderr || r.stdout).trim().split('\n')[0] ?? ''
+    return {
+      ok: false,
+      message: raw.replace(/^Error response from daemon:\s*/i, '') || `docker exited ${r.code}`
+    }
   }
 
   /** Build the argv (minus the leading binary) for a session's exec/attach. */
