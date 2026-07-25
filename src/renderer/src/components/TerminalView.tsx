@@ -37,6 +37,81 @@ const DARK_THEME = {
   ...CAMPBELL
 }
 
+// The bits of xterm's internals we have to reach for: its scrollbar geometry and
+// its wheel-delta maths. Both are explained where they're used below; neither is
+// reachable through the public API in 5.5.
+type XtermCore = {
+  viewport?: {
+    syncScrollArea?(immediate: boolean): void
+    getLinesScrolled?(ev: WheelEvent): number
+    _lastRecordedBufferLength?: number
+  }
+}
+const core = (term: Terminal): XtermCore | undefined =>
+  (term as unknown as { _core?: XtermCore })._core
+
+/**
+ * Recompute the scrollbar geometry from scratch, right now.
+ *
+ * xterm's scrollback bar is a real DOM scrollbar: `.xterm-scroll-area` is sized
+ * to the whole buffer and the wheel moves the viewport's own scrollTop. That
+ * height is recalculated inside a requestAnimationFrame — and a rAF never runs
+ * while the window is producing no frames (minimized, or fully covered by
+ * another window), which is exactly when an agent streams output nobody is
+ * watching. xterm records "I've accounted for this buffer length" *before*
+ * queueing that frame, so when the agent then falls silent — the moment you come
+ * back to read it — the terminal is left with a scroll area one screen tall in
+ * front of thousands of unreachable lines, and nothing will ever notice.
+ *
+ * Its own `syncScrollArea` can't get us out of that: it is change *detection*
+ * (buffer length, canvas height, scroll position, cell height, all against what
+ * it last recorded) and in this state every one of them matches. So drop one of
+ * the records first — a length of -1 can never match a real one — and the sync
+ * recomputes. `immediate` skips the animation frame that got us here.
+ *
+ * A real resize does the same thing via `_afterResize`, which is why zooming in
+ * and out appeared to repair it.
+ */
+function forceScrollAreaSync(term: Terminal): void {
+  const vp = core(term)?.viewport
+  if (!vp) return
+  vp._lastRecordedBufferLength = -1
+  vp.syncScrollArea?.(true)
+}
+
+/**
+ * Repair the scroll geometry, but only when it is provably broken: the DOM
+ * scrollbar says there is nothing to scroll while the buffer plainly has history
+ * above the view. Cheap enough to call on every wheel gesture, and because it
+ * does nothing in the healthy case it can't fight a scroll that is working.
+ *
+ * This is the belt to forceScrollAreaSync's braces: Windows doesn't necessarily
+ * mark a merely *occluded* window as hidden, so there may be no visibilitychange
+ * to hang the repair on — but there is always the notch the user is about to
+ * waste.
+ */
+function repairIfStuck(term: Terminal): boolean {
+  const vpEl = term.element?.querySelector('.xterm-viewport')
+  if (!vpEl) return false
+  const canScroll = vpEl.scrollHeight - vpEl.clientHeight > 1
+  if (canScroll || term.buffer.active.baseY === 0) return false
+  forceScrollAreaSync(term)
+  return true
+}
+
+/** xterm's own wheel-delta → lines math (it accumulates sub-line touchpad
+ *  deltas, so a slow trackpad still scrolls). ~3 lines a notch if it ever goes. */
+function wheelLines(term: Terminal, ev: WheelEvent): number {
+  const n = core(term)?.viewport?.getLinesScrolled?.(ev)
+  return typeof n === 'number' && !Number.isNaN(n) ? n : Math.sign(ev.deltaY) * 3
+}
+
+// A terminal narrower/shorter than this isn't a terminal, it's a collapsed box
+// mid-layout. FitAddon clamps to 2x1 rather than refusing, so it has to be us
+// who refuses (see fitNow).
+const MIN_FIT_W = 40
+const MIN_FIT_H = 30
+
 // One long-lived xterm bound to a single session's pty. It is created once and
 // never destroyed on selection change — only hidden — so scrollback survives
 // switching (plan: TerminalHost). Visibility is driven by `visible`.
@@ -51,7 +126,8 @@ export function TerminalView({
 }): React.ReactElement {
   const hostRef = React.useRef<HTMLDivElement>(null)
   const termRef = React.useRef<Terminal | null>(null)
-  const fitRef = React.useRef<FitAddon | null>(null)
+  // the guarded fit (see fitNow below) — every resize path goes through it
+  const fitNowRef = React.useRef<() => void>(() => {})
   const visibleRef = React.useRef(visible)
   visibleRef.current = visible
   const setLive = useStore((s) => s.setLive)
@@ -82,14 +158,62 @@ export function TerminalView({
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(hostRef.current!)
-    try {
-      term.loadAddon(new WebglAddon())
-    } catch {
-      /* WebGL unavailable — fall back to the canvas renderer */
+
+    // --- the one way to resize this terminal -------------------------------
+    // Two guards have to hold on every resize path, so they all come through
+    // here:
+    //
+    //  1. Never fit a box with no usable size. FitAddon clamps to its own
+    //     MINIMUM_COLS/ROWS (2x1) instead of refusing, so a container that is
+    //     momentarily collapsed — output panel dragged to the top, a very short
+    //     window, a layout pass mid-drag — resizes the terminal to a one-row
+    //     sliver and tells the pty it has one row, which is enough to make an
+    //     agent's TUI redraw itself into that sliver and stay corrupt. A
+    //     collapsed *width* is worse: 2 columns reflows the entire 50k-line
+    //     scrollback and the buffer never gets its line structure back.
+    //
+    //  2. Only tell the pty when the size really changed. fit() no-ops when the
+    //     dimensions match but resizeSession doesn't, and this used to be called
+    //     unconditionally — a single zoom sent five SIGWINCHes in 400ms and made
+    //     the TUI repaint five times.
+    let sent = { cols: 0, rows: 0 }
+    const fitNow = (): void => {
+      const host = hostRef.current
+      if (!host || host.clientWidth < MIN_FIT_W || host.clientHeight < MIN_FIT_H) return
+      try {
+        fit.fit()
+      } catch {
+        /* cell metrics not measurable yet */
+      }
+      if (term.cols !== sent.cols || term.rows !== sent.rows) {
+        sent = { cols: term.cols, rows: term.rows }
+        window.vivarium.resizeSession(session.id, term.cols, term.rows)
+      }
+      // a resize is also the moment the scrollbar geometry has to be right
+      forceScrollAreaSync(term)
     }
-    fit.fit()
+    fitNowRef.current = fitNow
+
+    // WebGL gives one GL context per terminal, and they are not free: Chromium
+    // drops the *oldest* context once a page holds too many, and a GPU driver
+    // reset (routine on Windows) takes them all out at once. xterm waits 3s for
+    // a restore and then gives up via onContextLoss — and a renderer that has
+    // given up simply stops painting, which is the terminal that "breaks" and
+    // won't come back. Dropping the addon falls back to the DOM renderer:
+    // slower, but it always draws.
+    try {
+      const webgl = new WebglAddon()
+      webgl.onContextLoss(() => {
+        webgl.dispose()
+        fitNow()
+        term.refresh(0, term.rows - 1)
+      })
+      term.loadAddon(webgl)
+    } catch {
+      /* WebGL unavailable — fall back to the DOM renderer */
+    }
+    fitNow()
     termRef.current = term
-    fitRef.current = fit
     // debug handle for automated smoke tests (read scrollback via xterm's API)
     const terms = ((window as unknown as { __vivTerms?: Record<string, Terminal> }).__vivTerms ??= {})
     terms[session.id] = term
@@ -267,6 +391,44 @@ export function TerminalView({
     }
     el?.addEventListener('wheel', onWheel, { passive: false })
 
+    // --- who owns the wheel ------------------------------------------------
+    // The moment an application turns on mouse tracking (`CSI ?1000h` and
+    // friends) xterm stops scrolling its viewport and forwards wheel notches to
+    // that application as button reports instead. It decides this *before*
+    // consulting any custom wheel handler, so the only way in is a capture
+    // listener above it.
+    //
+    // That is why an agent terminal can suddenly refuse to scroll back: the
+    // Claude Code binary ships `?1000h`/`?1006h`, and while tracking is on the
+    // scrollback is unreachable with the wheel no matter how much of it there is.
+    //
+    // So: in the NORMAL buffer the wheel is the user's, tracking or not — a
+    // wheel over a log of output means scroll the log, and an app that only
+    // wanted clicks loses nothing. In the ALTERNATE buffer (vim, less, htop) it
+    // stays the application's: there is no scrollback to reach there, and those
+    // apps really do use it.
+    const onWheelCapture = (ev: WheelEvent): void => {
+      if (ev.ctrlKey) return // zoom, handled above
+      // A wasted notch is how the user discovers a stale scrollbar, so this is
+      // the place to notice it. Having just repaired the geometry we also scroll
+      // this notch ourselves: the repair snaps the viewport back to the buffer
+      // position, and the browser would coalesce that with the user's own scroll
+      // into one event which xterm then ignores — losing the notch that found
+      // the bug.
+      const repaired = repairIfStuck(term)
+      if (!repaired) {
+        if (term.modes.mouseTrackingMode === 'none') return // xterm scrolls it fine
+        if (term.buffer.active.type === 'alternate') return // the app's wheel
+      }
+      ev.preventDefault()
+      ev.stopPropagation() // keep it away from xterm's mouse reporting
+      term.scrollLines(wheelLines(term, ev))
+    }
+    hostRef.current?.addEventListener('wheel', onWheelCapture, {
+      capture: true,
+      passive: false
+    })
+
     // open the pty (starts/builds the container if needed; output streams above)
     ;(async () => {
       const res = await window.vivarium.openSession(project.id, session.id, term.cols, term.rows)
@@ -290,18 +452,22 @@ export function TerminalView({
     let t: ReturnType<typeof setTimeout> | null = null
     const doFit = (): void => {
       if (t) clearTimeout(t)
-      t = setTimeout(() => {
-        try {
-          fit.fit()
-          window.vivarium.resizeSession(session.id, term.cols, term.rows)
-        } catch {
-          /* not visible / zero-size */
-        }
-      }, 100)
+      t = setTimeout(fitNow, 100)
     }
     const ro = new ResizeObserver(doFit)
     ro.observe(hostRef.current!)
     window.addEventListener('resize', doFit)
+
+    // Coming back from minimized/occluded: the frames xterm's scrollbar sync
+    // waits for have not been running (see forceScrollAreaSync), so put the
+    // geometry right the moment the window is on screen again rather than
+    // leaving the user to find dead scrollback and reach for the zoom.
+    const onVisible = (): void => {
+      if (document.visibilityState !== 'visible') return
+      fitNow()
+      forceScrollAreaSync(term)
+    }
+    document.addEventListener('visibilitychange', onVisible)
 
     return () => {
       dataSub.dispose()
@@ -310,12 +476,13 @@ export function TerminalView({
       offCO()
       el?.removeEventListener('contextmenu', onContext)
       el?.removeEventListener('wheel', onWheel)
+      hostRef.current?.removeEventListener('wheel', onWheelCapture, { capture: true })
       ro.disconnect()
       window.removeEventListener('resize', doFit)
+      document.removeEventListener('visibilitychange', onVisible)
       if (t) clearTimeout(t)
       term.dispose()
       termRef.current = null
-      fitRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.id])
@@ -324,17 +491,11 @@ export function TerminalView({
   React.useEffect(() => {
     if (!visible) return
     const term = termRef.current
-    const fit = fitRef.current
-    if (!term || !fit) return
+    if (!term) return
     // next frame so the div has non-zero size after visibility flips
     const raf = requestAnimationFrame(() => {
-      try {
-        fit.fit()
-        window.vivarium.resizeSession(session.id, term.cols, term.rows)
-        term.focus()
-      } catch {
-        /* ignore */
-      }
+      fitNowRef.current()
+      term.focus()
     })
     return () => cancelAnimationFrame(raf)
   }, [visible, session.id])
@@ -343,22 +504,22 @@ export function TerminalView({
   const fontSize = useStore((s) => s.terminalFontSize)
   React.useEffect(() => {
     const term = termRef.current
-    const fit = fitRef.current
-    if (!term || !fit || term.options.fontSize === fontSize) return
+    if (!term || term.options.fontSize === fontSize) return
     term.options.fontSize = fontSize
-    // xterm recomputes its cell metrics asynchronously after a font-size change,
-    // so re-fit a few times over ~400ms — the later fits land once the new cell
-    // size has settled and correct the cols/rows (a single early fit is stale).
-    const doFit = (): void => {
-      try {
-        fit.fit()
-        window.vivarium.resizeSession(session.id, term.cols, term.rows)
-      } catch {
-        /* not visible / zero-size */
-      }
-    }
-    const timers = [0, 60, 140, 260, 400].map((ms) => setTimeout(doFit, ms))
-    return () => timers.forEach(clearTimeout)
+    // The new cell metrics are available synchronously on the line above — the
+    // renderer has already resized its canvas to rows × the *new* cell height,
+    // which overflows the container until the fit brings the row count back in
+    // line. So fit immediately: this is the gap where a zoom left the terminal
+    // drawing outside its box with the bottom rows clipped. (This used to be a
+    // spray of five fits over 400ms on the theory that the metrics settled
+    // asynchronously — they don't, and each of those fits resized the pty and
+    // made the TUI repaint.)
+    fitNowRef.current()
+    // One more next frame, in case the font itself was still loading and the
+    // first measurement was of a fallback face. fitNow is a no-op when nothing
+    // changed, so this costs nothing when it wasn't needed.
+    const raf = requestAnimationFrame(() => fitNowRef.current())
+    return () => cancelAnimationFrame(raf)
   }, [fontSize, session.id])
 
   // Outer div carries the gutter padding + background; xterm opens into the

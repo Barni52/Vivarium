@@ -58,6 +58,14 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   `ConfigStore.mutate` (atomic temp-file + rename).
 - Mounts may only change while the container is stopped (`ipc.ts` enforces it); saving settings
   on a running container recreates it.
+- **All terminal resizing goes through `fitNow()`** in `TerminalView` — never call `fit.fit()` or
+  `resizeSession` directly. FitAddon clamps a collapsed container to 2×1 instead of refusing, and
+  a 2-column fit reflows the whole 50k-line scrollback irrecoverably. `fitNow` also only messages
+  the pty when the size really changed (a resize per fit meant a SIGWINCH storm on zoom) and
+  re-syncs the scrollbar, whose geometry xterm only recomputes inside a `requestAnimationFrame` —
+  frames a minimized/occluded window never gets, which is what left agent terminals unable to
+  scroll back. Same file: in the **normal** buffer the mouse wheel belongs to the user even when
+  the app has enabled mouse tracking (Claude Code does), only the **alternate** buffer gets it.
 - **Claude Code is never auto-updated.** It used to be (fire-and-forget `npm i -g` on every
   container start, throttled by a stamp file) — invisible, and it changed the CLI version under
   a live session. Now updates are strictly user-initiated: the title-bar version chip / project
