@@ -1,7 +1,7 @@
 import React from 'react'
 import type { Project, Session } from '@shared/types'
 import { useStore } from '../state/store'
-import { ACCENT } from '../theme'
+import { ACCENT, SESSION_TYPES, typeLabel } from '../theme'
 import { TypeIcon } from './Icons'
 import { Logo } from './Logo'
 import { TerminalView } from './TerminalView'
@@ -73,15 +73,14 @@ export function TerminalHost(): React.ReactElement {
               borderBottom: '1px solid var(--border-2)'
             }}
           >
+            {/* the type's own glyph rather than a colored dot — it says *what*
+                this session is, not just that it has a color */}
             <span
-              style={{
-                width: 8,
-                height: 8,
-                flex: 'none',
-                borderRadius: '50%',
-                background: ACCENT[sel.session.type]
-              }}
-            />
+              title={typeLabel(sel.session.type)}
+              style={{ flex: 'none', display: 'flex', color: ACCENT[sel.session.type] }}
+            >
+              <TypeIcon type={sel.session.type} size={14} />
+            </span>
             <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>
               {sel.session.name}
             </span>
@@ -144,7 +143,7 @@ function StoppedPlaceholder({
 }): React.ReactElement {
   const togglePower = useStore((s) => s.togglePower)
   const [starting, setStarting] = React.useState(false)
-  const kind = session.type === 'agent' ? 'agent' : 'terminal'
+  const kind = typeLabel(session.type).toLowerCase()
 
   const start = async (): Promise<void> => {
     setStarting(true)
@@ -236,20 +235,26 @@ function EmptyState(): React.ReactElement {
           started.
         </div>
       </div>
-      <div
-        style={{
-          display: 'flex',
-          gap: 8,
-          alignItems: 'center',
-          marginTop: 4,
-          fontSize: 12,
-          color: 'var(--text-3)',
-          fontFamily: "'IBM Plex Mono', monospace"
-        }}
-      >
-        {['Agent', 'Terminal · container', 'Terminal · host'].map((t) => (
-          <span key={t} style={{ border: '1px solid var(--border)', padding: '2px 8px' }}>
-            {t}
+      {/* the three kinds with their glyphs — this doubles as the legend for the
+          icons that show up in the sidebar */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+        {SESSION_TYPES.map((t) => (
+          <span
+            key={t.type}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              border: '1px solid var(--border)',
+              padding: '3px 9px',
+              fontSize: 11.5,
+              color: 'var(--text-2)'
+            }}
+          >
+            <span style={{ display: 'flex', color: t.accent }}>
+              <TypeIcon type={t.type} size={13} />
+            </span>
+            {typeLabel(t.type)}
           </span>
         ))}
       </div>

@@ -1,5 +1,6 @@
 // Global CSS ported verbatim from the design mockup (scratchpad/page.html):
 // palette custom-props, keyframes, scrollbars. Injected once at startup.
+import type { SessionType } from '@shared/types'
 
 export const GLOBAL_CSS = `
   *{box-sizing:border-box}
@@ -25,24 +26,80 @@ export const GLOBAL_CSS = `
   @keyframes vpop{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
 `
 
+// Per-session-type hues. Deliberately muted — three fully saturated colors
+// (violet/cyan/green) next to this slate palette read as neon, and the old
+// host-shell green was the exact same green as the "container running"
+// indicator, so a session icon and a container state shared a color.
+// Shape (see TypeIcon) is now the primary way to tell the types apart; color
+// only reinforces it.
 export const ACCENT: Record<string, string> = {
-  agent: '#a56eff',
-  'container-shell': '#3ddbd9',
-  'host-shell': '#42be65'
+  agent: '#a78bdb',
+  'container-shell': '#59a8a4',
+  'host-shell': '#7d9ec9'
 }
 
+export interface SessionTypeMeta {
+  type: SessionType
+  /**
+   * One word, and never a word another type also uses. The old labels were
+   * "Terminal · container" / "Terminal · host": identical for the first nine
+   * characters, which is exactly how far you read when picking from a list.
+   */
+  title: string
+  /** '' for the agent; the two shells share a group heading in the picker */
+  group: string
+  /** what actually runs — the most concrete distinction there is */
+  shell: string
+  /** where it runs */
+  where: string
+  accent: string
+}
+
+/**
+ * The three session kinds, in picker order: agent first (it's the point of the
+ * app), then the shells with **host above container** — host is the one that
+ * gets picked nearly every time.
+ */
+export const SESSION_TYPES: SessionTypeMeta[] = [
+  {
+    type: 'agent',
+    title: 'Agent',
+    group: '',
+    shell: 'claude',
+    where: 'in the container',
+    accent: ACCENT.agent
+  },
+  {
+    type: 'host-shell',
+    title: 'Host',
+    group: 'Terminal',
+    shell: 'PowerShell',
+    where: 'on Windows',
+    accent: ACCENT['host-shell']
+  },
+  {
+    type: 'container-shell',
+    title: 'Container',
+    group: 'Terminal',
+    shell: 'bash',
+    where: 'in the container',
+    accent: ACCENT['container-shell']
+  }
+]
+
+/**
+ * Geometry of the new-session popover. Lives here rather than in the component
+ * because openAddSession (store.ts) needs it to keep the panel on screen, and
+ * the component importing the store already makes the other direction a cycle.
+ */
+export const ADD_SESSION_POPOVER = { width: 336, height: 380 }
+
+export function typeMeta(type: string): SessionTypeMeta {
+  return SESSION_TYPES.find((t) => t.type === type) ?? SESSION_TYPES[0]
+}
+
+/** Full name for prose and tooltips: 'Agent' / 'Host terminal' / 'Container terminal'. */
 export function typeLabel(type: string): string {
-  return type === 'agent'
-    ? 'Agent'
-    : type === 'container-shell'
-      ? 'Terminal · container'
-      : 'Terminal · host'
-}
-
-export function typeSubtitle(type: string): string {
-  return type === 'agent'
-    ? 'Claude Code in the container'
-    : type === 'container-shell'
-      ? 'bash inside the container'
-      : 'PowerShell in the project folder'
+  const m = typeMeta(type)
+  return m.group ? `${m.title} ${m.group.toLowerCase()}` : m.title
 }

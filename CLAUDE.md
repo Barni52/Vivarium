@@ -27,7 +27,10 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
 - `src/shared/` — `ipc.ts` (channel names, `CH`) and `types.ts` (all cross-process types).
 - `src/renderer/src/` — React + zustand + xterm. `state/store.ts` is the single store for all
   UI state. `TerminalHost` keeps one long-lived `TerminalView` per opened session — hidden on
-  deselect, never destroyed, so scrollback survives switching.
+  deselect, never destroyed, so scrollback survives switching. `theme.ts` owns the palette *and*
+  `SESSION_TYPES` — the one place session-type wording, hue and popover geometry are defined;
+  the picker, sidebar, terminal header and empty state all read from it, and `TypeIcon` gives
+  each type its own silhouette so they never depend on color alone.
 
 **Adding an IPC feature** touches four places in order: channel name in `src/shared/ipc.ts` →
 handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → renderer call via

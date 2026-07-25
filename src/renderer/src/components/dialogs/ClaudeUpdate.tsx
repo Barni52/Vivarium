@@ -3,6 +3,7 @@ import type { ClaudeVersionInfo } from '@shared/types'
 import { useStore } from '../../state/store'
 import { Overlay, Panel, FooterButton } from '../ui'
 import { Refresh, Sparkle } from '../Icons'
+import { ACCENT } from '../../theme'
 import { behindIds, isBehind, reasonLabel, reasonShort } from '../../claude'
 
 // Manual Claude Code updates. Vivarium never updates the CLI on its own (an
@@ -201,7 +202,7 @@ export function ClaudeUpdate(): React.ReactElement | null {
               gap: 7
             }}
           >
-            <Sparkle size={12} color="#a56eff" />
+            <Sparkle size={12} color={ACCENT.agent} />
             Claude Code
           </div>
 
