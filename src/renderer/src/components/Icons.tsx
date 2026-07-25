@@ -144,6 +144,26 @@ export const Gear = ({ size = 15, color = 'currentColor', style }: P): React.Rea
 export const Stop = ({ size = 12, color = 'currentColor', style }: P): React.ReactElement =>
   svg(size, <rect x="4" y="4" width="8" height="8" rx="1" fill={color} />, style)
 
+// The IEC power symbol — a ring broken at the top with a stem through the gap.
+// Pairs with Stop (filled square) for the container's start/stop menu item: an
+// outline for "off, press to turn on", a solid block for "on, press to stop".
+// The arc is the *major* one (large-arc 1) in the screen-counterclockwise
+// direction (sweep 0), which is the half that passes under the circle.
+export const Power = ({ size = 15, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <>
+      <path
+        d="M5.36 4.63A4.6 4.6 0 1 0 10.64 4.63"
+        stroke={color}
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+      <path d="M8 2.3v5.3" stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+    </>,
+    style
+  )
+
 export const Restart = ({ size = 15, color = 'currentColor', style }: P): React.ReactElement =>
   svg(
     size,

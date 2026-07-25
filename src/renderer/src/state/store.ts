@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { ReactNode } from 'react'
 import type {
   AgentHookEvent,
   ClaudeStatus,
@@ -35,6 +36,11 @@ export type DialogKind =
 export interface ContextMenuItem {
   /** '---' renders a separator; label otherwise */
   label: string
+  /**
+   * Optional glyph shown left of the label. If *any* item in a menu has one,
+   * every row reserves the slot so the labels stay on one left edge.
+   */
+  icon?: ReactNode
   danger?: boolean
   disabled?: boolean
   onSelect?: () => void

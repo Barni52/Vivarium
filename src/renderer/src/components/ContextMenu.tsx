@@ -64,6 +64,8 @@ export function ContextMenu(): React.ReactElement | null {
 
   if (!menu) return null
 
+  const hasIcons = menu.items.some((item) => !!item.icon)
+
   return (
     // full-screen catcher closes on any outside click (incl. right-click)
     <div
@@ -107,6 +109,11 @@ export function ContextMenu(): React.ReactElement | null {
             <MenuRow
               key={i}
               label={item.label}
+              icon={item.icon}
+              // one left edge for the labels: as soon as one item in this menu
+              // brings a glyph, the iconless ones keep an empty slot rather than
+              // sliding under the icons
+              gutter={hasIcons}
               danger={item.danger}
               disabled={item.disabled}
               onSelect={() => {
@@ -128,17 +135,31 @@ export function ContextMenu(): React.ReactElement | null {
 
 function MenuRow({
   label,
+  icon,
+  gutter,
   danger,
   disabled,
   onSelect
 }: {
   label: string
+  icon?: React.ReactNode
+  gutter?: boolean
   danger?: boolean
   disabled?: boolean
   onSelect: () => void
 }): React.ReactElement {
   const [hover, setHover] = React.useState(false)
   const color = disabled ? 'var(--text-3)' : danger ? 'var(--danger)' : 'var(--text)'
+  // Glyphs sit one step below the label in brightness (and brighten with the
+  // row): they're there to be recognised at a glance, not read — a full-strength
+  // icon column would out-shout the words it's labelling.
+  const iconColor = disabled
+    ? 'var(--text-3)'
+    : danger
+      ? 'var(--danger)'
+      : hover
+        ? 'var(--text-2)'
+        : 'var(--text-3)'
   // Non-danger hover uses the selection color (--sel) — the old --row-hover was
   // nearly indistinguishable from the panel background. Danger keeps its red tint.
   const bg = hover && !disabled ? (danger ? 'rgba(250,77,86,.14)' : 'var(--sel)') : 'transparent'
@@ -150,6 +171,7 @@ function MenuRow({
       style={{
         display: 'flex',
         alignItems: 'center',
+        gap: 9,
         height: 30,
         padding: '0 12px',
         fontSize: 13,
@@ -160,6 +182,21 @@ function MenuRow({
         opacity: disabled ? 0.6 : 1
       }}
     >
+      {gutter && (
+        <span
+          style={{
+            width: 16,
+            height: 16,
+            flex: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: iconColor
+          }}
+        >
+          {icon}
+        </span>
+      )}
       {label}
     </div>
   )
