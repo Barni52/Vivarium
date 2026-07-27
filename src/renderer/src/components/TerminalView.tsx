@@ -403,6 +403,11 @@ export function TerminalView({
         return false
       }
       if ((e.ctrlKey && e.shiftKey && k === 'v') || (e.shiftKey && e.key === 'Insert')) {
+        // preventDefault, or the browser's own paste action still fires a native
+        // `paste` event on xterm's hidden textarea, which xterm forwards to the
+        // pty as a second copy (same trap as Shift+Enter above). Chromium treats
+        // Ctrl+Shift+V ("paste as plain text") and Shift+Insert as paste too.
+        e.preventDefault()
         void doPaste()
         return false
       }
@@ -418,8 +423,9 @@ export function TerminalView({
         }
         return true
       }
-      // Ctrl+V: paste
+      // Ctrl+V: paste (preventDefault — see the Ctrl+Shift+V branch above)
       if (e.ctrlKey && !e.shiftKey && !e.altKey && k === 'v') {
+        e.preventDefault()
         void doPaste()
         return false
       }
