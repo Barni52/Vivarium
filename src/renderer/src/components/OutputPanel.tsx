@@ -77,8 +77,7 @@ export function OutputPanel(): React.ReactElement {
     openContextMenu(e.clientX, e.clientY, [
       { label: 'Open in Explorer', icon: <OpenExternal size={14} />, onSelect: () => openOutputFolder() },
       { label: 'Change folder…', icon: <Folder size={14} />, onSelect: () => void browse() },
-      // see TerminalView's Reset zoom — Refresh's arc is inset in its viewBox
-      { label: 'Refresh', icon: <Refresh size={16} />, onSelect: () => void refreshOutputTree() },
+      { label: 'Refresh', icon: <Refresh size={14} />, onSelect: () => void refreshOutputTree() },
       { label: '---' },
       {
         // an X, not a trash can: this only forgets the folder, it doesn't touch

@@ -415,12 +415,28 @@ export function FileIcon({ name, size = 14, style }: { name: string; size?: numb
   return <File size={size} color="var(--text-3)" style={style} />
 }
 
+// A 270° arc opening at the top right, closed by a solid arrowhead pointing
+// clockwise — the reload convention.
+//
+// The arc is written endpoint-style, and the flags decide which of the two
+// possible circles gets used: with (large-arc 1, sweep 1) these endpoints
+// resolve to centre (8,8) r=4.9, i.e. concentric with the viewBox. The previous
+// version used (1, 0), which resolves to centre (7.30, 4.81) — off centre by
+// 3.2 vertically, with the top of the circle at y=-0.39. An <svg> root clips to
+// its viewport, so that glyph was drawn with ~1 unit sliced off the top and all
+// its ink crammed above y=8.6; centred in a button it therefore sat high, and
+// the arc looked flat where the clip cut it. Keep the centre at (8,8): ink then
+// spans 2.0..13.7 in both axes, the same margin the rest of these icons keep.
+//
+// The head is a filled triangle sitting on the arc's end and pointing along its
+// travel direction. The old one was two stroked lines meeting in a right angle,
+// which at 13px read as a stray tick rather than an arrow.
 export const Refresh = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
   svg(
     size,
     <>
-      <path d="M12.5 5A5.2 5.2 0 103.2 8" stroke={color} strokeWidth="1.2" strokeLinecap="round" />
-      <path d="M12.7 2.2v3h-3" stroke={color} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12.6 6.32A4.9 4.9 0 116.32 3.4" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+      <path d="M5.24 2.04 8.72 2.53 6.36 5.14Z" fill={color} />
     </>,
     style
   )

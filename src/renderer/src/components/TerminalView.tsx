@@ -458,12 +458,9 @@ export function TerminalView({
           { label: 'Zoom out', icon: <ZoomOut size={14} />, hint: 'Ctrl+-', onSelect: () => z.zoomTerminal(-1) },
           // a circular arrow rather than a third magnifier: "back to the default"
           // is the action, and a magnifier with nothing in it now means Find
-          // 16, not 14: Refresh's arc only fills the middle two-thirds of its
-          // viewBox, so it needs the extra size to weigh the same as the
-          // magnifiers above it
           {
             label: 'Reset zoom',
-            icon: <Refresh size={16} />,
+            icon: <Refresh size={14} />,
             hint: 'Ctrl+0',
             onSelect: () => z.resetTerminalZoom()
           }
