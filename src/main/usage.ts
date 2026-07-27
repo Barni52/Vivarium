@@ -83,11 +83,32 @@ export class UsageService {
 
   constructor(private docker: DockerService) {}
 
+  /** Still good to send? 60s slack so a token about to expire mid-request isn't
+   *  used. A file that omitted expiresAt (0) counts as usable — nothing local
+   *  can disprove it, so only a 401 does. */
+  private static usable(c: OauthCreds): boolean {
+    return c.expiresAt === 0 || c.expiresAt - 60_000 > Date.now()
+  }
+
   private async acquireToken(): Promise<OauthCreds | null> {
     const sources: Array<() => Promise<string | null>> = [
       () => readFile(join(homedir(), '.claude', '.credentials.json'), 'utf8').catch(() => null),
       () => this.docker.readSharedCredentials()
     ]
+    // Access tokens live ~1h and we never refresh them, so "first source that
+    // has one" is the wrong pick: the host copy is only rewritten when claude
+    // runs on Windows, while the shared volume is rewritten by every
+    // containerized agent run — i.e. constantly, since that's what this app is
+    // for. Taking the host copy unconditionally lets an hours-old token shadow
+    // a fresh one and 401 every poll, and the retry below re-reads the same
+    // sources in the same order, so it 401s again and the chips sit at "usage
+    // n/a" until someone happens to run claude on Windows.
+    //
+    // So: the first *usable* token wins (a fresh host copy still short-circuits,
+    // keeping the common case docker-free), and if every source is expired the
+    // least-stale one is returned — that way the request reports auth-expired
+    // rather than the misleading no-credentials.
+    let bestExpired: OauthCreds | null = null
     for (const read of sources) {
       const raw = await read()
       if (!raw) continue
@@ -95,20 +116,19 @@ export class UsageService {
         const o = (JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string; expiresAt?: number } })
           .claudeAiOauth
         if (typeof o?.accessToken === 'string' && o.accessToken) {
-          return { accessToken: o.accessToken, expiresAt: Number(o.expiresAt) || 0 }
+          const creds = { accessToken: o.accessToken, expiresAt: Number(o.expiresAt) || 0 }
+          if (UsageService.usable(creds)) return creds
+          if (!bestExpired || creds.expiresAt > bestExpired.expiresAt) bestExpired = creds
         }
       } catch {
         // malformed file — try the next source
       }
     }
-    return null
+    return bestExpired
   }
 
   private async token(force: boolean): Promise<OauthCreds | null> {
-    // 60s slack so a token about to expire mid-request isn't used.
-    const fresh =
-      this.creds && (this.creds.expiresAt === 0 || this.creds.expiresAt - 60_000 > Date.now())
-    if (!force && fresh) return this.creds
+    if (!force && this.creds && UsageService.usable(this.creds)) return this.creds
     this.creds = await this.acquireToken()
     return this.creds
   }

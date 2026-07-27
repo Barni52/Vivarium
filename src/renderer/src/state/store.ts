@@ -400,12 +400,23 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   refreshUsage: async () => {
-    const next = await window.vivarium.fetchUsage()
+    let next: UsageSnapshot
+    try {
+      next = await window.vivarium.fetchUsage()
+    } catch {
+      // A rejected invoke has to land a snapshot too. Leaving `usage` null makes
+      // the TitleBar render *nothing* — indistinguishable from "the feature
+      // vanished", and permanent, since nothing else ever sets it.
+      next = { ok: false, error: 'unreachable', limits: [], fetchedAt: Date.now() }
+    }
     // A failed poll must not wipe live chips: keep the last good snapshot and
     // let the countdown keep interpolating off the app clock — the TitleBar
     // surfaces staleness from the old fetchedAt. Errors only land when there
-    // is nothing better to show.
-    set((s) => (next.ok || !s.usage || !s.usage.ok ? { usage: next } : {}))
+    // is nothing better to show. An ok-but-empty response counts as an error
+    // here: the TitleBar renders it as "usage n/a" all the same, so letting it
+    // through would blank the chips just as thoroughly as a failure would.
+    const shows = (u: UsageSnapshot | null): boolean => !!u && u.ok && u.limits.length > 0
+    set((s) => (shows(next) || !shows(s.usage) ? { usage: next } : {}))
   },
 
   // ---- claude code version / manual update --------------------------------

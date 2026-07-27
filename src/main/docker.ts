@@ -265,25 +265,39 @@ export class DockerService {
    * nothing is running and busybox can't be pulled, or the file doesn't exist.
    */
   async readSharedCredentials(): Promise<string | null> {
+    // Every step is capped: this runs behind an IPC handler the renderer awaits,
+    // and a daemon that is starting up or wedged makes plain `docker ps` hang
+    // indefinitely rather than fail. Without a cap that hang propagates all the
+    // way to the title bar, which shows nothing at all until the call settles.
+    // The busybox run gets more room — it may have to pull the image once.
     try {
-      const ps = await this.exec(['ps', '--filter', 'name=vivarium-', '--format', '{{.Names}}'])
+      const ps = await this.exec(
+        ['ps', '--filter', 'name=vivarium-', '--format', '{{.Names}}'],
+        5_000
+      )
       const name = ps.stdout
         .split('\n')
         .map((s) => s.trim())
         .filter(Boolean)[0]
       if (ps.code === 0 && name) {
-        const r = await this.exec(['exec', name, 'cat', '/home/node/.claude/.credentials.json'])
+        const r = await this.exec(
+          ['exec', name, 'cat', '/home/node/.claude/.credentials.json'],
+          5_000
+        )
         if (r.code === 0 && r.stdout.trim()) return r.stdout
       }
-      const r = await this.exec([
-        'run',
-        '--rm',
-        '-v',
-        `${CREDS_VOLUME}:/creds:ro`,
-        'busybox',
-        'cat',
-        '/creds/.credentials.json'
-      ])
+      const r = await this.exec(
+        [
+          'run',
+          '--rm',
+          '-v',
+          `${CREDS_VOLUME}:/creds:ro`,
+          'busybox',
+          'cat',
+          '/creds/.credentials.json'
+        ],
+        20_000
+      )
       return r.code === 0 && r.stdout.trim() ? r.stdout : null
     } catch {
       return null // docker-missing
