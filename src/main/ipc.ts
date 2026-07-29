@@ -229,21 +229,20 @@ export function registerIpc(win: BrowserWindow): void {
    * Move a session to another project (sidebar drag). `index` is the insertion
    * point in the target's session list; -1 or out of range appends.
    *
-   * The pty cannot follow the session — for a container session it is a
-   * `docker exec` client bound to the old container, for a host shell a pwsh
-   * rooted at the old project's basePath — so it is killed here and the renderer
-   * reopens against the new project (see TerminalHost's project-scoped key). The
-   * kill is silent because it happens *before* the config rewrite below, so the
-   * exit would otherwise land on the replacement terminal (see PtyManager.kill).
+   * The pty cannot follow the session — for a container session it is a `docker
+   * exec` client bound to the old container, for a host shell a pwsh rooted at the
+   * old basePath — so it is killed here and the renderer reopens against the new
+   * project (see TerminalHost's project-scoped key). Silently, because the kill
+   * happens *before* the config rewrite below and the exit would otherwise land on
+   * the replacement terminal (see PtyManager.kill).
    *
-   * An agent's conversation survives the move untouched, with no transfer step:
-   * claudeSessionId lives on the Session object and travels with it,
-   * /home/node/.claude is the same claude-box-creds volume in every container,
-   * and every agent execs with -w /workspace — so the transcript path is
-   * identical from the new container and execArgs picks --resume there. What does
-   * change (the point of the feature) is which mounts sit under /workspace, so
-   * file paths from earlier in the conversation may not exist anymore; the
-   * confirm dialog says so.
+   * An agent's conversation survives untouched, with no transfer step:
+   * claudeSessionId travels on the Session object, /home/node/.claude is the same
+   * claude-box-creds volume in every container, and every agent execs with
+   * -w /workspace, so the transcript path is identical from the new container and
+   * execArgs picks --resume there. What does change — the point of the feature — is
+   * which mounts sit under /workspace, so file paths from earlier in the
+   * conversation may not exist anymore; the confirm dialog says so.
    */
   ipcMain.handle(
     CH.moveSession,

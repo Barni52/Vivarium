@@ -77,28 +77,25 @@ export function TerminalHost(): React.ReactElement {
 
   const allSessions = projects.flatMap((p) => p.sessions.map((s) => ({ project: p, session: s })))
 
-  // Which sessions get a terminal. This used to be "every session you have ever
-  // clicked", which meant a project could have its container up and its agents
-  // still dark — you could not start a container and walk away. Now it is derived:
-  // a session is live whenever it *can* be, and each mounted view opens its own
-  // pty (TerminalView). Views stay mounted but hidden when another is selected, so
+  // Which sessions get a terminal — derived, not "every session you have ever
+  // clicked" (which left a project's agents dark while its container was up, so you
+  // could not start one and walk away). Each mounted view opens its own pty
+  // (TerminalView) and stays mounted but hidden when another is selected, so
   // scrollback survives switching.
   //
   //  • host shells need no container, so they come up at app launch;
   //  • a running container brings every one of its sessions up — on an explicit
   //    start, and at launch for a container that was already running;
-  //  • a live pty keeps its view mounted even when the probe says stopped, because
-  //    unmounting runs TerminalView's cleanup and term.dispose() takes the whole
-  //    50k-line scrollback with it. `running` behind it is a 3s `docker inspect`
-  //    poll whose isRunning() reports false for *any* non-zero exit — a busy
-  //    daemon, a WSL hiccup, a docker.exe that couldn't be spawned. One such blip
-  //    used to wipe every terminal in the project while the user was on another
-  //    session, and invisibly: PtyManager.spawn re-attaches the same pty on the
-  //    remount, so the agent keeps working and the TUI repaints into a buffer with
-  //    no history — "the scrollbar is gone" with nothing to scroll to. A pty that
-  //    is still alive is better evidence than the probe (the docker exec client
-  //    dies with its container), so it wins. A container that really stopped ends
-  //    the pty, `live` clears, and the view unmounts exactly as before.
+  //  • a live pty outranks the probe, because unmounting runs TerminalView's
+  //    cleanup and term.dispose() takes the whole 50k-line scrollback with it.
+  //    `running` is a 3s `docker inspect` poll whose isRunning() reports false for
+  //    *any* non-zero exit — busy daemon, WSL hiccup, unspawnable docker.exe — and
+  //    one such blip used to wipe a project's terminals while the user was on
+  //    another session, invisibly: PtyManager.spawn re-attaches the same pty on the
+  //    remount, so the agent kept working and its TUI repainted into a buffer with
+  //    no history. A live pty is the better evidence anyway (the docker exec client
+  //    dies with its container). A container that really stopped ends the pty,
+  //    `live` clears, and the view unmounts exactly as before.
   const toRender = allSessions.filter(
     ({ project, session }) =>
       session.type === 'host-shell' || !!states[project.id]?.running || !!live[session.id]
@@ -180,15 +177,13 @@ export function TerminalHost(): React.ReactElement {
           that lands in here and re-focus the visible terminal (ContextMenu). */}
       <div data-terminal-host style={{ flex: 1, position: 'relative', minHeight: 0 }}>
         {toRender.map(({ project, session }) => (
-          // Keyed by project *and* session: a session dragged to another project
-          // has to re-exec into that project's container, and a remount is what
+          // Keyed by project *and* session: a session dragged to another project has
+          // to re-exec into that project's container, and the remount is what
           // reopens the pty there — it also re-captures `project` for the
-          // container-output filter and the per-project /clip paste dir inside
-          // TerminalView's mount effect. This does drop that terminal's
-          // scrollback, which is otherwise guarded against; the guard is about an
-          // *incidental* docker-probe blip disposing a terminal, whereas a move
-          // deliberately ends that pty, and for an agent `claude --resume`
-          // re-renders the conversation itself.
+          // container-output filter and the /clip paste dir. It does drop that
+          // terminal's scrollback: the guard elsewhere is against an *incidental*
+          // docker-probe blip, whereas a move deliberately ends that pty, and for an
+          // agent `claude --resume` re-renders the conversation itself.
           <TerminalView
             key={`${project.id}:${session.id}`}
             project={project}

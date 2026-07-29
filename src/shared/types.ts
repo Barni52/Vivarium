@@ -10,12 +10,11 @@ export interface Session {
   type: SessionType
   /**
    * For `agent` sessions only: a stable UUID pinned as Claude Code's own
-   * conversation id (`claude --session-id <uuid>` on first launch, `--resume
-   * <uuid>` after). Lets an agent's conversation survive the container being
-   * stopped/recreated and the app restarting — the transcript persists on the
-   * claude-box-creds volume, so we re-attach the *conversation* without any
-   * multiplexer. Undefined for shell sessions (and legacy agent sessions until
-   * backfilled on config load).
+   * conversation id (`claude --session-id <uuid>` on first launch, `--resume <uuid>`
+   * after), so a conversation survives the container being stopped/recreated and the
+   * app restarting — the transcript persists on the claude-box-creds volume, and we
+   * re-attach the *conversation* without any multiplexer. Undefined for shell
+   * sessions, and for legacy agent sessions until backfilled on config load.
    */
   claudeSessionId?: string
 }
@@ -96,12 +95,11 @@ export interface AgentHookEvent {
   sessionId: string
   kind: AgentHookKind
   /**
-   * Epoch ms, stamped on the HOST when the bridge read the line — not the
-   * container-side timestamp the hook writes into events.log. The container
-   * clock can drift from Windows (WSL2 VMs do this across host sleep), and
-   * these values are subtracted from `Date.now()` to show "working 4m", so a
-   * skewed clock would show a negative or wildly long turn. The log keeps its
-   * own timestamp for post-mortem reading; the UI runs on this one.
+   * Epoch ms, stamped on the HOST when the bridge read the line, not the
+   * container-side timestamp the hook writes into events.log: a WSL2 clock drifts
+   * from Windows across host sleep, and these values are subtracted from
+   * `Date.now()` to show "working 4m", so a skewed one would print a negative or
+   * absurd turn. The log keeps its own timestamp for post-mortem reading only.
    */
   at: number
 }

@@ -5,18 +5,17 @@ import { join } from 'node:path'
 import type { AgentHookEvent, AgentHookKind } from '@shared/types'
 
 // The "bridge" is how agent lifecycle events get out of the container: a small
-// host dir (one per project) bind-mounted at /vivarium. Vivarium writes a
-// Claude Code hooks settings file + a tiny shell script into it; the agent is
-// launched with `--settings /vivarium/hooks.json`, so Claude Code itself
-// reports UserPromptSubmit (turn started), Stop (turn finished), the two tools
-// that block on the user (AskUserQuestion / ExitPlanMode) and their completion
-// (Resumed) by appending a line to /vivarium/events.log, which the main process
-// tails from the host side. This replaces the old approach of scraping the xterm
-// buffer for the "esc to interrupt" spinner text, which silently broke when the
-// Claude Code TUI changed. Hooks are a documented interface; the TUI is not.
+// host dir (one per project) bind-mounted at /vivarium, holding a Claude Code hooks
+// settings file plus a tiny shell script. The agent launches with
+// `--settings /vivarium/hooks.json`, so Claude Code itself reports UserPromptSubmit
+// (turn started), Stop (turn finished), the two tools that block on the user
+// (AskUserQuestion / ExitPlanMode) and their completion (Resumed), by appending a
+// line to /vivarium/events.log which the main process tails from the host side.
+// This replaces scraping the xterm buffer for the "esc to interrupt" spinner, which
+// broke silently whenever the TUI changed: hooks are a documented interface.
 //
-// Scoping the hooks to `--settings` (instead of writing into the shared
-// /home/node/.claude/settings.json volume) keeps claude-box.ps1 sessions and
+// Scoping them to `--settings` rather than the shared
+// /home/node/.claude/settings.json keeps claude-box.ps1 sessions and
 // manually-launched `claude` runs unaffected.
 
 // Everything hook.sh can legally write. A line with anything else in the first

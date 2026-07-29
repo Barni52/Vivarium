@@ -54,24 +54,20 @@ const core = (term: Terminal): XtermCore | undefined =>
 /**
  * Recompute the scrollbar geometry from scratch, right now.
  *
- * xterm's scrollback bar is a real DOM scrollbar: `.xterm-scroll-area` is sized
- * to the whole buffer and the wheel moves the viewport's own scrollTop. That
- * height is recalculated inside a requestAnimationFrame — and a rAF never runs
- * while the window is producing no frames (minimized, or fully covered by
- * another window), which is exactly when an agent streams output nobody is
- * watching. xterm records "I've accounted for this buffer length" *before*
- * queueing that frame, so when the agent then falls silent — the moment you come
- * back to read it — the terminal is left with a scroll area one screen tall in
- * front of thousands of unreachable lines, and nothing will ever notice.
+ * xterm's scrollback bar is a real DOM scrollbar — `.xterm-scroll-area` sized to
+ * the whole buffer, the wheel moving the viewport's own scrollTop — and its height
+ * is recalculated inside a requestAnimationFrame. No frames run while the window
+ * is minimized or fully covered, which is exactly when an agent streams output
+ * nobody is watching, and xterm records "accounted for this buffer length"
+ * *before* queueing that frame: come back to a terminal that has since fallen
+ * silent and the scroll area is one screen tall in front of thousands of
+ * unreachable lines, with nothing left to notice.
  *
- * Its own `syncScrollArea` can't get us out of that: it is change *detection*
- * (buffer length, canvas height, scroll position, cell height, all against what
- * it last recorded) and in this state every one of them matches. So drop one of
- * the records first — a length of -1 can never match a real one — and the sync
- * recomputes. `immediate` skips the animation frame that got us here.
- *
- * A real resize does the same thing via `_afterResize`, which is why zooming in
- * and out appeared to repair it.
+ * Its own `syncScrollArea` can't get us out of that — it is change *detection*
+ * (buffer length, canvas height, scroll position, cell height, against what it
+ * last recorded) and here every one matches. So spoil a record first: -1 can
+ * never equal a real length. `immediate` skips the frame that got us here. A real
+ * resize does the same via `_afterResize`, which is why zooming appeared to fix it.
  */
 function forceScrollAreaSync(term: Terminal): void {
   const vp = core(term)?.viewport
@@ -83,12 +79,11 @@ function forceScrollAreaSync(term: Terminal): void {
 /**
  * The height of one row, measured off the DOM instead of read from xterm.
  *
- * xterm's own copy of this lives on the *renderer's* dimensions object, which
- * the viewport caches by reference and only replaces when an onDimensionsChange
- * fires. Swap the renderer (WebGL context loss → the DOM fallback below) without
- * also changing size and no such event is emitted, so the viewport keeps sizing
- * the scrollbar from a dead object. `.xterm-screen` is sized to rows × cell
- * height by whichever renderer is actually live, so it can't go stale that way.
+ * xterm's own copy lives on the *renderer's* dimensions object, which the viewport
+ * caches by reference and replaces only when an onDimensionsChange fires. Swap the
+ * renderer (WebGL context loss → the DOM fallback below) at an unchanged size and
+ * none is emitted, so the viewport keeps sizing the scrollbar from a dead object.
+ * `.xterm-screen` is sized to rows × cell height by whichever renderer is live.
  */
 function rowHeight(term: Terminal): number {
   const screen = term.element?.querySelector('.xterm-screen') as HTMLElement | null
@@ -98,23 +93,20 @@ function rowHeight(term: Terminal): number {
 
 /**
  * Repair the scroll geometry, but only when it is provably broken: the DOM
- * scrollbar cannot reach every line the buffer is holding above the view. Cheap
- * enough to call on every wheel gesture, and because it does nothing in the
- * healthy case it can't fight a scroll that is working.
- *
- * This is the belt to forceScrollAreaSync's braces: Windows doesn't necessarily
- * mark a merely *occluded* window as hidden, so there may be no visibilitychange
- * to hang the repair on — but there is always the notch the user is about to
- * waste.
+ * scrollbar cannot reach every line the buffer is holding above the view. A no-op
+ * in the healthy case, so it is cheap enough for every wheel gesture and can't
+ * fight a scroll that is working. Belt to forceScrollAreaSync's braces: Windows
+ * doesn't necessarily mark a merely *occluded* window as hidden, so there may be
+ * no visibilitychange to hang the repair on — but there is always the notch the
+ * user is about to waste.
  *
  * The test is "short of the buffer", not "cannot scroll at all", because a stale
- * scroll area is not only ever one screen tall. Resize a window whose bar has
- * gone stale and the viewport shrinks under a scroll area that didn't follow:
- * a bar reappears, reaching exactly as far back as the taller window had shown
- * and no further, and the old zero-range test called that healthy and left it
- * there. In the healthy case the two sides are equal — a full buffer is
- * baseY + rows lines and the area is baseY rows taller than the viewport — so
- * the slack is a single row of rounding, no more.
+ * scroll area is not only ever one screen tall: shrink a window whose bar has gone
+ * stale and a bar reappears, reaching exactly as far back as the taller window had
+ * shown and no further, which the old zero-range test called healthy. When it
+ * really is healthy the two sides are equal — a full buffer is baseY + rows lines,
+ * the area baseY rows taller than the viewport — so the slack is one row of
+ * rounding.
  */
 function repairIfStuck(term: Terminal): boolean {
   const vpEl = term.element?.querySelector('.xterm-viewport')
@@ -261,18 +253,16 @@ export function TerminalView({
     // here:
     //
     //  1. Never fit a box with no usable size. FitAddon clamps to its own
-    //     MINIMUM_COLS/ROWS (2x1) instead of refusing, so a container that is
-    //     momentarily collapsed — output panel dragged to the top, a very short
-    //     window, a layout pass mid-drag — resizes the terminal to a one-row
-    //     sliver and tells the pty it has one row, which is enough to make an
-    //     agent's TUI redraw itself into that sliver and stay corrupt. A
-    //     collapsed *width* is worse: 2 columns reflows the entire 50k-line
-    //     scrollback and the buffer never gets its line structure back.
+    //     MINIMUM_COLS/ROWS (2x1) instead of refusing, so a momentarily collapsed
+    //     container — output panel dragged to the top, a very short window, a
+    //     layout pass mid-drag — tells the pty it has one row, enough to make an
+    //     agent's TUI redraw into that sliver and stay corrupt. A collapsed
+    //     *width* is worse: 2 columns reflows the entire 50k-line scrollback and
+    //     the buffer never gets its line structure back.
     //
-    //  2. Only tell the pty when the size really changed. fit() no-ops when the
-    //     dimensions match but resizeSession doesn't, and this used to be called
-    //     unconditionally — a single zoom sent five SIGWINCHes in 400ms and made
-    //     the TUI repaint five times.
+    //  2. Only tell the pty when the size really changed. fit() no-ops on matching
+    //     dimensions but resizeSession doesn't, and calling it unconditionally
+    //     meant five SIGWINCHes (and five TUI repaints) per zoom.
     let sent = { cols: 0, rows: 0 }
     const fitNow = (): void => {
       const host = hostRef.current
@@ -291,17 +281,14 @@ export function TerminalView({
     }
     fitNowRef.current = fitNow
 
-    // WebGL gives one GL context per terminal, and they are not free: Chromium
-    // drops the *oldest* context once a page holds too many, and a GPU driver
-    // reset (routine on Windows) takes them all out at once. That first case is
-    // reachable now that every session of a running container is mounted rather
-    // than only the ones you clicked — a couple of dozen sessions and the earliest
-    // terminals get their contexts taken. It degrades rather than breaks, which is
-    // the whole point of the handler below. xterm waits 3s for
-    // a restore and then gives up via onContextLoss — and a renderer that has
-    // given up simply stops painting, which is the terminal that "breaks" and
-    // won't come back. Dropping the addon falls back to the DOM renderer:
-    // slower, but it always draws.
+    // WebGL gives one GL context per terminal and they are not free: Chromium drops
+    // the *oldest* once a page holds too many (reachable now that every session of
+    // a running container is mounted, not just the clicked ones — a couple of dozen
+    // and the earliest lose theirs), and a GPU driver reset, routine on Windows,
+    // takes them all at once. xterm waits 3s for a restore then gives up via
+    // onContextLoss, and a renderer that has given up simply stops painting: that
+    // is the terminal that "breaks" and never comes back. Dropping the addon falls
+    // back to the DOM renderer — slower, but it always draws.
     try {
       const webgl = new WebglAddon()
       webgl.onContextLoss(() => {
@@ -392,13 +379,11 @@ export function TerminalView({
       // "insert newline" (the same one `claude`'s /terminal-setup installs for
       // Shift+Enter). Plain Enter still submits.
       //
-      // preventDefault is essential for Shift+Enter specifically: returning
-      // false from the keydown handler makes xterm skip its default, but it
-      // doesn't mark the event handled, so the browser still fires a follow-up
-      // `keypress` (charCode 13) that xterm would send as a second, bare CR —
-      // appending our newline AND submitting. preventDefault suppresses that
-      // keypress. (Ctrl+Enter emits no keypress, which is why it already
-      // worked.)
+      // preventDefault is essential for Shift+Enter specifically: returning false
+      // makes xterm skip its default but doesn't mark the event handled, so the
+      // browser still fires a `keypress` (charCode 13) that xterm sends as a second
+      // bare CR — appending our newline AND submitting. Ctrl+Enter emits no
+      // keypress, which is why it already worked.
       if (session.type === 'agent' && e.key === 'Enter' && (e.shiftKey || e.ctrlKey) && !e.altKey) {
         e.preventDefault()
         window.vivarium.writeSession(session.id, '\x1b\r')
@@ -527,21 +512,17 @@ export function TerminalView({
     el?.addEventListener('wheel', onWheel, { passive: false })
 
     // --- who owns the wheel ------------------------------------------------
-    // The moment an application turns on mouse tracking (`CSI ?1000h` and
-    // friends) xterm stops scrolling its viewport and forwards wheel notches to
-    // that application as button reports instead. It decides this *before*
-    // consulting any custom wheel handler, so the only way in is a capture
-    // listener above it.
+    // The moment an application turns on mouse tracking (`CSI ?1000h` and friends)
+    // xterm stops scrolling its viewport and forwards wheel notches to that
+    // application as button reports — decided *before* any custom wheel handler, so
+    // the only way in is a capture listener above it. Claude Code ships
+    // `?1000h`/`?1006h`, which is why an agent terminal can suddenly refuse to
+    // scroll back however much scrollback it has.
     //
-    // That is why an agent terminal can suddenly refuse to scroll back: the
-    // Claude Code binary ships `?1000h`/`?1006h`, and while tracking is on the
-    // scrollback is unreachable with the wheel no matter how much of it there is.
-    //
-    // So: in the NORMAL buffer the wheel is the user's, tracking or not — a
-    // wheel over a log of output means scroll the log, and an app that only
-    // wanted clicks loses nothing. In the ALTERNATE buffer (vim, less, htop) it
-    // stays the application's: there is no scrollback to reach there, and those
-    // apps really do use it.
+    // So in the NORMAL buffer the wheel is the user's, tracking or not: a wheel over
+    // a log of output means scroll the log, and an app that only wanted clicks loses
+    // nothing. In the ALTERNATE buffer (vim, less, htop) it stays the application's —
+    // there is no scrollback to reach there and those apps really do use it.
     const onWheelCapture = (ev: WheelEvent): void => {
       if (ev.ctrlKey) return // zoom, handled above
       // A wasted notch is how the user discovers a stale scrollbar, so this is
@@ -570,14 +551,12 @@ export function TerminalView({
     // up. Container build/create output still streams in through onContainerOutput
     // above, so a cold start is visible here.
     //
-    // Why this retries: mounting is what opens a pty, and a container coming up
-    // now mounts *every* one of its sessions at once. Main re-checks
-    // `docker inspect` per open, and isRunning() reads any non-zero exit as
-    // "stopped" — so under that burst one of them can be told the container is
-    // stopped when it plainly isn't. A single attempt left that terminal dark for
-    // good, because nothing remounts it while the store still says running. So
-    // retry the transient answers for as long as the store disagrees with them,
-    // and only report failure once we've stopped trying.
+    // It retries because mounting is what opens a pty, and a container coming up
+    // mounts *every* one of its sessions at once. Main re-checks `docker inspect`
+    // per open and isRunning() reads any non-zero exit as "stopped", so under that
+    // burst one open can be told the container is stopped when it plainly isn't —
+    // and a single attempt left that terminal dark for good, since nothing remounts
+    // it while the store still says running.
     let cancelled = false
     let retry: ReturnType<typeof setTimeout> | null = null
     const openPty = async (attempt: number): Promise<void> => {

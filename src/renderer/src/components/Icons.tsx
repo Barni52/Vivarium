@@ -418,19 +418,16 @@ export function FileIcon({ name, size = 14, style }: { name: string; size?: numb
 // A 270° arc opening at the top right, closed by a solid arrowhead pointing
 // clockwise — the reload convention.
 //
-// The arc is written endpoint-style, and the flags decide which of the two
-// possible circles gets used: with (large-arc 1, sweep 1) these endpoints
-// resolve to centre (8,8) r=4.9, i.e. concentric with the viewBox. The previous
-// version used (1, 0), which resolves to centre (7.30, 4.81) — off centre by
-// 3.2 vertically, with the top of the circle at y=-0.39. An <svg> root clips to
-// its viewport, so that glyph was drawn with ~1 unit sliced off the top and all
-// its ink crammed above y=8.6; centred in a button it therefore sat high, and
-// the arc looked flat where the clip cut it. Keep the centre at (8,8): ink then
-// spans 2.0..13.7 in both axes, the same margin the rest of these icons keep.
+// The arc is written endpoint-style, so the flags decide which of the two possible
+// circles is drawn: (large-arc 1, sweep 1) resolves these endpoints to centre (8,8)
+// r=4.9, concentric with the viewBox. The previous (1, 0) resolved to (7.30, 4.81)
+// — 3.2 too high, the top of the circle at y=-0.39 — and an <svg> root clips to its
+// viewport, so that glyph lost ~1 unit off the top, crammed its ink above y=8.6, sat
+// high in its button and looked flat where the clip cut it. Keep the centre at (8,8)
+// and the ink spans 2.0..13.7 in both axes, the margin the other icons here keep.
 //
-// The head is a filled triangle sitting on the arc's end and pointing along its
-// travel direction. The old one was two stroked lines meeting in a right angle,
-// which at 13px read as a stray tick rather than an arrow.
+// The head is a filled triangle on the arc's end, pointing along its travel: the old
+// two stroked lines meeting at a right angle read as a stray tick at 13px.
 export const Refresh = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
   svg(
     size,

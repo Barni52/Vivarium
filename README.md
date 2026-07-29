@@ -5,8 +5,7 @@ Docker containers with **selective folder mounts**, and groups terminal sessions
 
 Built to replace juggling Windows Terminal tabs when working on monorepos where the AI agent
 should only see *some* folders (e.g. `frontend` + `frontend-dep`, never `backend`/`.git`).
-Isolation is physical: only the folders you select are bind-mounted into the container. The
-Docker logic was originally ported from a `claude-box.ps1` reference script (kept in git history).
+Isolation is physical: only the folders you select are bind-mounted into the container.
 
 ## What it does
 
@@ -63,4 +62,4 @@ is running) is queried live from Docker and not stored.
 - Editing a project's mounts is blocked while its container is running — stop it first.
 - Saving settings on a running container recreates it so new mounts/image/port take effect.
 - The container logic was ported from a `claude-box.ps1` reference script, now kept only in git
-  history (the `(ref …)` comments in `src/main/docker.ts` cite its line numbers).
+  history — the `(ref …)` comments in `src/main/docker.ts` cite its line numbers.

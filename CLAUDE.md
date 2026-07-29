@@ -29,13 +29,12 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
 - `src/renderer/src/` — React + zustand + xterm. `state/store.ts` is the single store for all
   UI state. `TerminalHost` keeps one long-lived `TerminalView` per opened session — hidden on
   deselect, never destroyed, so scrollback survives switching. `theme.ts` owns the palette *and*
-  `SESSION_TYPES` — the one place session-type wording, hue and popover geometry are defined;
-  the picker, sidebar, terminal header and empty state all read from it, and `TypeIcon` gives
-  each type its own silhouette so they never depend on color alone. `Elapsed.tsx` is the only
-  thing in the UI that ticks: it re-renders three characters of duration instead of its host
-  row, and its interval follows the granularity on screen (1s while showing seconds, 15s once
-  only minutes can change). Its `until` prop draws a *stopped* clock — the reading holds and no
-  interval is installed at all, which is how an agent waiting on the user is shown.
+  `SESSION_TYPES` — the one place session-type wording, hue and popover geometry are defined; the
+  picker, sidebar, terminal header and empty state all read from it, and `TypeIcon` gives each type
+  its own silhouette so they never depend on color alone. `Elapsed.tsx` is the only thing in the UI
+  that ticks: it re-renders three characters of duration instead of its host row, on an interval
+  that follows the granularity on screen (1s while showing seconds, 15s once only minutes can
+  change), and its `until` prop draws a *stopped* clock — the reading holds, no interval at all.
 
 **Adding an IPC feature** touches four places in order: channel name in `src/shared/ipc.ts` →
 handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → renderer call via
@@ -98,40 +97,36 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
 - **Moving a session between projects transfers the conversation for free — and only that.**
   `claudeSessionId` lives on the `Session` object, `/home/node/.claude` is the same
   `claude-box-creds` volume in every container, and agents always exec with `-w /workspace`, so the
-  transcript path is identical from any project's container and `execArgs` picks `--resume` by
-  itself. Nothing copies a `.jsonl`, and no store map is re-keyed (they all key on session id).
-  What does *not* follow: the pty (a `docker exec` client bound to the old container), the
-  scrollback, and the mounts — `/workspace` is the target project's now, which is the point.
+  transcript path is identical from any container and `execArgs` picks `--resume` itself. No
+  `.jsonl` is copied and no store map re-keyed (they all key on session id). What does *not* follow:
+  the pty (a `docker exec` client bound to the old container), the scrollback, and the mounts —
+  `/workspace` is the target project's now, which is the point.
   `moveSession` kills the pty **silently** because it kills before rewriting config, so the exit
   would otherwise land on the replacement terminal; `TerminalHost` keys views on
   `project.id:session.id` so that replacement actually happens.
-- **Claude Code is never auto-updated.** It used to be (fire-and-forget `npm i -g` on every
-  container start, throttled by a stamp file) — invisible, and it changed the CLI version under
-  a live session. Now updates are strictly user-initiated: the title-bar version chip / project
-  context menu → the Claude Code dialog, which runs `sudo npm install -g …@latest` inside one
-  running container at a time. Consequences the UI states rather than hides: the CLI only exists
-  inside containers (a stopped one has no version to read), a `claude` already running keeps its
-  version until relaunched, and since the install lands in the writable layer a `recreate`
-  reverts it to the image's version — the chip re-flags it instead of silently self-healing.
-- **Agent turn durations run on the host clock.** `hook.sh` writes a container-side timestamp
-  into `events.log`, and `bridge.ts` deliberately ignores it: the events are stamped with
-  `Date.now()` when the host *reads* the line (`AgentHookEvent.at`). A WSL2 VM's clock drifts
-  from Windows across host sleep, and these values are subtracted from the renderer's clock to
-  show "working 4m" — a skewed one would print a negative or absurd turn. The log keeps its own
-  timestamp for post-mortem reading only. `agentSince` (store) is stamped on real transitions
-  only, so a pty exit reporting idle for an already-idle agent can't claim its turn just ended;
-  `UserPromptSubmit` re-stamps unconditionally, since a queued prompt starts a new turn while
-  the state is already `working`.
-- **The turn clock is a stopwatch, and blocking on the user pauses it.** A third activity state,
-  `waiting`, covers the agent having asked a question or put up a plan for approval: it is
-  mid-turn (the turn ends at `Stop`, not here) but nothing is running, so a duration still
-  climbing next to it would be counting how long the *user* took. `agentWaitingSince` holds the
-  freeze point, the reading becomes `agentWaitingSince - agentSince`, and resuming pushes
-  `agentSince` forward by the whole wait so a turn's number always means work done rather than
-  wall time. Everything reads that state instead of inventing its own: the sidebar row and the
-  collapsed project row show the same "?" as an unanswered question (a waiting agent you happen
-  to be watching is still waiting, so this one does not depend on the notification), and the
-  terminal header says `waiting`.
+- **Claude Code is never auto-updated.** It used to be — a fire-and-forget `npm i -g` on every
+  container start — which invisibly changed the CLI version under a live session. Updates are now
+  user-initiated only: title-bar version chip / project context menu → the Claude Code dialog, which
+  runs `sudo npm install -g …@latest` in one running container at a time. Consequences the UI states
+  rather than hides: the CLI only exists inside containers (a stopped one has no version to read), a
+  running `claude` keeps its version until relaunched, and since the install lands in the writable
+  layer a `recreate` reverts it to the image's version — the chip re-flags it instead of silently
+  self-healing.
+- **A turn duration is a stopwatch on the host clock, and blocking on the user pauses it.**
+  `hook.sh` writes a container-side timestamp into `events.log` and `bridge.ts` ignores it: events
+  are stamped with `Date.now()` as the host *reads* the line (`AgentHookEvent.at`), because a WSL2
+  clock drifts from Windows across host sleep and these values are subtracted from the renderer's
+  clock to show "working 4m" — a skewed one would print a negative or absurd turn (the log's own
+  timestamp is for post-mortem reading only). `agentSince` is stamped on real transitions only, so
+  a pty exit reporting idle for an already-idle agent can't claim its turn just ended;
+  `UserPromptSubmit` re-stamps unconditionally, since a queued prompt starts a new turn while the
+  state is already `working`. The third state, `waiting` — a question asked, or a plan up for
+  approval — is mid-turn (the turn ends at `Stop`) but nothing is running, so `agentWaitingSince`
+  freezes the reading at `agentWaitingSince - agentSince` and resuming pushes `agentSince` forward
+  by the whole wait: the number always means work done, not wall time. Everything reads that state
+  rather than inventing its own — the sidebar row and the collapsed project row show "?" (not from
+  the notification: a waiting agent you happen to be watching is still waiting), the terminal
+  header says `waiting`.
 - **Volumes are only ever removed from the Volumes dialog.** Nothing else in the app removes
   one — deleting a project drops its container, not the shadow build caches its mounts created
   (`shadowMounts`), which are keyed by a hash of the *host path* and so are stranded by a
@@ -154,24 +149,22 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   hooks** (`UserPromptSubmit`/`Stop`, plus `PreToolUse` matchers on the two tools whose
   execution *is* a wait — `AskUserQuestion` and `ExitPlanMode` — and their `PostToolUse`, which
   is the answer landing), not by parsing terminal output. Agents launch with
-  `--settings /vivarium/hooks.json` + `-e VIVARIUM_SESSION_ID=<id>`; the hook script appends
-  to `/vivarium/events.log`, which the main process tails (`bridge.ts`). Never scope the hooks
-  via the shared `/home/node/.claude/settings.json` — that would leak them into claude-box
-  sessions. Gotchas: `Stop` does not fire on a user esc-interrupt (the renderer resets the
-  indicator on Esc); `PostToolUse` does not fire when a call is *rejected*, and "No, keep
-  planning" is exactly that — a denial — so `TerminalView` also resumes on the Enter that
-  answers a prompt, which is a no-op in every state but `waiting`; bridge files are rewritten
-  and the log truncated on every container start, so a container that was already up keeps
-  serving the old `hooks.json` to newly launched agents until it is restarted; and `start()`
-  auto-recreates containers that lack the `/vivarium` mount.
+  `--settings /vivarium/hooks.json` + `-e VIVARIUM_SESSION_ID=<id>`; the hook script appends to
+  `/vivarium/events.log`, which the main process tails (`bridge.ts`). Never scope the hooks via the
+  shared `/home/node/.claude/settings.json` — that would leak them into claude-box sessions.
+  Gotchas: `Stop` does not fire on a user esc-interrupt (the renderer resets the indicator on Esc);
+  `PostToolUse` does not fire when a call is *rejected*, and "No, keep planning" is exactly that, so
+  `TerminalView` also resumes on the Enter that answers a prompt (a no-op in every state but
+  `waiting`); bridge files are rewritten and the log truncated on every container start, so a
+  container that was already up serves the old `hooks.json` to newly launched agents until it is
+  restarted; and `start()` auto-recreates containers that lack the `/vivarium` mount.
 - **An attention flag is cleared by viewing its session — and focusing the window is viewing.**
-  `notifyAgentAttention` only declines to flag when the window is focused *and* that session is
-  selected, so anything that lands while the app is in the background flags the session you are
-  sitting on too. `select` acknowledges the row you click, which structurally cannot cover that
-  one: nobody clicks the row they are already on. So main sends `windowFocused` from the same
-  `win.on('focus')` that stops the flash, and `acknowledgeSelected` drops the selected session's
-  flag (and the taskbar overlay with it, if it was the last). Only the selected one — the count
-  is not a "seen the app" flag, and every other flagged session keeps its number.
+  `notifyAgentAttention` declines to flag only when the window is focused *and* that session is
+  selected, so anything landing while the app is in the background flags the session you are
+  sitting on too — and `select`, which acknowledges the row you click, structurally cannot clear
+  that one. So main sends `windowFocused` from the same `win.on('focus')` that stops the flash, and
+  `acknowledgeSelected` drops the selected session's flag, taking the taskbar overlay with it if it
+  was the last. Only the selected one: the count is not a "seen the app" flag.
 
 ## Commands
 

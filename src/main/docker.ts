@@ -554,20 +554,19 @@ export class DockerService {
   }
 
   /**
-   * Install the newest Claude Code inside the container, replacing the copy
-   * baked into the image. The image installs it as root under
-   * /usr/local/lib/node_modules but the container runs as `node`, so Claude's
-   * own auto-updater can't write there — we install out of band with the node
-   * user's passwordless sudo (see the sudoers line in dockerfiles.ts). npm and
-   * node both sit in /usr/local/bin, which is on sudo's default secure_path.
+   * Install the newest Claude Code inside the container, replacing the copy baked
+   * into the image. The image installs it as root under /usr/local/lib/node_modules
+   * but the container runs as `node`, so Claude's own auto-updater can't write there
+   * — we install out of band with the node user's passwordless sudo (see the sudoers
+   * line in dockerfiles.ts); npm and node both sit in /usr/local/bin, which is on
+   * sudo's default secure_path.
    *
-   * Awaited (unlike everything else here that shells out in the background):
-   * the caller drives a progress row and reports the outcome. Two consequences
-   * the UI has to spell out — a `claude` already running keeps its in-memory
-   * version until the session is relaunched, and because the install lands in
-   * the container's writable layer a later `recreate` (mount/image/port change)
-   * reverts it to the image's version. That's deliberate: the version chip
-   * re-flags it on the next check instead of silently self-healing.
+   * Awaited, unlike everything else here that shells out in the background: the
+   * caller drives a progress row and reports the outcome. Two consequences the UI
+   * spells out — a `claude` already running keeps its in-memory version until
+   * relaunched, and since the install lands in the writable layer a later `recreate`
+   * reverts it to the image's version, which the version chip re-flags instead of
+   * silently self-healing.
    */
   async updateClaude(project: Project): Promise<ExecResult> {
     // 6 min: a cold npm cache on a slow link genuinely takes minutes, and a
@@ -596,19 +595,17 @@ export class DockerService {
   /**
    * List the volumes Vivarium is responsible for, with sizes and ownership.
    *
-   * Why this exists: every mounted folder can spawn up to four shadow volumes
-   * (see shadowMounts) and *nothing* has ever removed one — deleting a project
-   * drops its container, never its node_modules or Maven caches. They are a
-   * slow, invisible disk leak, and a mount that gets renamed or removed strands
-   * its caches under a hash nobody can read.
+   * Every mounted folder can spawn up to four shadow volumes (see shadowMounts) and
+   * nothing else ever removes one — deleting a project drops its container, never
+   * its node_modules or Maven caches — so they are a slow, invisible disk leak, and
+   * a renamed or unmounted folder strands its caches under a hash nobody can read.
    *
    * Sizes only come from `docker system df -v`; `volume inspect` doesn't report
-   * them. That walks every volume directory, so it can take seconds on a large
-   * node_modules — the caller shows a loading state rather than pretending it's
-   * instant. `--format {{json .Volumes}}` keeps us off the human table layout,
-   * but the fields are still read defensively (Links arrives as a *string*, Size
-   * as "1.21GB"), and if the sweep fails we fall back to `volume ls` so the
-   * dialog can still list and remove volumes, just without sizes.
+   * them. It walks every volume directory, so it can take seconds on a large
+   * node_modules and the caller shows a loading state. `--format {{json .Volumes}}`
+   * keeps us off the human table layout, but the fields are still read defensively
+   * (Links arrives as a *string*, Size as "1.21GB"), and a failed sweep falls back
+   * to `volume ls` — listing and removal still work, just without sizes.
    */
   async listVolumes(projects: Project[]): Promise<VolumeReport> {
     if (!(await this.detect())) return { volumes: [], sized: false, error: 'docker not found' }
@@ -730,14 +727,13 @@ export class DockerService {
         '/vivarium/hooks.json'
       ]
       // Resume-across-restart: pin Claude's own conversation id. `--session-id`
-      // starts a fresh conversation with that id (and errors if it already
-      // exists); `--resume` re-attaches an existing one (and errors if it
-      // doesn't). So branch on whether the transcript already exists on the
-      // persistent .claude volume — this mirrors Claude's own "id already in
-      // use" test and self-heals a session that was opened but never messaged
-      // (no transcript yet → treat as fresh). Legacy sessions are backfilled
-      // with a claudeSessionId on config load; only truly-missing ids fall
-      // through to a bare (unpinned, non-resumable) claude.
+      // starts a fresh conversation with that id and errors if it exists;
+      // `--resume` re-attaches an existing one and errors if it doesn't. So branch
+      // on whether the transcript is already on the persistent .claude volume —
+      // Claude's own "id already in use" test, which also self-heals a session that
+      // was opened but never messaged (no transcript yet → fresh). Legacy sessions
+      // are backfilled with a claudeSessionId on config load; only a truly missing
+      // id falls through to a bare, non-resumable claude.
       const claudeId = project.sessions.find((s) => s.id === sessionId)?.claudeSessionId
       if (claudeId) {
         const resume = await this.claudeConversationExists(name, claudeId)
@@ -749,15 +745,14 @@ export class DockerService {
   }
 
   /**
-   * Does a Claude Code conversation transcript for `uuid` already exist inside
-   * the container? Claude writes them to
+   * Does a Claude Code conversation transcript for `uuid` already exist inside the
+   * container? Claude writes them to
    * $CLAUDE_CONFIG_DIR/projects/<escaped-cwd>/<uuid>.jsonl on the persistent
-   * claude-box-creds volume (cwd is always /workspace here, escaping to
-   * `-workspace`). We glob across the projects dir rather than hardcoding the
-   * escaped-cwd folder, so a change to Claude's path-escaping can't silently
-   * break the check. A failed/again-unavailable exec returns false → we fall
-   * back to starting a fresh conversation. The uuid is Vivarium-generated
-   * (hex + hyphens), so it is safe to interpolate into the shell command.
+   * claude-box-creds volume. Globbing across the projects dir rather than hardcoding
+   * the escaped cwd (`/workspace` → `-workspace`) keeps a change to Claude's
+   * path-escaping from silently breaking the check. A failed exec returns false →
+   * start a fresh conversation. The uuid is Vivarium-generated (hex + hyphens), so
+   * it is safe to interpolate into the shell command.
    */
   private async claudeConversationExists(container: string, uuid: string): Promise<boolean> {
     const res = await this.exec([
