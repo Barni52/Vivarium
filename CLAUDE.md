@@ -70,6 +70,13 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   frames a minimized/occluded window never gets, which is what left agent terminals unable to
   scroll back. Same file: in the **normal** buffer the mouse wheel belongs to the user even when
   the app has enabled mouse tracking (Claude Code does), only the **alternate** buffer gets it.
+- **A stale scroll area is "short of the buffer", not "zero range".** `repairIfStuck` compares what
+  the DOM bar can reach against `baseY` rows of history, because a bar that stopped following the
+  buffer is not only ever one screen tall — shrink the window and it reappears reaching exactly as
+  far as the taller window had shown, which the old zero-range test scored as healthy. Row height
+  is measured off `.xterm-screen`, never taken from xterm: the viewport caches the *renderer's*
+  dimensions object by reference, and a renderer swap at an unchanged size (WebGL context loss →
+  DOM fallback) fires no onDimensionsChange, leaving it sizing the bar from a dead one.
 - **Claude Code is never auto-updated.** It used to be (fire-and-forget `npm i -g` on every
   container start, throttled by a stamp file) — invisible, and it changed the CLI version under
   a live session. Now updates are strictly user-initiated: the title-bar version chip / project

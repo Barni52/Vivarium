@@ -81,21 +81,48 @@ function forceScrollAreaSync(term: Terminal): void {
 }
 
 /**
+ * The height of one row, measured off the DOM instead of read from xterm.
+ *
+ * xterm's own copy of this lives on the *renderer's* dimensions object, which
+ * the viewport caches by reference and only replaces when an onDimensionsChange
+ * fires. Swap the renderer (WebGL context loss → the DOM fallback below) without
+ * also changing size and no such event is emitted, so the viewport keeps sizing
+ * the scrollbar from a dead object. `.xterm-screen` is sized to rows × cell
+ * height by whichever renderer is actually live, so it can't go stale that way.
+ */
+function rowHeight(term: Terminal): number {
+  const screen = term.element?.querySelector('.xterm-screen') as HTMLElement | null
+  if (!screen || term.rows < 1) return 0
+  return screen.clientHeight / term.rows
+}
+
+/**
  * Repair the scroll geometry, but only when it is provably broken: the DOM
- * scrollbar says there is nothing to scroll while the buffer plainly has history
- * above the view. Cheap enough to call on every wheel gesture, and because it
- * does nothing in the healthy case it can't fight a scroll that is working.
+ * scrollbar cannot reach every line the buffer is holding above the view. Cheap
+ * enough to call on every wheel gesture, and because it does nothing in the
+ * healthy case it can't fight a scroll that is working.
  *
  * This is the belt to forceScrollAreaSync's braces: Windows doesn't necessarily
  * mark a merely *occluded* window as hidden, so there may be no visibilitychange
  * to hang the repair on — but there is always the notch the user is about to
  * waste.
+ *
+ * The test is "short of the buffer", not "cannot scroll at all", because a stale
+ * scroll area is not only ever one screen tall. Resize a window whose bar has
+ * gone stale and the viewport shrinks under a scroll area that didn't follow:
+ * a bar reappears, reaching exactly as far back as the taller window had shown
+ * and no further, and the old zero-range test called that healthy and left it
+ * there. In the healthy case the two sides are equal — a full buffer is
+ * baseY + rows lines and the area is baseY rows taller than the viewport — so
+ * the slack is a single row of rounding, no more.
  */
 function repairIfStuck(term: Terminal): boolean {
   const vpEl = term.element?.querySelector('.xterm-viewport')
-  if (!vpEl) return false
-  const canScroll = vpEl.scrollHeight - vpEl.clientHeight > 1
-  if (canScroll || term.buffer.active.baseY === 0) return false
+  const px = rowHeight(term)
+  if (!vpEl || !px) return false
+  const needed = term.buffer.active.baseY * px
+  const reachable = vpEl.scrollHeight - vpEl.clientHeight
+  if (reachable >= needed - px) return false
   forceScrollAreaSync(term)
   return true
 }
@@ -591,6 +618,11 @@ export function TerminalView({
     // next frame so the div has non-zero size after visibility flips
     const raf = requestAnimationFrame(() => {
       fitNowRef.current()
+      // fitNow syncs the geometry too, but it refuses a box with no usable size
+      // and returns before it gets there — and the frame the user starts reading
+      // a terminal on is the one frame its scrollbar has to be right. Repairing
+      // separately costs nothing when nothing is wrong.
+      repairIfStuck(term)
       term.focus()
     })
     return () => cancelAnimationFrame(raf)
