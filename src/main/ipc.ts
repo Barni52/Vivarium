@@ -609,8 +609,9 @@ export function registerIpc(win: BrowserWindow): void {
   // ---- taskbar attention badge (agents finished / asking, with count) ----
   // The renderer draws the count disc on a canvas (main has no canvas) and
   // ships it as a data URL. The overlay mirrors the outstanding-notification
-  // count — it clears when every flagged session has been viewed (count 0),
-  // NOT on window focus, so the number stays glanceable while working.
+  // count — it clears when every flagged session has been viewed (count 0), and
+  // focusing the window only counts as viewing the *selected* session, so the
+  // number stays glanceable while working.
   // flashFrame(true) flashes until focus with no built-in duration, so a timer
   // stops it after a few seconds (Discord-style burst) — only the flashing is
   // time-limited.
@@ -639,5 +640,12 @@ export function registerIpc(win: BrowserWindow): void {
   })
   win.on('focus', () => {
     stopFlash() // stop flashing once the user looks at the app; the count stays
+    // …the count stays for every session except the one actually on screen,
+    // which has now been looked at: the renderer drops that one's flag, and with
+    // it the overlay if it was the last. Sent from here rather than read off a
+    // renderer 'focus' event because activation is what Windows tells main about
+    // directly, and a minimized window brought back by its taskbar/start-menu
+    // entry is exactly the case that has to work.
+    emit(CH.windowFocused, {})
   })
 }

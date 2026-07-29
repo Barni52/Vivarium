@@ -22,6 +22,7 @@ export function App(): React.ReactElement {
   const refreshClaude = useStore((s) => s.refreshClaude)
   const refreshOutputTree = useStore((s) => s.refreshOutputTree)
   const handleAgentHook = useStore((s) => s.handleAgentHook)
+  const acknowledgeSelected = useStore((s) => s.acknowledgeSelected)
   const requestQuit = useStore((s) => s.requestQuit)
   const dialog = useStore((s) => s.dialog)
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed)
@@ -53,6 +54,9 @@ export function App(): React.ReactElement {
     })
     const offOutput = window.vivarium.onOutputChanged(() => refreshOutputTree())
     const offHook = window.vivarium.onAgentHook((e) => handleAgentHook(e))
+    // Bringing the app to the front means looking at the selected session, so its
+    // attention flag (and its share of the taskbar number) is answered for.
+    const offFocus = window.vivarium.onWindowFocused(() => acknowledgeSelected())
     // Main intercepts every window-close path and asks us to confirm first.
     const offQuit = window.vivarium.onQuitRequested(() => requestQuit())
     return () => {
@@ -62,6 +66,7 @@ export function App(): React.ReactElement {
       off()
       offOutput()
       offHook()
+      offFocus()
       offQuit()
     }
   }, [
@@ -72,6 +77,7 @@ export function App(): React.ReactElement {
     refreshUsage,
     refreshClaude,
     handleAgentHook,
+    acknowledgeSelected,
     requestQuit
   ])
 

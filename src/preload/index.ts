@@ -162,6 +162,12 @@ const api = {
     ipcRenderer.on(CH.quitRequested, h)
     return () => ipcRenderer.removeListener(CH.quitRequested, h)
   },
+  // The window became the active one (taskbar/start-menu click, alt-tab, restore).
+  onWindowFocused: (cb: () => void): (() => void) => {
+    const h = (): void => cb()
+    ipcRenderer.on(CH.windowFocused, h)
+    return () => ipcRenderer.removeListener(CH.windowFocused, h)
+  },
   confirmQuit: (): void => ipcRenderer.send(CH.confirmQuit)
 }
 

@@ -164,6 +164,14 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   and the log truncated on every container start, so a container that was already up keeps
   serving the old `hooks.json` to newly launched agents until it is restarted; and `start()`
   auto-recreates containers that lack the `/vivarium` mount.
+- **An attention flag is cleared by viewing its session — and focusing the window is viewing.**
+  `notifyAgentAttention` only declines to flag when the window is focused *and* that session is
+  selected, so anything that lands while the app is in the background flags the session you are
+  sitting on too. `select` acknowledges the row you click, which structurally cannot cover that
+  one: nobody clicks the row they are already on. So main sends `windowFocused` from the same
+  `win.on('focus')` that stops the flash, and `acknowledgeSelected` drops the selected session's
+  flag (and the taskbar overlay with it, if it was the last). Only the selected one — the count
+  is not a "seen the app" flag, and every other flagged session keeps its number.
 
 ## Commands
 

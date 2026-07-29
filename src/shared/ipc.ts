@@ -74,5 +74,10 @@ export const CH = {
   // quitRequested; the renderer shows its dialog and sends confirmQuit back once
   // the user accepts, which lets the real close through.
   quitRequested: 'window:quit-requested',
-  confirmQuit: 'window:confirm-quit'
+  confirmQuit: 'window:confirm-quit',
+  // Window activation — a taskbar/start-menu click, an alt-tab, a restore from
+  // minimized. Main is the side Windows tells about it, and it is where the
+  // attention flash already stops; the renderer takes it as "whatever session is
+  // on screen has now been seen".
+  windowFocused: 'window:focused'
 } as const

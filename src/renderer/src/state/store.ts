@@ -265,6 +265,8 @@ interface AppState {
   /** The user answered: leave 'waiting' for 'working' without losing the turn. */
   resumeAgent: (sessionId: string, at?: number) => void
   notifyAgentAttention: (sessionId: string, kind: AttentionKind) => void
+  /** Window activation: the session already on screen counts as viewed. */
+  acknowledgeSelected: () => void
   handleAgentHook: (e: AgentHookEvent) => void
 
   // dialogs
@@ -627,7 +629,8 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => {
       // ensure the owning project is expanded
       const proj = s.config.projects.find((p) => p.sessions.some((x) => x.id === sessionId))
-      // opening a session acknowledges its finished-agent notification
+      // opening a session acknowledges its finished-agent notification (the other
+      // half of that rule is acknowledgeSelected, for the one already open)
       const notifications = { ...s.notifications }
       delete notifications[sessionId]
       return {
@@ -714,6 +717,28 @@ export const useStore = create<AppState>((set, get) => ({
     // Badge always shows the outstanding count; flashing is reserved for
     // events that arrive while the app is in the background.
     pushBadge(get().notifications, !focused)
+  },
+
+  acknowledgeSelected: () => {
+    // Viewing a session is what acknowledges its flag — and clicking its row is
+    // only one way to view it. The other is the app becoming active with that
+    // session already selected, which is the case `select` structurally cannot
+    // cover: the row you are already on is the one row nobody clicks. Without
+    // this, an agent that finished (or asked) while the app sat in the background
+    // kept its "!" and its taskbar number *while being watched*, until the user
+    // clicked away and back — and the notification only exists in the first place
+    // because `notifyAgentAttention` saw an unfocused window.
+    //
+    // Only the selected one: the count is deliberately not a "seen the app" flag,
+    // so any other flagged session keeps its number.
+    const id = get().selectedSessionId
+    if (!id || !get().notifications[id]) return
+    set((s) => {
+      const notifications = { ...s.notifications }
+      delete notifications[id]
+      return { notifications }
+    })
+    pushBadge(get().notifications, false)
   },
 
   handleAgentHook: (e) => {
