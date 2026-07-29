@@ -75,6 +75,10 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
     let worst: AttentionKind | null = null
     for (const x of project.sessions) {
       if (x.type !== 'agent') continue
+      // A live agent blocked on the user counts even when it carries no
+      // notification (one you are watching clears its flag but is still
+      // waiting) — collapsing the project must not hide that nothing is moving.
+      if (s.activity[x.id] === 'waiting' && s.live[x.id]) return 'question'
       const k = s.notifications[x.id]
       if (k === 'question') return 'question'
       if (k) worst = k
@@ -83,7 +87,8 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
   })
   const op = useStore((s) => s.containerOps[project.id])
   const opError = useStore((s) => s.containerErrors[project.id])
-  // aggregate: any child agent mid-turn (same collapsed-only rule as attention)
+  // aggregate: any child agent actually running (same collapsed-only rule as
+  // attention; a waiting one is mid-turn but reads as "?" above, not as busy)
   const hasWorking = useStore((s) =>
     project.sessions.some(
       (x) => x.type === 'agent' && s.activity[x.id] === 'working' && s.live[x.id]
@@ -335,7 +340,7 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
           <span
             title={
               attention === 'question'
-                ? 'An agent in this project asked a question'
+                ? 'An agent in this project is waiting for you'
                 : 'An agent in this project finished'
             }
             style={{

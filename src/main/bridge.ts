@@ -2,22 +2,37 @@ import { app } from 'electron'
 import { watch, type FSWatcher } from 'node:fs'
 import { mkdir, open, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AgentHookEvent } from '@shared/types'
+import type { AgentHookEvent, AgentHookKind } from '@shared/types'
 
 // The "bridge" is how agent lifecycle events get out of the container: a small
 // host dir (one per project) bind-mounted at /vivarium. Vivarium writes a
 // Claude Code hooks settings file + a tiny shell script into it; the agent is
 // launched with `--settings /vivarium/hooks.json`, so Claude Code itself
-// reports UserPromptSubmit (turn started), Stop (turn finished) and
-// AskUserQuestion (agent blocked on a question to the user) by appending
-// a line to /vivarium/events.log, which the main process tails from the host
-// side. This replaces the old approach of scraping the xterm buffer for the
-// "esc to interrupt" spinner text, which silently broke when the Claude Code
-// TUI changed. Hooks are a documented interface; the TUI is not.
+// reports UserPromptSubmit (turn started), Stop (turn finished), the two tools
+// that block on the user (AskUserQuestion / ExitPlanMode) and their completion
+// (Resumed) by appending a line to /vivarium/events.log, which the main process
+// tails from the host side. This replaces the old approach of scraping the xterm
+// buffer for the "esc to interrupt" spinner text, which silently broke when the
+// Claude Code TUI changed. Hooks are a documented interface; the TUI is not.
 //
 // Scoping the hooks to `--settings` (instead of writing into the shared
 // /home/node/.claude/settings.json volume) keeps claude-box.ps1 sessions and
 // manually-launched `claude` runs unaffected.
+
+// Everything hook.sh can legally write. A line with anything else in the first
+// field is dropped rather than forwarded — the file is a plain append log, and a
+// half-written or hand-edited line must not reach the store as an event.
+const HOOK_KINDS: readonly AgentHookKind[] = [
+  'UserPromptSubmit',
+  'Stop',
+  'AskUserQuestion',
+  'ExitPlanMode',
+  'Resumed'
+]
+
+function isHookKind(v: string): v is AgentHookKind {
+  return (HOOK_KINDS as readonly string[]).includes(v)
+}
 
 /** Host-side bridge dir for a project (bind-mounted at /vivarium). */
 export function bridgeDir(projectId: string): string {
@@ -35,13 +50,32 @@ const HOOKS_JSON = `${JSON.stringify(
         { hooks: [{ type: 'command', command: 'sh /vivarium/hook.sh UserPromptSubmit' }] }
       ],
       Stop: [{ hooks: [{ type: 'command', command: 'sh /vivarium/hook.sh Stop' }] }],
-      // AskUserQuestion has no dedicated hook event; its "execution" is showing
-      // the question UI, so PreToolUse fires exactly when the agent starts
-      // waiting for an answer.
+      // Neither blocking tool has a dedicated hook event; their "execution" IS
+      // the wait (showing the question UI / the plan for approval), so PreToolUse
+      // fires exactly when the agent starts waiting for the user. Two entries
+      // rather than one `AskUserQuestion|ExitPlanMode` matcher only so the log
+      // stays readable after the fact — the renderer treats them identically.
+      // Agents run with --dangerously-skip-permissions, so these are the only
+      // two things that can block a turn on a human.
       PreToolUse: [
         {
           matcher: 'AskUserQuestion',
           hooks: [{ type: 'command', command: 'sh /vivarium/hook.sh AskUserQuestion' }]
+        },
+        {
+          matcher: 'ExitPlanMode',
+          hooks: [{ type: 'command', command: 'sh /vivarium/hook.sh ExitPlanMode' }]
+        }
+      ],
+      // …and PostToolUse is the other half: the tool only completes once the
+      // user has answered, which is when the turn clock starts again. It does
+      // NOT fire when the call is rejected ("No, keep planning" denies the tool
+      // and hands the agent feedback instead), so the renderer also resumes on
+      // the keystroke that answers — see TerminalView.
+      PostToolUse: [
+        {
+          matcher: 'AskUserQuestion|ExitPlanMode',
+          hooks: [{ type: 'command', command: 'sh /vivarium/hook.sh Resumed' }]
         }
       ]
     }
@@ -166,12 +200,7 @@ export class BridgeWatcher {
     const at = Date.now()
     for (const line of chunk.subarray(0, nl).toString('utf8').split('\n')) {
       const [kind, sessionId] = line.split('\t')
-      if (
-        (kind === 'UserPromptSubmit' || kind === 'Stop' || kind === 'AskUserQuestion') &&
-        sessionId
-      ) {
-        this.onEvent({ sessionId, kind, at })
-      }
+      if (sessionId && isHookKind(kind)) this.onEvent({ sessionId, kind, at })
     }
   }
 }

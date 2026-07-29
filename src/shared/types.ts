@@ -71,10 +71,26 @@ export interface ContainerState {
   exists: boolean
 }
 
-export type AgentActivity = 'idle' | 'working'
+/**
+ * What an agent is doing right now. 'waiting' is still mid-turn — the agent has
+ * blocked on the user (a question, or a plan waiting for approval) and is
+ * burning no time at all, which is why it is a state of its own rather than a
+ * flavor of 'working': the turn clock pauses for exactly as long as it lasts.
+ */
+export type AgentActivity = 'idle' | 'working' | 'waiting'
 
-/** Claude Code hook events forwarded from the container bridge (see main/bridge.ts). */
-export type AgentHookKind = 'UserPromptSubmit' | 'Stop' | 'AskUserQuestion'
+/**
+ * Claude Code hook events forwarded from the container bridge (see
+ * main/bridge.ts). `AskUserQuestion`/`ExitPlanMode` are the two tools whose
+ * "execution" is waiting for the user; `Resumed` is their PostToolUse, i.e. the
+ * answer landed and the agent is running again.
+ */
+export type AgentHookKind =
+  | 'UserPromptSubmit'
+  | 'Stop'
+  | 'AskUserQuestion'
+  | 'ExitPlanMode'
+  | 'Resumed'
 
 export interface AgentHookEvent {
   sessionId: string

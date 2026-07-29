@@ -19,7 +19,11 @@ import type {
 import { behindIds } from '../claude'
 import { ADD_SESSION_POPOVER } from '../theme'
 
-/** Why an agent session is flagged: turn finished, or blocked on AskUserQuestion. */
+/**
+ * Why an agent session is flagged: turn finished, or blocked on the user —
+ * a question or a plan waiting for approval, which are the same thing from the
+ * sidebar's point of view (nothing moves until you answer).
+ */
 export type AttentionKind = 'finished' | 'question'
 
 /** Container lifecycle operation currently in flight for a project. */
@@ -158,6 +162,15 @@ interface AppState {
    * meaningful for a state this app run has actually observed.
    */
   agentSince: Record<string, number>
+  /**
+   * When the current 'waiting' state began (epoch ms), for agents blocked on the
+   * user. Present only while `activity` is 'waiting', and it is what stops the
+   * clock: the duration on screen reads `agentWaitingSince - agentSince` and
+   * holds there, instead of counting the minutes the agent spent waiting for a
+   * human as time it was working. Resuming shifts `agentSince` forward by the
+   * wait, so a turn's reading always means work done, not wall time.
+   */
+  agentWaitingSince: Record<string, number>
   /** agent sessions needing attention while unwatched — "!" (finished) or "?" (question) until opened */
   notifications: Record<string, AttentionKind>
   /** container start/stop/restart currently in flight, keyed by project id */
@@ -249,6 +262,8 @@ interface AppState {
   setLive: (sessionId: string, live: boolean) => void
   /** `at` (from a hook event) keeps the turn clock on main's timestamp */
   setActivity: (sessionId: string, a: AgentActivity, at?: number) => void
+  /** The user answered: leave 'waiting' for 'working' without losing the turn. */
+  resumeAgent: (sessionId: string, at?: number) => void
   notifyAgentAttention: (sessionId: string, kind: AttentionKind) => void
   handleAgentHook: (e: AgentHookEvent) => void
 
@@ -370,6 +385,7 @@ export const useStore = create<AppState>((set, get) => ({
   live: {},
   activity: {},
   agentSince: {},
+  agentWaitingSince: {},
   notifications: {},
   containerOps: {},
   containerErrors: {},
@@ -639,11 +655,50 @@ export const useStore = create<AppState>((set, get) => ({
       // was already idle, and re-stamping there would claim its last turn just
       // ended — the one thing the duration must never lie about.
       if (s.activity[sessionId] === a) return {}
-      return {
-        activity: { ...s.activity, [sessionId]: a },
-        agentSince: { ...s.agentSince, [sessionId]: at ?? Date.now() }
+      const stamp = at ?? Date.now()
+      const activity = { ...s.activity, [sessionId]: a }
+      const waitedFrom = s.agentWaitingSince[sessionId]
+      const agentWaitingSince = { ...s.agentWaitingSince }
+
+      // Blocking on the user starts no new clock: the turn is the same turn, so
+      // `agentSince` stays put and this timestamp is only the point the reading
+      // freezes at.
+      if (a === 'waiting') {
+        agentWaitingSince[sessionId] = stamp
+        return { activity, agentWaitingSince }
       }
+
+      delete agentWaitingSince[sessionId]
+      const agentSince = { ...s.agentSince }
+      const turnStart = s.agentSince[sessionId]
+      if (a === 'working' && waitedFrom !== undefined && turnStart !== undefined) {
+        // Coming back from a wait, mid-turn: push the start forward by however
+        // long the agent sat blocked, so the clock picks up from the frozen
+        // reading rather than jumping by the time the user took to answer.
+        agentSince[sessionId] = turnStart + (stamp - waitedFrom)
+      } else {
+        agentSince[sessionId] = stamp
+      }
+      return { activity, agentSince, agentWaitingSince }
     }),
+
+  resumeAgent: (sessionId, at) => {
+    // Guarded: every caller is a "probably answered" signal (the PostToolUse
+    // hook, a keystroke), and outside 'waiting' none of them mean anything.
+    if (get().activity[sessionId] !== 'waiting') return
+    get().setActivity(sessionId, 'working', at)
+    // The "?" said an agent was waiting on you; it isn't any more. Only that
+    // flag is stale — a 'finished' one belongs to a turn that really did end,
+    // and stays until the session is opened.
+    if (get().notifications[sessionId] === 'question') {
+      set((s) => {
+        const notifications = { ...s.notifications }
+        delete notifications[sessionId]
+        return { notifications }
+      })
+      pushBadge(get().notifications, false)
+    }
+  },
 
   notifyAgentAttention: (sessionId, kind) => {
     // Only agent sessions get the "!" — host/container shells never do (a stray
@@ -672,11 +727,16 @@ export const useStore = create<AppState>((set, get) => ({
       // setActivity deliberately no-ops — restart the clock explicitly so the
       // duration always means "this turn", not "this busy streak".
       set((st) => ({ agentSince: { ...st.agentSince, [e.sessionId]: e.at } }))
-    } else if (e.kind === 'AskUserQuestion') {
-      // Agent is blocked on a question. Activity stays 'working': the turn is
-      // still in flight, and no hook fires when the question is answered, so
-      // an 'idle' here would stick for the rest of the turn.
+    } else if (e.kind === 'AskUserQuestion' || e.kind === 'ExitPlanMode') {
+      // The agent is blocked on the user — a question, or a plan waiting for
+      // approval. Both are mid-turn (the turn ends at Stop, not here) but the
+      // agent is doing nothing, so this is its own state: the row shows "?"
+      // instead of the working ellipsis, and the turn clock stops until the
+      // answer arrives.
+      s.setActivity(e.sessionId, 'waiting', e.at)
       s.notifyAgentAttention(e.sessionId, 'question')
+    } else if (e.kind === 'Resumed') {
+      s.resumeAgent(e.sessionId, e.at)
     } else {
       s.setActivity(e.sessionId, 'idle', e.at)
       s.notifyAgentAttention(e.sessionId, 'finished')
@@ -802,10 +862,14 @@ export const useStore = create<AppState>((set, get) => ({
       for (const id of Object.keys(s.notifications)) if (alive.has(id)) notifications[id] = s.notifications[id]
       const agentSince: Record<string, number> = {}
       for (const id of Object.keys(s.agentSince)) if (alive.has(id)) agentSince[id] = s.agentSince[id]
+      const agentWaitingSince: Record<string, number> = {}
+      for (const id of Object.keys(s.agentWaitingSince))
+        if (alive.has(id)) agentWaitingSince[id] = s.agentWaitingSince[id]
       return {
         config,
         notifications,
         agentSince,
+        agentWaitingSince,
         selectedSessionId:
           s.selectedSessionId && !alive.has(s.selectedSessionId) ? null : s.selectedSessionId
       }
@@ -932,6 +996,8 @@ export const useStore = create<AppState>((set, get) => ({
       delete notifications[killTarget.sessionId]
       const agentSince = { ...s.agentSince }
       delete agentSince[killTarget.sessionId]
+      const agentWaitingSince = { ...s.agentWaitingSince }
+      delete agentWaitingSince[killTarget.sessionId]
       return {
         config,
         dialog: null,
@@ -939,6 +1005,7 @@ export const useStore = create<AppState>((set, get) => ({
         live,
         notifications,
         agentSince,
+        agentWaitingSince,
         selectedSessionId: stillExists ? s.selectedSessionId : null
       }
     })

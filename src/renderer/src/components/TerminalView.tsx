@@ -376,6 +376,16 @@ export function TerminalView({
         setActivity(session.id, 'idle')
         return true
       }
+      // Answering a blocking prompt restarts the paused turn clock. The
+      // PostToolUse hook reports this properly, but only when the tool actually
+      // ran: picking "No, keep planning" *denies* ExitPlanMode, so Claude Code
+      // fires nothing and the agent goes back to work with the UI still showing
+      // "waiting". Enter is the key that commits any of those choices, so treat
+      // it as the answer — resumeAgent is a no-op in every other state, which is
+      // why this can't disturb a normal turn. Falls through: Enter is the pty's.
+      if (session.type === 'agent' && e.key === 'Enter') {
+        useStore.getState().resumeAgent(session.id)
+      }
       // Claude Code: Shift+Enter and Ctrl+Enter insert a newline instead of
       // submitting. xterm sends a bare CR for Enter regardless of modifiers, so
       // translate these chords to ESC+CR — the sequence Claude Code treats as

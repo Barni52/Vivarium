@@ -12,22 +12,32 @@ import { TerminalView } from './TerminalView'
 // it reported was the container's state — which the sidebar already shows.
 function AgentStatus({ sessionId }: { sessionId: string }): React.ReactElement | null {
   const live = useStore((s) => !!s.live[sessionId])
-  const working = useStore((s) => s.activity[sessionId] === 'working')
+  const activity = useStore((s) => s.activity[sessionId])
   const since = useStore((s) => s.agentSince[sessionId])
+  const waitingSince = useStore((s) => s.agentWaitingSince[sessionId])
   if (!live) return null // nothing is running; the state would be a leftover
+  const working = activity === 'working'
+  // Blocked on the user: still mid-turn, but the duration stops at the point it
+  // blocked — see agentWaitingSince in the store.
+  const waiting = activity === 'waiting'
+  const until = waiting ? waitingSince : undefined
   return (
     <>
       <span
         // Unlike the sidebar indicators this one is never swapped out on hover,
         // so its tooltip is reachable and can carry the long phrasing.
         title={
-          since
-            ? working
-              ? `This turn started ${formatElapsed(Date.now() - since)} ago`
-              : `Last turn finished ${formatElapsed(Date.now() - since)} ago`
-            : working
-              ? 'Agent is working'
-              : 'Agent is idle'
+          waiting
+            ? waitingSince
+              ? `Waiting for your answer since ${formatElapsed(Date.now() - waitingSince)} ago — the turn clock is paused`
+              : 'Agent is waiting for your answer — the turn clock is paused'
+            : since
+              ? working
+                ? `This turn started ${formatElapsed(Date.now() - since)} ago`
+                : `Last turn finished ${formatElapsed(Date.now() - since)} ago`
+              : working
+                ? 'Agent is working'
+                : 'Agent is idle'
         }
         style={{
           display: 'flex',
@@ -35,16 +45,18 @@ function AgentStatus({ sessionId }: { sessionId: string }): React.ReactElement |
           gap: 5,
           fontSize: 11,
           fontFamily: "'IBM Plex Mono', monospace",
-          color: working ? ACCENT.agent : 'var(--text-3)'
+          // A waiting agent is mid-turn, so it keeps the agent hue rather than
+          // dropping to the idle grey — the word is what distinguishes them.
+          color: working || waiting ? ACCENT.agent : 'var(--text-3)'
         }}
       >
-        {working ? 'working' : 'idle'}
+        {waiting ? 'waiting' : working ? 'working' : 'idle'}
         {since && (
           <>
             {/* its own element, or it merges into the same anonymous flex item as
                 the word before it and only gets a gap on one side */}
             <span style={{ opacity: 0.5 }}>·</span>
-            <Elapsed since={since} />
+            <Elapsed since={since} until={until} />
           </>
         )}
       </span>

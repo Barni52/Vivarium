@@ -18,7 +18,10 @@ export function formatElapsed(ms: number): string {
 }
 
 /**
- * A duration from `since` (epoch ms) that keeps itself current.
+ * A duration from `since` (epoch ms) that keeps itself current — or holds at
+ * `until` if that is given, which is how a stopped clock is drawn: an agent
+ * blocked on the user is not working, and a number still climbing next to it
+ * reads as one that is.
  *
  * The interval follows the granularity on screen: every second while the reading
  * is in seconds, then every 15s once only whole minutes can change — an agent
@@ -27,19 +30,27 @@ export function formatElapsed(ms: number): string {
  */
 export function Elapsed({
   since,
+  until,
   style
 }: {
   since: number
+  /** frozen end of the span; omit for "now" */
+  until?: number
   style?: React.CSSProperties
 }): React.ReactElement {
   const [now, setNow] = React.useState(() => Date.now())
-  const elapsed = Math.max(0, now - since)
+  const frozen = until !== undefined
+  const elapsed = Math.max(0, (until ?? now) - since)
   const fast = elapsed < 60_000
   React.useEffect(() => {
+    if (frozen) return // nothing to tick, and no interval to leave running
+    // `now` went stale while the clock was held (and after a new turn stamped an
+    // older `since`), so re-read it before waiting out the first interval.
+    setNow(Date.now())
     // Re-created when the cadence changes (crossing the one-minute mark) or the
     // clock is restarted by a new turn.
     const t = setInterval(() => setNow(Date.now()), fast ? 1000 : 15_000)
     return () => clearInterval(t)
-  }, [fast, since])
+  }, [fast, since, frozen])
   return <span style={style}>{formatElapsed(elapsed)}</span>
 }

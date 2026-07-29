@@ -34,7 +34,8 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
   each type its own silhouette so they never depend on color alone. `Elapsed.tsx` is the only
   thing in the UI that ticks: it re-renders three characters of duration instead of its host
   row, and its interval follows the granularity on screen (1s while showing seconds, 15s once
-  only minutes can change).
+  only minutes can change). Its `until` prop draws a *stopped* clock — the reading holds and no
+  interval is installed at all, which is how an agent waiting on the user is shown.
 
 **Adding an IPC feature** touches four places in order: channel name in `src/shared/ipc.ts` →
 handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → renderer call via
@@ -121,6 +122,16 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   only, so a pty exit reporting idle for an already-idle agent can't claim its turn just ended;
   `UserPromptSubmit` re-stamps unconditionally, since a queued prompt starts a new turn while
   the state is already `working`.
+- **The turn clock is a stopwatch, and blocking on the user pauses it.** A third activity state,
+  `waiting`, covers the agent having asked a question or put up a plan for approval: it is
+  mid-turn (the turn ends at `Stop`, not here) but nothing is running, so a duration still
+  climbing next to it would be counting how long the *user* took. `agentWaitingSince` holds the
+  freeze point, the reading becomes `agentWaitingSince - agentSince`, and resuming pushes
+  `agentSince` forward by the whole wait so a turn's number always means work done rather than
+  wall time. Everything reads that state instead of inventing its own: the sidebar row and the
+  collapsed project row show the same "?" as an unanswered question (a waiting agent you happen
+  to be watching is still waiting, so this one does not depend on the notification), and the
+  terminal header says `waiting`.
 - **Volumes are only ever removed from the Volumes dialog.** Nothing else in the app removes
   one — deleting a project drops its container, not the shadow build caches its mounts created
   (`shadowMounts`), which are keyed by a hash of the *host path* and so are stranded by a
@@ -140,14 +151,19 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   lights it up; the find bar's input opts out with an inline `boxShadow:'none'` because it is
   focused for as long as the bar exists.
 - Agent idle/working detection and the attention-notification are driven by **Claude Code
-  hooks** (`UserPromptSubmit`/`Stop`, plus a `PreToolUse` matcher on `AskUserQuestion` so a
-  waiting question also raises the "!"), not by parsing terminal output. Agents launch with
+  hooks** (`UserPromptSubmit`/`Stop`, plus `PreToolUse` matchers on the two tools whose
+  execution *is* a wait — `AskUserQuestion` and `ExitPlanMode` — and their `PostToolUse`, which
+  is the answer landing), not by parsing terminal output. Agents launch with
   `--settings /vivarium/hooks.json` + `-e VIVARIUM_SESSION_ID=<id>`; the hook script appends
   to `/vivarium/events.log`, which the main process tails (`bridge.ts`). Never scope the hooks
   via the shared `/home/node/.claude/settings.json` — that would leak them into claude-box
   sessions. Gotchas: `Stop` does not fire on a user esc-interrupt (the renderer resets the
-  indicator on Esc), bridge files are rewritten and the log truncated on every container
-  start, and `start()` auto-recreates containers that lack the `/vivarium` mount.
+  indicator on Esc); `PostToolUse` does not fire when a call is *rejected*, and "No, keep
+  planning" is exactly that — a denial — so `TerminalView` also resumes on the Enter that
+  answers a prompt, which is a no-op in every state but `waiting`; bridge files are rewritten
+  and the log truncated on every container start, so a container that was already up keeps
+  serving the old `hooks.json` to newly launched agents until it is restarted; and `start()`
+  auto-recreates containers that lack the `/vivarium` mount.
 
 ## Commands
 

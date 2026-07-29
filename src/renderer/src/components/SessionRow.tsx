@@ -24,6 +24,7 @@ export function SessionRow({ project, session }: { project: Project; session: Se
   const activity = useStore((s) => s.activity[session.id])
   const attention = useStore((s) => s.notifications[session.id])
   const since = useStore((s) => s.agentSince[session.id])
+  const waitingSince = useStore((s) => s.agentWaitingSince[session.id])
   const select = useStore((s) => s.select)
   const startRename = useStore((s) => s.startRename)
   const setEditDraft = useStore((s) => s.setEditDraft)
@@ -90,6 +91,29 @@ export function SessionRow({ project, session }: { project: Project; session: Se
   const isAgent = session.type === 'agent'
   const accent = ACCENT[session.type]
   const working = isAgent && activity === 'working' && live
+  // Mid-turn but blocked on the user (a question, or a plan waiting for
+  // approval). Deliberately not folded into `working`: it is the state where the
+  // agent is doing nothing at all, and the row has to say so.
+  const waiting = isAgent && activity === 'waiting' && live
+
+  // The badge, if any — one indicator, decided in priority order so the three
+  // possible readings can never render two glyphs. An outstanding flag wins over
+  // the live state (it is the thing you haven't seen yet), and a waiting agent
+  // shows the same "?" whether or not it was flagged: one you are watching is
+  // still one that is waiting for you.
+  let badge: { glyph: string; color: string; title: string } | null = null
+  if (isAgent && attention === 'finished') {
+    badge = { glyph: '!', color: 'var(--danger)', title: 'Agent finished — click to view' }
+  } else if (isAgent && (waiting || attention === 'question')) {
+    badge = {
+      glyph: '?',
+      color: accent,
+      title: 'Agent is waiting for you — click to answer'
+    }
+  }
+  // Held at the point the agent blocked, so the row reports the work this turn
+  // has done rather than how long you have been away from your desk.
+  const until = waiting ? waitingSince : undefined
 
   const bg = selected ? 'var(--sel)' : hover ? 'var(--row-hover)' : 'transparent'
   const nameColor = selected ? 'var(--text)' : 'var(--text-2)'
@@ -232,28 +256,25 @@ export function SessionRow({ project, session }: { project: Project; session: Se
         </div>
       )}
 
-      {/* How stale the flag is: a "!" you left sitting for an hour means
-          something different from one raised ten seconds ago. */}
-      {!hover && !editing && attention && isAgent && since && (
-        <Elapsed since={since} style={durationStyle} />
+      {/* Next to a "!", how stale the flag is — one you left sitting for an hour
+          means something different from one raised ten seconds ago. Next to a
+          working or waiting agent, this turn's duration. */}
+      {!hover && !editing && isAgent && since && (badge || working) && (
+        <Elapsed since={since} until={until} style={durationStyle} />
       )}
 
-      {!hover && !editing && attention && isAgent && (
-        /* "?" in the agent accent = blocked on a question (urgent — the whole
-           turn waits); red "!" = turn finished */
+      {!hover && !editing && badge && (
+        /* "?" in the agent accent = blocked on the user (urgent — the whole turn
+           waits); red "!" = turn finished */
         <span
-          title={
-            attention === 'question'
-              ? 'Agent asked a question — click to answer'
-              : 'Agent finished — click to view'
-          }
+          title={badge.title}
           style={{
             width: 16,
             height: 16,
             flex: 'none',
             marginRight: 1,
             borderRadius: '50%',
-            background: attention === 'question' ? accent : 'var(--danger)',
+            background: badge.color,
             color: '#fff',
             fontSize: 11,
             fontWeight: 700,
@@ -263,21 +284,15 @@ export function SessionRow({ project, session }: { project: Project; session: Se
             justifyContent: 'center'
           }}
         >
-          {attention === 'question' ? '?' : '!'}
+          {badge.glyph}
         </span>
       )}
 
-      {/* How long this turn has been running — the number you want when
-          deciding which of several working agents to look in on. */}
-      {!hover && !editing && isAgent && !attention && working && since && (
-        <Elapsed since={since} style={durationStyle} />
-      )}
-
-      {!hover && !editing && isAgent && !attention && working && (
+      {!hover && !editing && isAgent && !badge && working && (
         <ThinkingDots color={accent} title="Agent working" style={{ marginRight: 2 }} />
       )}
 
-      {!hover && !editing && isAgent && !attention && !working && (
+      {!hover && !editing && isAgent && !badge && !working && (
         <span
           title={dotTitle}
           style={{
