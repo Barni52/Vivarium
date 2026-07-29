@@ -90,12 +90,16 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
     )
   )
   const projectIds = useStore((s) => s.config.projects.map((p) => p.id))
+  // No kind check: this row is the drop target both for a project being reordered
+  // ('before'/'after') and for a session being dropped into it ('into'), and
+  // dropTarget.id only ever holds a project id in those two cases.
   const dropIndicator = useStore((s) =>
-    s.drag?.kind === 'project' && s.dropTarget?.id === project.id ? s.dropTarget.pos : null
+    s.dropTarget?.id === project.id ? s.dropTarget.pos : null
   )
   const setDrag = useStore((s) => s.setDrag)
   const setDropTarget = useStore((s) => s.setDropTarget)
   const reorderProjects = useStore((s) => s.reorderProjects)
+  const requestMoveSession = useStore((s) => s.requestMoveSession)
 
   const showMenu = (e: React.MouseEvent): void => {
     e.preventDefault()
@@ -170,6 +174,40 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
     void reorderProjects(ids)
   }
 
+  // --- accepting a session dragged in from another project ------------------
+  // A project row has no meaningful midpoint for a session (there is no "before
+  // this project" place to put one), so the whole row is one target and the drop
+  // appends. Dropping onto the session's *own* project is not a move, so it sets
+  // nothing and the cursor stays no-drop. This is also what makes a collapsed —
+  // or empty — project reachable: no expansion needed, the drop expands it after
+  // the fact.
+  const foreignSessionDrag = (): { id: string; projectId: string } | null => {
+    const d = useStore.getState().drag
+    if (!d || d.kind !== 'session' || !d.projectId || d.projectId === project.id) return null
+    return { id: d.id, projectId: d.projectId }
+  }
+
+  const onSessionDragOver = (e: React.DragEvent): void => {
+    if (!foreignSessionDrag()) {
+      // A session over the project it already belongs to. Clear the last target as
+      // well as refusing the drop, or some row further up keeps drawing an
+      // indicator for a place the cursor has left. (A *project* drag lands here too
+      // — via a session row that ignored it — and must keep its target.)
+      const st = useStore.getState()
+      if (st.drag?.kind === 'session' && st.dropTarget) setDropTarget(null)
+      return
+    }
+    e.preventDefault()
+    setDropTarget({ id: project.id, pos: 'into' })
+  }
+
+  const onSessionDrop = (e: React.DragEvent): void => {
+    const d = foreignSessionDrag()
+    if (!d) return
+    e.preventDefault()
+    requestMoveSession(d.projectId, project.id, d.id, -1)
+  }
+
   return (
     <div onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
       {/* header */}
@@ -181,13 +219,13 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
           setDrag({ kind: 'project', id: project.id })
         }}
         onDragOver={(e) => {
-          if (useStore.getState().drag?.kind !== 'project') return
+          if (useStore.getState().drag?.kind !== 'project') return onSessionDragOver(e)
           e.preventDefault()
           const r = e.currentTarget.getBoundingClientRect()
           setDropTarget({ id: project.id, pos: e.clientY < r.top + r.height / 2 ? 'before' : 'after' })
         }}
         onDrop={(e) => {
-          if (useStore.getState().drag?.kind !== 'project') return
+          if (useStore.getState().drag?.kind !== 'project') return onSessionDrop(e)
           e.preventDefault()
           onDrop()
         }}
@@ -211,7 +249,11 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
               ? 'inset 0 2px 0 0 var(--accent)'
               : dropIndicator === 'after'
                 ? 'inset 0 -2px 0 0 var(--accent)'
-                : 'none'
+                : // 'into' is not a position between two rows, so it gets a ring
+                  // around the whole row instead of an edge line
+                  dropIndicator === 'into'
+                  ? 'inset 0 0 0 2px var(--accent)'
+                  : 'none'
         }}
       >
         <span
@@ -365,7 +407,14 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
 
       {/* sessions */}
       {expanded && (
-        <div style={{ paddingLeft: 20, marginLeft: 18, borderLeft: '1px solid var(--border-2)' }}>
+        <div
+          // The rows handle their own before/after targeting; this catches the
+          // space around them — below the last row, and the whole "No sessions
+          // yet" block, which is the only droppable surface an empty project has.
+          onDragOver={onSessionDragOver}
+          onDrop={onSessionDrop}
+          style={{ paddingLeft: 20, marginLeft: 18, borderLeft: '1px solid var(--border-2)' }}
+        >
           {project.sessions.map((s) => (
             <SessionRow key={s.id} project={project} session={s} />
           ))}

@@ -37,6 +37,7 @@ export function SessionRow({ project, session }: { project: Project; session: Se
   const setDrag = useStore((s) => s.setDrag)
   const setDropTarget = useStore((s) => s.setDropTarget)
   const reorderSessions = useStore((s) => s.reorderSessions)
+  const requestMoveSession = useStore((s) => s.requestMoveSession)
 
   const showMenu = (e: React.MouseEvent): void => {
     e.preventDefault()
@@ -63,7 +64,19 @@ export function SessionRow({ project, session }: { project: Project; session: Se
     const st = useStore.getState()
     const d = st.drag
     const t = st.dropTarget
-    if (!d || d.kind !== 'session' || d.projectId !== project.id || !t) return
+    if (!d || d.kind !== 'session' || !t || t.id !== session.id) return
+
+    // A session from another project: same insertion arithmetic, but the dragged
+    // id isn't in this list to filter out, and it goes through the move path
+    // (which confirms first, because it ends the session's pty).
+    if (d.projectId && d.projectId !== project.id) {
+      let idx = project.sessions.findIndex((s) => s.id === t.id)
+      if (idx < 0) return
+      if (t.pos === 'after') idx += 1
+      requestMoveSession(d.projectId, project.id, d.id, idx)
+      return
+    }
+
     const ids = project.sessions.map((s) => s.id).filter((id) => id !== d.id)
     let idx = ids.indexOf(t.id)
     if (idx < 0) return
@@ -111,17 +124,25 @@ export function SessionRow({ project, session }: { project: Project; session: Se
         e.dataTransfer.setData('text/plain', session.id)
         setDrag({ kind: 'session', id: session.id, projectId: project.id })
       }}
+      // Any session drag is welcome here, not just one from this project — a row
+      // is how you land a session at a chosen position in another project. The
+      // dragged row itself is skipped so it can't target itself.
       onDragOver={(e) => {
         const d = useStore.getState().drag
-        if (d?.kind !== 'session' || d.projectId !== project.id) return
+        if (d?.kind !== 'session' || d.id === session.id) return
         e.preventDefault()
+        // The enclosing sessions container also accepts session drags (it is the
+        // "append to this project" surface). Keep this row's precise before/after
+        // target from being overwritten by it as the event bubbles.
+        e.stopPropagation()
         const r = e.currentTarget.getBoundingClientRect()
         setDropTarget({ id: session.id, pos: e.clientY < r.top + r.height / 2 ? 'before' : 'after' })
       }}
       onDrop={(e) => {
         const d = useStore.getState().drag
-        if (d?.kind !== 'session' || d.projectId !== project.id) return
+        if (d?.kind !== 'session' || d.id === session.id) return
         e.preventDefault()
+        e.stopPropagation() // ditto — or the container would move it a second time
         onDrop()
       }}
       onDragEnd={() => {

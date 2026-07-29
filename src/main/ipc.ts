@@ -225,6 +225,60 @@ export function registerIpc(win: BrowserWindow): void {
     }
   )
 
+  /**
+   * Move a session to another project (sidebar drag). `index` is the insertion
+   * point in the target's session list; -1 or out of range appends.
+   *
+   * The pty cannot follow the session — for a container session it is a
+   * `docker exec` client bound to the old container, for a host shell a pwsh
+   * rooted at the old project's basePath — so it is killed here and the renderer
+   * reopens against the new project (see TerminalHost's project-scoped key). The
+   * kill is silent because it happens *before* the config rewrite below, so the
+   * exit would otherwise land on the replacement terminal (see PtyManager.kill).
+   *
+   * An agent's conversation survives the move untouched, with no transfer step:
+   * claudeSessionId lives on the Session object and travels with it,
+   * /home/node/.claude is the same claude-box-creds volume in every container,
+   * and every agent execs with -w /workspace — so the transcript path is
+   * identical from the new container and execArgs picks --resume there. What does
+   * change (the point of the feature) is which mounts sit under /workspace, so
+   * file paths from earlier in the conversation may not exist anymore; the
+   * confirm dialog says so.
+   */
+  ipcMain.handle(
+    CH.moveSession,
+    async (
+      _e,
+      fromProjectId: string,
+      toProjectId: string,
+      sessionId: string,
+      index: number
+    ): Promise<Config> => {
+      // Validate before killing anything — a call that can't move the session
+      // must not end its pty either.
+      const src = store.getProject(fromProjectId)
+      if (
+        fromProjectId === toProjectId ||
+        !src?.sessions.some((s) => s.id === sessionId) ||
+        !store.getProject(toProjectId)
+      ) {
+        return store.get()
+      }
+      pty.kill(sessionId, true)
+      return store.mutate((cfg) => {
+        const from = cfg.projects.find((x) => x.id === fromProjectId)
+        const to = cfg.projects.find((x) => x.id === toProjectId)
+        if (!from || !to || from === to) return cfg
+        const i = from.sessions.findIndex((s) => s.id === sessionId)
+        if (i < 0) return cfg
+        const [session] = from.sessions.splice(i, 1)
+        const at = index < 0 || index > to.sessions.length ? to.sessions.length : index
+        to.sessions.splice(at, 0, session)
+        return cfg
+      })
+    }
+  )
+
   // ---- git ---------------------------------------------------------------
   ipcMain.handle(CH.projectBranches, async (): Promise<Record<string, string | null>> => {
     const out: Record<string, string | null> = {}

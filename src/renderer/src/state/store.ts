@@ -30,6 +30,7 @@ export type DialogKind =
   | 'settings'
   | 'addSession'
   | 'confirmKill'
+  | 'confirmMove'
   | 'confirmDeleteProject'
   | 'confirmQuit'
   | 'claudeUpdate'
@@ -77,7 +78,14 @@ export interface DragState {
 
 export interface DropTarget {
   id: string
-  pos: 'before' | 'after'
+  /**
+   * 'before'/'after' insert next to the row `id` names; 'into' means "append to
+   * this project", which is what a session dragged over a project row gets — a
+   * project has no midpoint worth reading there. No kind field is needed: `id` is
+   * a project id only when a project row is the target, so `pos` is enough to tell
+   * a project reorder from a session landing in one.
+   */
+  pos: 'before' | 'after' | 'into'
 }
 
 export interface ProjectDraft {
@@ -106,6 +114,18 @@ interface KillTarget {
   projectId: string
   sessionId: string
   name: string
+}
+
+interface MoveTarget {
+  fromProjectId: string
+  toProjectId: string
+  sessionId: string
+  /** Insertion index in the target project's session list; -1 appends. */
+  index: number
+  sessionName: string
+  toProjectName: string
+  /** Whether the session has a pty right now — the dialog's wording turns on it. */
+  live: boolean
 }
 
 interface DeleteProjectTarget {
@@ -181,6 +201,7 @@ interface AppState {
    */
   lastSessionType: SessionType
   killTarget: KillTarget | null
+  moveTarget: MoveTarget | null
   deleteTarget: DeleteProjectTarget | null
   editingSessionId: string | null
   editDraft: string
@@ -253,11 +274,18 @@ interface AppState {
   openContextMenu: (x: number, y: number, items: ContextMenuItem[], onClose?: () => void) => void
   closeContextMenu: () => void
 
-  // drag reorder
+  // drag reorder / move
   setDrag: (drag: DragState | null) => void
   setDropTarget: (t: DropTarget | null) => void
   reorderProjects: (orderedIds: string[]) => Promise<void>
   reorderSessions: (projectId: string, orderedSessionIds: string[]) => Promise<void>
+  requestMoveSession: (
+    fromProjectId: string,
+    toProjectId: string,
+    sessionId: string,
+    index: number
+  ) => void
+  confirmMoveSession: () => Promise<void>
   confirmAddSession: () => Promise<void>
   startRename: (sessionId: string, name: string) => void
   setEditDraft: (v: string) => void
@@ -362,6 +390,7 @@ export const useStore = create<AppState>((set, get) => ({
   addSession: null,
   lastSessionType: 'agent',
   killTarget: null,
+  moveTarget: null,
   deleteTarget: null,
   editingSessionId: null,
   editDraft: '',
@@ -702,6 +731,7 @@ export const useStore = create<AppState>((set, get) => ({
       dialog: null,
       addSession: null,
       killTarget: null,
+      moveTarget: null,
       deleteTarget: null,
       st: null,
       claudeResults: {}
@@ -808,6 +838,53 @@ export const useStore = create<AppState>((set, get) => ({
   reorderSessions: async (projectId, orderedSessionIds) => {
     const config = await window.vivarium.reorderSessions(projectId, orderedSessionIds)
     set({ config, drag: null, dropTarget: null })
+  },
+
+  requestMoveSession: (fromProjectId, toProjectId, sessionId, index) => {
+    const s = get()
+    const from = s.config.projects.find((p) => p.id === fromProjectId)
+    const to = s.config.projects.find((p) => p.id === toProjectId)
+    const session = from?.sessions.find((x) => x.id === sessionId)
+    if (!from || !to || !session || from === to) return
+    // Clear the drag here rather than leaving it to onDragEnd: the confirm dialog
+    // takes focus the moment it opens, and a drag whose end event never lands
+    // would leave every row still showing its drop indicator.
+    set({
+      dialog: 'confirmMove',
+      drag: null,
+      dropTarget: null,
+      moveTarget: {
+        fromProjectId,
+        toProjectId,
+        sessionId,
+        index,
+        sessionName: session.name,
+        toProjectName: to.name,
+        live: !!s.live[sessionId]
+      }
+    })
+  },
+
+  confirmMoveSession: async () => {
+    const { moveTarget } = get()
+    if (!moveTarget) return
+    const config = await window.vivarium.moveSession(
+      moveTarget.fromProjectId,
+      moveTarget.toProjectId,
+      moveTarget.sessionId,
+      moveTarget.index
+    )
+    // Nothing here is re-keyed: live/activity/agentSince/notifications are all
+    // keyed by session id, which the move doesn't change. Main killed the pty
+    // silently, and TerminalHost's project-scoped key remounts the terminal, which
+    // reopens it against the target container (or leaves it dark until that
+    // container starts).
+    set((s) => ({
+      config,
+      dialog: null,
+      moveTarget: null,
+      expanded: { ...s.expanded, [moveTarget.toProjectId]: true }
+    }))
   },
 
   confirmAddSession: async () => {

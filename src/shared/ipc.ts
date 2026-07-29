@@ -12,6 +12,10 @@ export const CH = {
   removeSession: 'session:remove',
   reorderProjects: 'project:reorder',
   reorderSessions: 'session:reorder',
+  // Cross-project move (drag a session onto another project). Separate from
+  // reorderSessions because it spans two projects and has to end the session's
+  // pty — the old container's exec client can't follow it.
+  moveSession: 'session:move',
 
   // git
   projectBranches: 'git:branches',

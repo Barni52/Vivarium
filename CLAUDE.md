@@ -94,6 +94,16 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   project's sessions now all open at once and that burst is what makes `docker inspect` answer
   non-zero. `OPEN_LIMIT` in `ipc.ts` caps the burst for the same reason — it hands slots straight
   to waiters rather than releasing the count, or the cap drifts up by one per handover.
+- **Moving a session between projects transfers the conversation for free — and only that.**
+  `claudeSessionId` lives on the `Session` object, `/home/node/.claude` is the same
+  `claude-box-creds` volume in every container, and agents always exec with `-w /workspace`, so the
+  transcript path is identical from any project's container and `execArgs` picks `--resume` by
+  itself. Nothing copies a `.jsonl`, and no store map is re-keyed (they all key on session id).
+  What does *not* follow: the pty (a `docker exec` client bound to the old container), the
+  scrollback, and the mounts — `/workspace` is the target project's now, which is the point.
+  `moveSession` kills the pty **silently** because it kills before rewriting config, so the exit
+  would otherwise land on the replacement terminal; `TerminalHost` keys views on
+  `project.id:session.id` so that replacement actually happens.
 - **Claude Code is never auto-updated.** It used to be (fire-and-forget `npm i -g` on every
   container start, throttled by a stamp file) — invisible, and it changed the CLI version under
   a live session. Now updates are strictly user-initiated: the title-bar version chip / project

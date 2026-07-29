@@ -50,6 +50,14 @@ const api = {
     ipcRenderer.invoke(CH.reorderProjects, orderedIds),
   reorderSessions: (projectId: string, orderedSessionIds: string[]): Promise<Config> =>
     ipcRenderer.invoke(CH.reorderSessions, projectId, orderedSessionIds),
+  // index = insertion point in the target project's session list; -1 appends.
+  moveSession: (
+    fromProjectId: string,
+    toProjectId: string,
+    sessionId: string,
+    index: number
+  ): Promise<Config> =>
+    ipcRenderer.invoke(CH.moveSession, fromProjectId, toProjectId, sessionId, index),
 
   // git
   projectBranches: (): Promise<Record<string, string | null>> =>

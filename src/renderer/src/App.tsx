@@ -7,6 +7,7 @@ import { AddProject } from './components/dialogs/AddProject'
 import { ProjectSettings } from './components/dialogs/ProjectSettings'
 import { AddSessionPopover } from './components/dialogs/AddSessionPopover'
 import { ConfirmKill } from './components/dialogs/ConfirmKill'
+import { ConfirmMove } from './components/dialogs/ConfirmMove'
 import { ConfirmDeleteProject } from './components/dialogs/ConfirmDeleteProject'
 import { ConfirmQuit } from './components/dialogs/ConfirmQuit'
 import { ClaudeUpdate } from './components/dialogs/ClaudeUpdate'
@@ -100,6 +101,7 @@ export function App(): React.ReactElement {
       {dialog === 'settings' && <ProjectSettings />}
       {dialog === 'addSession' && <AddSessionPopover />}
       {dialog === 'confirmKill' && <ConfirmKill />}
+      {dialog === 'confirmMove' && <ConfirmMove />}
       {dialog === 'confirmDeleteProject' && <ConfirmDeleteProject />}
       {dialog === 'confirmQuit' && <ConfirmQuit />}
       {dialog === 'claudeUpdate' && <ClaudeUpdate />}

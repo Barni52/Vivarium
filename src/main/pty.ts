@@ -9,6 +9,8 @@ type Emit = (channel: string, payload: unknown) => void
 interface Tracked {
   proc: IPty
   session: Session
+  /** Set by kill(id, silent) — this pty's exit must not be reported (see kill). */
+  silent?: boolean
 }
 
 let pwshCache: string | undefined
@@ -94,11 +96,18 @@ export class PtyManager {
       return false
     }
 
-    this.terms.set(session.id, { proc, session })
+    // The tracked entry — not the session id — is what the exit handler closes
+    // over, so a silenced kill can never mute the *replacement* pty's exit if the
+    // two generations overlap.
+    const tracked: Tracked = { proc, session }
+    this.terms.set(session.id, tracked)
 
     proc.onData((data) => this.emit('pty:data', { sessionId: session.id, data }))
     proc.onExit(({ exitCode }) => {
-      this.terms.delete(session.id)
+      // Only drop it if this generation is still the current one (kill() already
+      // removed it, and a replacement may have taken the slot since).
+      if (this.terms.get(session.id) === tracked) this.terms.delete(session.id)
+      if (tracked.silent) return
       this.emit('pty:exit', { sessionId: session.id, exitCode })
     })
 
@@ -120,10 +129,21 @@ export class PtyManager {
     }
   }
 
-  /** Kill a single session's pty (used by "Kill session"). */
-  kill(sessionId: string): void {
+  /**
+   * Kill a single session's pty (used by "Kill session").
+   *
+   * `silent` suppresses the 'pty:exit' event for callers that are about to
+   * replace this pty rather than end the session — the cross-project move. The
+   * ordering is the reason: moveSession kills here and *then* rewrites config,
+   * so by the time the OS reports the exit the renderer has already swapped in a
+   * fresh terminal for the same session id, and that terminal would print
+   * "[session ended]" and clear `live` on top of the pty it just opened.
+   * Removing a session leaves the default on — nothing survives to be confused.
+   */
+  kill(sessionId: string, silent = false): void {
     const t = this.terms.get(sessionId)
     if (!t) return
+    if (silent) t.silent = true
     try {
       t.proc.kill()
     } catch {
