@@ -49,16 +49,29 @@ export function ContextMenu(): React.ReactElement | null {
         if (onClose) requestAnimationFrame(onClose) // return focus to the terminal
       }
     }
+    // Capture phase, because scroll doesn't bubble: this is how a scrolled
+    // *element* dismisses the menu, not just the window. That reach is also the
+    // catch — a terminal scrolls its own viewport every time output arrives, and
+    // every session of a running container has a live xterm (hidden ones
+    // included), so an agent printing anything used to close the menu a second
+    // or two after it opened, in whatever project happened to be talking. Only
+    // the user scrolling the menu's anchor out from under it is worth a dismiss,
+    // so terminals are excluded; the full-screen catcher below means user
+    // scrolling can only reach a surface layered above it anyway.
+    const onScroll = (e: Event): void => {
+      const el = e.target instanceof Element ? e.target : null
+      if (el?.closest('[data-terminal-host]')) return
+      close()
+    }
     window.addEventListener('keydown', onKey)
     window.addEventListener('blur', close)
     window.addEventListener('resize', close)
-    // capture-phase scroll so scrolling anything dismisses the menu
-    window.addEventListener('scroll', close, true)
+    window.addEventListener('scroll', onScroll, true)
     return () => {
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('blur', close)
       window.removeEventListener('resize', close)
-      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('scroll', onScroll, true)
     }
   }, [menu, close])
 
