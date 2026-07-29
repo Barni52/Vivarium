@@ -3,6 +3,7 @@ import { useStore } from '../state/store'
 import { leaf } from '../paths'
 import { Chevron, Close, Folder, OpenExternal, Refresh } from './Icons'
 import { OutputTree } from './OutputTree'
+import { MONO } from '../theme'
 
 function IconBtn({
   title,
@@ -197,7 +198,7 @@ export function OutputPanel(): React.ReactElement {
           style={{
             flex: 1,
             minWidth: 0,
-            fontFamily: "'IBM Plex Mono', monospace",
+            fontFamily: MONO,
             fontSize: 11,
             color: 'var(--text-3)',
             overflow: 'hidden',
@@ -298,7 +299,7 @@ function DiffBaseRow(): React.ReactElement {
           background: 'var(--field-2)',
           border: '1px solid var(--border)',
           color: 'var(--text)',
-          fontFamily: "'IBM Plex Mono', monospace",
+          fontFamily: MONO,
           fontSize: 12,
           padding: '0 8px',
           outline: 'none'

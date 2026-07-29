@@ -1,6 +1,7 @@
 import React from 'react'
 import { useStore } from '../../state/store'
 import { Overlay, Panel, FooterButton } from '../ui'
+import { MONO } from '../../theme'
 
 // Shown for every cross-project drop in the sidebar. It confirms unconditionally
 // rather than only for a live session, because this dialog is the only place the
@@ -19,7 +20,7 @@ export function ConfirmMove(): React.ReactElement | null {
 
   const mono: React.CSSProperties = {
     color: 'var(--text)',
-    fontFamily: "'IBM Plex Mono', monospace"
+    fontFamily: MONO
   }
 
   return (

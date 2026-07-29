@@ -1,6 +1,7 @@
 import React from 'react'
 import { Folder, Plus, Close, Lock } from './Icons'
 import { leaf, relLabel } from '../paths'
+import { MONO } from '../theme'
 
 export function MountList({
   mounts,
@@ -88,7 +89,7 @@ export function MountList({
               border: 0,
               borderBottom: '1px solid var(--text-3)',
               color: 'var(--text)',
-              fontFamily: "'IBM Plex Mono', monospace",
+              fontFamily: MONO,
               fontSize: 13,
               padding: '0 12px',
               outline: 'none'
@@ -182,10 +183,10 @@ export function MountList({
               <span style={{ color: 'var(--text-3)', display: 'flex' }}>
                 <Folder size={13} />
               </span>
-              <span style={{ flex: 1, fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: 'var(--text)' }}>
+              <span style={{ flex: 1, fontFamily: MONO, fontSize: 13, color: 'var(--text)' }}>
                 {relLabel(basePath, m)}
               </span>
-              <span style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: "'IBM Plex Mono', monospace" }}>
+              <span style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: MONO }}>
                 → /workspace/{leaf(m)}
               </span>
               {editable && onRemove && (

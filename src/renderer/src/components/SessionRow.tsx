@@ -1,7 +1,7 @@
 import React from 'react'
 import type { Project, Session } from '@shared/types'
 import { useStore } from '../state/store'
-import { ACCENT } from '../theme'
+import { ACCENT, MONO } from '../theme'
 import { TypeIcon, Pencil, Close, ThinkingDots } from './Icons'
 import { Elapsed } from './Elapsed'
 
@@ -10,7 +10,7 @@ import { Elapsed } from './Elapsed'
 // controls take their place), so a title on them could never be read.
 const durationStyle: React.CSSProperties = {
   flex: 'none',
-  fontFamily: "'IBM Plex Mono', monospace",
+  fontFamily: MONO,
   fontSize: 10.5,
   color: 'var(--text-3)'
 }

@@ -10,7 +10,12 @@ export const GLOBAL_CSS = `
     --row-hover:#161c25;--sel:#1d2c3f;--border:#2a333f;--border-2:#1b222b;
     --text:#eef1f5;--text-2:#9aa6b6;--text-3:#6a7686;
     --accent:#5a769f;--accent-2:#6d88ad;--danger:#fa4d56;--overlay:rgba(2,4,7,.66);
-    --terminal-bg:#0a0d12;--terminal-text:#c7cfda;
+    /* Dark grey rather than the near-black it used to be (#0a0d12): the terminal
+       now sits a step *above* --panel instead of a hole punched through it, which
+       is what reads as modern next to this slate chrome. Must stay in sync with
+       DARK_THEME.background in TerminalView — xterm paints its own canvas and
+       cannot resolve a CSS var, and this var backs the gutter padding around it. */
+    --terminal-bg:#1c2128;--terminal-text:#c7cfda;
     --focus:#7f9dc4;--focus-soft:rgba(122,154,196,.20);
   }
   body{font-family:'IBM Plex Sans',system-ui,sans-serif;color:var(--text)}
@@ -36,6 +41,25 @@ export const GLOBAL_CSS = `
   @keyframes vdlg{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
   @keyframes vpop{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
 `
+
+/**
+ * The one mono stack in the app — terminals, paths, container names, versions.
+ * It used to be spelled out inline in ~20 components, which is why swapping the
+ * face meant touching all of them; import this instead.
+ *
+ * JetBrains Mono rather than IBM Plex Mono: a taller x-height and a wider glyph
+ * body make it hold up better at the 13px the terminal runs at, and its 0/O and
+ * 1/l/I are drawn to be told apart, which matters for reading container ids and
+ * hashes. Plex Mono stays as the first fallback — it is still bundled for the
+ * sans family's sake, so an unresolved JetBrains lands on a known face rather
+ * than on whatever Windows calls `monospace`.
+ *
+ * Note for the terminal: JetBrains Mono ships programming ligatures and xterm
+ * does not run them (that needs the ligatures addon we don't load). They simply
+ * don't fire — `!=` stays two glyphs — which is the behaviour we want anyway,
+ * since a ligature is one glyph in two cells and the WebGL atlas is per-cell.
+ */
+export const MONO = "'JetBrains Mono', 'IBM Plex Mono', monospace"
 
 // Per-session-type hues. Deliberately muted — three fully saturated colors
 // (violet/cyan/green) next to this slate palette read as neon, and the old

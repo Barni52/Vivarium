@@ -1,5 +1,6 @@
 import React from 'react'
 import { useStore } from '../state/store'
+import { MONO } from '../theme'
 
 // xterm instances keyed by session id (registered in TerminalView). Typed to
 // the minimal focus/blur surface we need here so we don't import xterm.
@@ -223,7 +224,7 @@ function MenuRow({
             paddingLeft: 18,
             fontSize: 11.5,
             color: 'var(--text-3)',
-            fontFamily: "'IBM Plex Mono', monospace",
+            fontFamily: MONO,
             flex: 'none'
           }}
         >

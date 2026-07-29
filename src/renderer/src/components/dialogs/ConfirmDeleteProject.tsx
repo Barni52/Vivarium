@@ -1,6 +1,7 @@
 import React from 'react'
 import { useStore } from '../../state/store'
 import { Overlay, Panel, FooterButton } from '../ui'
+import { MONO } from '../../theme'
 
 export function ConfirmDeleteProject(): React.ReactElement | null {
   const target = useStore((s) => s.deleteTarget)
@@ -16,7 +17,7 @@ export function ConfirmDeleteProject(): React.ReactElement | null {
           <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Delete project?</div>
           <div style={{ fontSize: 13.5, color: 'var(--text-2)', lineHeight: 1.55 }}>
             This removes{' '}
-            <span style={{ color: 'var(--text)', fontFamily: "'IBM Plex Mono', monospace" }}>
+            <span style={{ color: 'var(--text)', fontFamily: MONO }}>
               {target.name}
             </span>{' '}
             and all its sessions, and force-removes its container. Your folders on the host are

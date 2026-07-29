@@ -1,4 +1,5 @@
 import React from 'react'
+import { MONO } from '../theme'
 
 // Small shared dialog primitives styled from the mockup.
 
@@ -73,7 +74,7 @@ export function fieldStyle(mono?: boolean): React.CSSProperties {
     border: 0,
     borderBottom: '1px solid var(--text-3)',
     color: 'var(--text)',
-    fontFamily: mono ? "'IBM Plex Mono', monospace" : 'inherit',
+    fontFamily: mono ? MONO : 'inherit',
     fontSize: mono ? 13 : 14,
     padding: '0 12px',
     outline: 'none'

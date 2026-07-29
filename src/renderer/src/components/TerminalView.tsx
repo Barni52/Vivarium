@@ -6,6 +6,7 @@ import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import type { Project, Session } from '@shared/types'
 import { useStore } from '../state/store'
 import { Chevron, Close, Copy, Paste, Refresh, Search, SelectAll, ZoomIn, ZoomOut } from './Icons'
+import { MONO } from '../theme'
 
 // Windows console "Campbell" ANSI palette — makes colored program output
 // (PSReadLine highlighting, git, ls, npm, etc.) render the way it does in a
@@ -29,9 +30,13 @@ const CAMPBELL = {
   brightWhite: '#f2f2f2'
 }
 
-// All session types share the app's dark terminal background.
+// All session types share the app's dark terminal background. The literal is the
+// same color as --terminal-bg in theme.ts and has to be kept that way by hand:
+// xterm renders into its own canvas/DOM layer and takes a real color, while the
+// gutter padding drawn around it by TerminalView/TerminalHost uses the var — any
+// drift shows up as a visible seam at the edges of the terminal.
 const DARK_THEME = {
-  background: '#0a0d12',
+  background: '#1c2128',
   foreground: '#c7cfda',
   cursor: '#c7cfda',
   selectionBackground: 'rgba(69,137,255,.32)',
@@ -141,8 +146,8 @@ const MIN_FIT_H = 30
  */
 const SEARCH_OPTS: ISearchOptions = {
   decorations: {
-    matchBackground: '#2c3c52',
-    matchBorder: '#3d5271',
+    matchBackground: '#3e5068',
+    matchBorder: '#4f6687',
     matchOverviewRuler: '#5a769f',
     activeMatchBackground: '#5a769f',
     activeMatchBorder: '#93aacb',
@@ -203,7 +208,7 @@ export function TerminalView({
   // --- create the terminal + pty once ---
   React.useEffect(() => {
     const term = new Terminal({
-      fontFamily: "'IBM Plex Mono', monospace",
+      fontFamily: MONO,
       fontSize: useStore.getState().terminalFontSize,
       // Keep lineHeight at the default 1.0 so the WebGL cell height stays
       // integer-aligned — a fractional line height left the last row partially
@@ -215,10 +220,13 @@ export function TerminalView({
       scrollback: 50000,
       allowProposedApi: true,
       rightClickSelectsWord: false,
-      // Real IBM Plex Mono weights (preloaded in main.tsx) so the renderer never
-      // fakes a weight by double-drawing glyphs (smeared text). Normal is 500
-      // (medium) rather than 400 — at small sizes 400 reads as thin/faint.
-      fontWeight: 500,
+      // Real JetBrains Mono weights (preloaded in main.tsx) so the renderer never
+      // fakes a weight by double-drawing glyphs (smeared text). Back to 400 now
+      // that the face is JetBrains rather than Plex: the 500 here existed because
+      // Plex Mono's regular reads thin at 13px, and JetBrains Mono is drawn with
+      // a heavier stem to begin with — 500 on top of that is chunky. 500 is still
+      // bundled; it is what the mono bits of the UI chrome ask for.
+      fontWeight: 400,
       fontWeightBold: 700,
       theme: DARK_THEME
     })
@@ -811,7 +819,7 @@ function FindBar({
           background: 'transparent',
           border: 0,
           color: 'var(--text)',
-          fontFamily: "'IBM Plex Mono', monospace",
+          fontFamily: MONO,
           fontSize: 12.5,
           padding: 0,
           outline: 'none',
@@ -827,7 +835,7 @@ function FindBar({
           minWidth: 58,
           textAlign: 'right',
           fontSize: 11,
-          fontFamily: "'IBM Plex Mono', monospace",
+          fontFamily: MONO,
           color: none ? 'var(--danger)' : 'var(--text-3)',
           flex: 'none'
         }}

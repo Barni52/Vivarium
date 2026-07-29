@@ -1,6 +1,7 @@
 import React from 'react'
 import { useStore } from '../../state/store'
 import { Overlay, Panel, FooterButton } from '../ui'
+import { MONO } from '../../theme'
 
 export function ConfirmKill(): React.ReactElement | null {
   const target = useStore((s) => s.killTarget)
@@ -16,7 +17,7 @@ export function ConfirmKill(): React.ReactElement | null {
           <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Kill session?</div>
           <div style={{ fontSize: 13.5, color: 'var(--text-2)', lineHeight: 1.55 }}>
             This stops{' '}
-            <span style={{ color: 'var(--text)', fontFamily: "'IBM Plex Mono', monospace" }}>
+            <span style={{ color: 'var(--text)', fontFamily: MONO }}>
               {target.name}
             </span>{' '}
             and closes its terminal. The container keeps running.

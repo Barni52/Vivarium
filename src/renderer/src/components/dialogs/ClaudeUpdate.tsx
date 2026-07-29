@@ -3,7 +3,7 @@ import type { ClaudeVersionInfo } from '@shared/types'
 import { useStore } from '../../state/store'
 import { Overlay, Panel, FooterButton } from '../ui'
 import { Refresh, Sparkle } from '../Icons'
-import { ACCENT } from '../../theme'
+import { ACCENT, MONO } from '../../theme'
 import { behindIds, isBehind, reasonLabel, reasonShort } from '../../claude'
 
 // Manual Claude Code updates. Vivarium never updates the CLI on its own (an
@@ -143,7 +143,7 @@ function Row({ info, latest }: { info: ClaudeVersionInfo; latest: string | null 
       </span>
       <span
         style={{
-          fontFamily: "'IBM Plex Mono', monospace",
+          fontFamily: MONO,
           fontSize: 12.5,
           color: info.installed ? 'var(--text-2)' : 'var(--text-3)',
           flex: 'none'
@@ -302,7 +302,7 @@ export function ClaudeUpdate(): React.ReactElement | null {
               <div
                 style={{
                   color: 'var(--danger)',
-                  fontFamily: "'IBM Plex Mono', monospace",
+                  fontFamily: MONO,
                   fontSize: 11.5,
                   marginTop: updated > 0 ? 8 : 0,
                   wordBreak: 'break-word'

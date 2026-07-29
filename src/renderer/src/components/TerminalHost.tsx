@@ -1,7 +1,7 @@
 import React from 'react'
 import type { Project, Session } from '@shared/types'
 import { useStore } from '../state/store'
-import { ACCENT, SESSION_TYPES, typeLabel } from '../theme'
+import { ACCENT, MONO, SESSION_TYPES, typeLabel } from '../theme'
 import { TypeIcon } from './Icons'
 import { Logo } from './Logo'
 import { Elapsed, formatElapsed } from './Elapsed'
@@ -44,7 +44,7 @@ function AgentStatus({ sessionId }: { sessionId: string }): React.ReactElement |
           alignItems: 'center',
           gap: 5,
           fontSize: 11,
-          fontFamily: "'IBM Plex Mono', monospace",
+          fontFamily: MONO,
           // A waiting agent is mid-turn, so it keeps the agent hue rather than
           // dropping to the idle grey — the word is what distinguishes them.
           color: working || waiting ? ACCENT.agent : 'var(--text-3)'
@@ -136,7 +136,10 @@ export function TerminalHost(): React.ReactElement {
             gap: 9,
             padding: '0 16px',
             background: 'var(--terminal-bg)',
-            borderBottom: '1px solid var(--border-2)'
+            // --border, not the hairline --border-2 this used to be: the header
+            // and the terminal under it are the same surface, and against the
+            // lighter grey background a #1b222b line is invisible.
+            borderBottom: '1px solid var(--border)'
           }}
         >
           {/* the type's own glyph rather than a colored dot — it says *what*
@@ -158,7 +161,7 @@ export function TerminalHost(): React.ReactElement {
               style={{
                 fontSize: 11,
                 color: 'var(--text-3)',
-                fontFamily: "'IBM Plex Mono', monospace"
+                fontFamily: MONO
               }}
             >
               {mini}

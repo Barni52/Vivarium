@@ -3,6 +3,7 @@ import type { VolumeInfo } from '@shared/types'
 import { useStore } from '../../state/store'
 import { Overlay, Panel, FooterButton } from '../ui'
 import { Disks, Lock, Refresh, Trash } from '../Icons'
+import { MONO } from '../../theme'
 
 // Docker volume housekeeping.
 //
@@ -106,7 +107,7 @@ function Row({ volume }: { volume: VolumeInfo }): React.ReactElement {
         <span
           title={volume.name}
           style={{
-            fontFamily: "'IBM Plex Mono', monospace",
+            fontFamily: MONO,
             fontSize: 12.5,
             color: 'var(--text)',
             overflow: 'hidden',
@@ -131,7 +132,7 @@ function Row({ volume }: { volume: VolumeInfo }): React.ReactElement {
 
       <span
         style={{
-          fontFamily: "'IBM Plex Mono', monospace",
+          fontFamily: MONO,
           fontSize: 12.5,
           color: volume.bytes ? 'var(--text-2)' : 'var(--text-3)',
           flex: 'none'
@@ -196,7 +197,7 @@ function Group({ title, volumes }: { title: string; volumes: VolumeInfo[] }): Re
       >
         {title}
         <span style={{ flex: 1 }} />
-        {total && <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{total}</span>}
+        {total && <span style={{ fontFamily: MONO }}>{total}</span>}
       </div>
       {volumes.map((v) => (
         <Row key={v.name} volume={v} />

@@ -4,6 +4,7 @@ import { PanelToggle } from './Icons'
 import { Logo } from './Logo'
 import { useStore } from '../state/store'
 import { chipSummary } from '../claude'
+import { MONO } from '../theme'
 
 // Frameless custom title bar (mockup lines 308-322). The bar is draggable via
 // -webkit-app-region; buttons opt out so they stay clickable.
@@ -178,7 +179,7 @@ function AppVersion(): React.ReactElement | null {
       style={{
         fontSize: 11.5,
         color: 'var(--text-3)',
-        fontFamily: "'IBM Plex Mono', monospace",
+        fontFamily: MONO,
         // Sits with the wordmark, not with the live chips on the right — this is
         // identity, not status, and it must never draw the eye.
         opacity: 0.75
@@ -241,7 +242,7 @@ function ClaudeChip(): React.ReactElement | null {
           />
         )}
         <span style={{ color: behind ? 'var(--text-2)' : 'inherit' }}>claude</span>
-        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5 }}>
+        <span style={{ fontFamily: MONO, fontSize: 12.5 }}>
           {chip.label}
           {/* mixed versions across containers: the chip shows the oldest, the
               tooltip lists them all — the marker stops it reading as the truth */}
@@ -251,7 +252,7 @@ function ClaudeChip(): React.ReactElement | null {
           <span
             style={{
               color: 'var(--accent-2)',
-              fontFamily: "'IBM Plex Mono', monospace",
+              fontFamily: MONO,
               fontSize: 12.5
             }}
           >

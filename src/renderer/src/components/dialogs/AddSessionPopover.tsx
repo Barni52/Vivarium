@@ -1,7 +1,13 @@
 import React from 'react'
 import type { SessionType } from '@shared/types'
 import { useStore, defaultSessionName } from '../../state/store'
-import { ADD_SESSION_POPOVER, SESSION_TYPES, typeLabel, type SessionTypeMeta } from '../../theme'
+import {
+  ADD_SESSION_POPOVER,
+  MONO,
+  SESSION_TYPES,
+  typeLabel,
+  type SessionTypeMeta
+} from '../../theme'
 import { TypeIcon } from '../Icons'
 
 // New-session picker.
@@ -89,7 +95,7 @@ function Row({
           style={{
             fontSize: 11,
             color: 'var(--text-3)',
-            fontFamily: "'IBM Plex Mono', monospace",
+            fontFamily: MONO,
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis'
@@ -243,7 +249,7 @@ export function AddSessionPopover(): React.ReactElement | null {
               border: '1px solid',
               borderColor: nameFocus ? 'var(--accent)' : 'var(--border)',
               color: 'var(--text)',
-              fontFamily: "'IBM Plex Mono', monospace",
+              fontFamily: MONO,
               fontSize: 13,
               padding: '0 10px',
               outline: 'none'

@@ -1,6 +1,11 @@
 import '@fontsource/ibm-plex-sans/400.css'
 import '@fontsource/ibm-plex-sans/500.css'
 import '@fontsource/ibm-plex-sans/600.css'
+import '@fontsource/jetbrains-mono/400.css'
+import '@fontsource/jetbrains-mono/500.css'
+import '@fontsource/jetbrains-mono/700.css'
+// Plex Mono is the fallback in MONO (theme.ts), so it has to be loaded too —
+// the whole point of naming a bundled fallback is that it is actually present.
 import '@fontsource/ibm-plex-mono/400.css'
 import '@fontsource/ibm-plex-mono/500.css'
 import '@fontsource/ibm-plex-mono/700.css'
@@ -20,9 +25,9 @@ document.head.appendChild(style)
 async function boot(): Promise<void> {
   try {
     await Promise.all([
-      document.fonts.load("13px 'IBM Plex Mono'"),
-      document.fonts.load("500 13px 'IBM Plex Mono'"),
-      document.fonts.load("700 13px 'IBM Plex Mono'"),
+      document.fonts.load("13px 'JetBrains Mono'"),
+      document.fonts.load("500 13px 'JetBrains Mono'"),
+      document.fonts.load("700 13px 'JetBrains Mono'"),
       document.fonts.load("14px 'IBM Plex Sans'")
     ])
     await document.fonts.ready

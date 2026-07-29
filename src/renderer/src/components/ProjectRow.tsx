@@ -1,7 +1,7 @@
 import React from 'react'
 import type { Project } from '@shared/types'
 import { useStore, type AttentionKind } from '../state/store'
-import { ACCENT } from '../theme'
+import { ACCENT, MONO } from '../theme'
 import {
   Chevron,
   Disks,
@@ -298,7 +298,7 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
               style={{
                 flex: '0 1 auto',
                 minWidth: 0,
-                fontFamily: "'IBM Plex Mono', monospace",
+                fontFamily: MONO,
                 fontSize: 11,
                 color: 'var(--text-3)',
                 overflow: 'hidden',
