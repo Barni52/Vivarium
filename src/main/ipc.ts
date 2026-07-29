@@ -432,6 +432,33 @@ export function registerIpc(win: BrowserWindow): void {
   })
 
   // ---- pty / sessions ----------------------------------------------------
+  // Opening one container session costs up to three docker.exe launches: the
+  // isRunning probe below, the transcript probe inside execArgs, and the exec
+  // client itself. Sessions no longer open one click at a time — every session of
+  // a project opens the moment its container comes up (TerminalHost) — and that
+  // burst is exactly what makes `docker inspect` answer non-zero, which
+  // isRunning() reads as "container stopped". So let only a few through at once.
+  // FIFO, so an interactive open waits at worst for a couple of probes; host
+  // shells don't touch docker and skip the gate entirely.
+  const OPEN_LIMIT = 3
+  let openActive = 0
+  const openWaiting: (() => void)[] = []
+  async function openGate<T>(fn: () => Promise<T>): Promise<T> {
+    // A finishing open hands its slot *directly* to the next waiter instead of
+    // releasing the count and resolving it: resolving a promise only queues a
+    // microtask, so a caller arriving in between would see the freed slot too and
+    // the two of them would both run — the cap would drift up by one per handover.
+    if (openActive >= OPEN_LIMIT) await new Promise<void>((r) => openWaiting.push(r))
+    else openActive++
+    try {
+      return await fn()
+    } finally {
+      const next = openWaiting.shift()
+      if (next) next()
+      else openActive--
+    }
+  }
+
   ipcMain.handle(
     CH.openSession,
     async (
@@ -448,7 +475,12 @@ export function registerIpc(win: BrowserWindow): void {
       // Already live → just re-attach (renderer keeps the xterm).
       if (pty.has(sessionId)) return { ok: true }
 
-      if (s.type !== 'host-shell') {
+      if (s.type === 'host-shell') {
+        const ok = await pty.spawn(s, p, cols, rows)
+        return ok ? { ok: true } : { ok: false, reason: 'spawn-failed' }
+      }
+
+      return openGate(async () => {
         if (!(await docker.binaryName())) {
           return { ok: false, reason: 'docker-missing', message: 'docker not found on PATH' }
         }
@@ -459,10 +491,12 @@ export function registerIpc(win: BrowserWindow): void {
         if (!(await docker.isRunning(p))) {
           return { ok: false, reason: 'container-stopped' }
         }
-      }
-
-      const ok = await pty.spawn(s, p, cols, rows)
-      return ok ? { ok: true } : { ok: false, reason: 'spawn-failed' }
+        // Re-check: this open may have waited behind others at the gate, and a
+        // sibling could have opened the same session in the meantime.
+        if (pty.has(sessionId)) return { ok: true }
+        const ok = await pty.spawn(s, p, cols, rows)
+        return ok ? { ok: true } : { ok: false, reason: 'spawn-failed' }
+      })
     }
   )
 

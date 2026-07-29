@@ -58,20 +58,39 @@ export function TerminalHost(): React.ReactElement {
   const projects = useStore((s) => s.config.projects)
   const selected = useStore((s) => s.selectedSessionId)
   const states = useStore((s) => s.states)
-
-  // Sessions that have ever been selected keep their xterm mounted (hidden when
-  // inactive) so scrollback survives switching.
-  const [opened, setOpened] = React.useState<Set<string>>(new Set())
-  React.useEffect(() => {
-    if (selected && !opened.has(selected)) {
-      setOpened((prev) => new Set(prev).add(selected))
-    }
-  }, [selected, opened])
+  // Which sessions still have a pty. Read here because unmounting a terminal
+  // destroys its scrollback, so the container probe alone must not decide it
+  // (see the third clause of `toRender` below).
+  const live = useStore((s) => s.live)
 
   const allSessions = projects.flatMap((p) => p.sessions.map((s) => ({ project: p, session: s })))
-  const existingIds = new Set(allSessions.map(({ session }) => session.id))
-  // prune opened ids whose session was removed
-  const toRender = allSessions.filter(({ session }) => opened.has(session.id))
+
+  // Which sessions get a terminal. This used to be "every session you have ever
+  // clicked", which meant a project could have its container up and its agents
+  // still dark — you could not start a container and walk away. Now it is derived:
+  // a session is live whenever it *can* be, and each mounted view opens its own
+  // pty (TerminalView). Views stay mounted but hidden when another is selected, so
+  // scrollback survives switching.
+  //
+  //  • host shells need no container, so they come up at app launch;
+  //  • a running container brings every one of its sessions up — on an explicit
+  //    start, and at launch for a container that was already running;
+  //  • a live pty keeps its view mounted even when the probe says stopped, because
+  //    unmounting runs TerminalView's cleanup and term.dispose() takes the whole
+  //    50k-line scrollback with it. `running` behind it is a 3s `docker inspect`
+  //    poll whose isRunning() reports false for *any* non-zero exit — a busy
+  //    daemon, a WSL hiccup, a docker.exe that couldn't be spawned. One such blip
+  //    used to wipe every terminal in the project while the user was on another
+  //    session, and invisibly: PtyManager.spawn re-attaches the same pty on the
+  //    remount, so the agent keeps working and the TUI repaints into a buffer with
+  //    no history — "the scrollbar is gone" with nothing to scroll to. A pty that
+  //    is still alive is better evidence than the probe (the docker exec client
+  //    dies with its container), so it wins. A container that really stopped ends
+  //    the pty, `live` clears, and the view unmounts exactly as before.
+  const toRender = allSessions.filter(
+    ({ project, session }) =>
+      session.type === 'host-shell' || !!states[project.id]?.running || !!live[session.id]
+  )
 
   const sel = allSessions.find(({ session }) => session.id === selected)
   const running = sel ? !!states[sel.project.id]?.running : false
@@ -87,15 +106,6 @@ export function TerminalHost(): React.ReactElement {
   // not auto-start the container — see main/ipc.ts openSession).
   const selBlocked = !!sel && sel.session.type !== 'host-shell' && !running
 
-  // clean up opened set when sessions disappear (avoids leaking dead views)
-  React.useEffect(() => {
-    setOpened((prev) => {
-      const next = new Set([...prev].filter((id) => existingIds.has(id)))
-      return next.size === prev.size ? prev : next
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projects])
-
   return (
     <div
       style={{
@@ -106,77 +116,77 @@ export function TerminalHost(): React.ReactElement {
         background: 'var(--terminal-bg)'
       }}
     >
-      {sel ? (
-        <>
-          {/* header */}
-          <div
-            style={{
-              flex: 'none',
-              height: 34,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 9,
-              padding: '0 16px',
-              background: 'var(--terminal-bg)',
-              borderBottom: '1px solid var(--border-2)'
-            }}
+      {/* header — only a selected session has one to show */}
+      {sel && (
+        <div
+          style={{
+            flex: 'none',
+            height: 34,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 9,
+            padding: '0 16px',
+            background: 'var(--terminal-bg)',
+            borderBottom: '1px solid var(--border-2)'
+          }}
+        >
+          {/* the type's own glyph rather than a colored dot — it says *what*
+              this session is, not just that it has a color */}
+          <span
+            title={typeLabel(sel.session.type)}
+            style={{ flex: 'none', display: 'flex', color: ACCENT[sel.session.type] }}
           >
-            {/* the type's own glyph rather than a colored dot — it says *what*
-                this session is, not just that it has a color */}
+            <TypeIcon type={sel.session.type} size={14} />
+          </span>
+          <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>
+            {sel.session.name}
+          </span>
+          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{sel.project.name}</span>
+          <div style={{ flex: 1 }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, flex: 'none' }}>
+            {sel.session.type === 'agent' && <AgentStatus sessionId={sel.session.id} />}
             <span
-              title={typeLabel(sel.session.type)}
-              style={{ flex: 'none', display: 'flex', color: ACCENT[sel.session.type] }}
+              style={{
+                fontSize: 11,
+                color: 'var(--text-3)',
+                fontFamily: "'IBM Plex Mono', monospace"
+              }}
             >
-              <TypeIcon type={sel.session.type} size={14} />
+              {mini}
             </span>
-            <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>
-              {sel.session.name}
-            </span>
-            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{sel.project.name}</span>
-            <div style={{ flex: 1 }} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 9, flex: 'none' }}>
-              {sel.session.type === 'agent' && <AgentStatus sessionId={sel.session.id} />}
-              <span
-                style={{
-                  fontSize: 11,
-                  color: 'var(--text-3)',
-                  fontFamily: "'IBM Plex Mono', monospace"
-                }}
-              >
-                {mini}
-              </span>
-            </div>
           </div>
-
-          {/* terminal body — one persistent xterm per opened session */}
-          {/* data-terminal-host lets the context-menu catcher detect a click
-              that lands in here and re-focus the visible terminal (ContextMenu). */}
-          <div data-terminal-host style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-            {toRender.map(({ project, session }) => {
-              // Don't mount an xterm for an agent/container session whose
-              // container is stopped — mounting would call openSession and
-              // (before this) auto-start it. The user starts it explicitly via
-              // the placeholder below. When the container starts, the view
-              // mounts and opens the pty. Host shells never need a container.
-              const blocked = session.type !== 'host-shell' && !states[project.id]?.running
-              if (blocked) return null
-              return (
-                <TerminalView
-                  key={session.id}
-                  project={project}
-                  session={session}
-                  visible={session.id === selected}
-                />
-              )
-            })}
-            {selBlocked && sel && (
-              <StoppedPlaceholder project={sel.project} session={sel.session} />
-            )}
-          </div>
-        </>
-      ) : (
-        <EmptyState />
+        </div>
       )}
+
+      {/* Terminal body — one persistent xterm per live session. It renders even
+          with nothing selected, and the empty state sits *over* it: the views in
+          here are what open the ptys, so a body that only existed once something
+          was selected would mean nothing ever came up on its own. Hidden views use
+          visibility:hidden, which keeps their layout, so they still fit correctly
+          behind the overlay. */}
+      {/* data-terminal-host lets the context-menu catcher detect a click
+          that lands in here and re-focus the visible terminal (ContextMenu). */}
+      <div data-terminal-host style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+        {toRender.map(({ project, session }) => (
+          // Keyed by project *and* session: a session dragged to another project
+          // has to re-exec into that project's container, and a remount is what
+          // reopens the pty there — it also re-captures `project` for the
+          // container-output filter and the per-project /clip paste dir inside
+          // TerminalView's mount effect. This does drop that terminal's
+          // scrollback, which is otherwise guarded against; the guard is about an
+          // *incidental* docker-probe blip disposing a terminal, whereas a move
+          // deliberately ends that pty, and for an agent `claude --resume`
+          // re-renders the conversation itself.
+          <TerminalView
+            key={`${project.id}:${session.id}`}
+            project={project}
+            session={session}
+            visible={session.id === selected}
+          />
+        ))}
+        {selBlocked && sel && <StoppedPlaceholder project={sel.project} session={sel.session} />}
+        {!sel && <EmptyState />}
+      </div>
     </div>
   )
 }
@@ -262,18 +272,23 @@ function StoppedPlaceholder({
   )
 }
 
+// Shown when no session is selected. Absolutely positioned like
+// StoppedPlaceholder, because the terminal body underneath it is always rendered
+// now — the hidden views in there are what bring sessions live (see TerminalHost).
 function EmptyState(): React.ReactElement {
   return (
     <div
       style={{
-        flex: 1,
+        position: 'absolute',
+        inset: 0,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
         gap: 20,
         padding: 40,
-        textAlign: 'center'
+        textAlign: 'center',
+        background: 'var(--terminal-bg)'
       }}
     >
       <Logo size={76} style={{ borderRadius: 18, boxShadow: '0 8px 44px -12px var(--accent)' }} />

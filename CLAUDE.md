@@ -77,6 +77,23 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   is measured off `.xterm-screen`, never taken from xterm: the viewport caches the *renderer's*
   dimensions object by reference, and a renderer swap at an unchanged size (WebGL context loss →
   DOM fallback) fires no onDimensionsChange, leaving it sizing the bar from a dead one.
+- **A terminal's lifetime follows its pty, not the container probe.** `TerminalHost`'s `toRender`
+  filter decides which sessions have an xterm at all, and its third clause (`live[session.id]`)
+  must never be dropped: unmounting disposes the xterm and the 50k-line scrollback with it, and
+  `states[].running` is a 3s `docker inspect` poll whose `isRunning` reports false for any non-zero
+  exit (busy daemon, WSL hiccup, unspawnable docker.exe), so one blip used to wipe every terminal
+  in a project — invisibly, since `PtyManager.spawn` re-attaches the same pty on the remount and
+  the agent never notices. The same filter must not open a session on a *genuinely* stopped
+  container either; starting one stays an explicit user action (`ipc.ts` openSession refuses).
+- **A session is live whenever it can be, not when it was last clicked.** `toRender` is derived —
+  host shells (no container needed) from app launch, everything else as soon as its container is
+  running, whether that is an explicit start or a container already up at launch. Two consequences
+  the code depends on: the terminal body renders even with nothing selected (`EmptyState` is an
+  overlay *inside* it), because the views in there are what open the ptys; and `openSession` is
+  retried on `container-stopped`/`spawn-failed` while the store still says running, because a
+  project's sessions now all open at once and that burst is what makes `docker inspect` answer
+  non-zero. `OPEN_LIMIT` in `ipc.ts` caps the burst for the same reason — it hands slots straight
+  to waiters rather than releasing the count, or the cap drifts up by one per handover.
 - **Claude Code is never auto-updated.** It used to be (fire-and-forget `npm i -g` on every
   container start, throttled by a stamp file) — invisible, and it changed the CLI version under
   a live session. Now updates are strictly user-initiated: the title-bar version chip / project

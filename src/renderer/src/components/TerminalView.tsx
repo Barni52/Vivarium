@@ -293,7 +293,11 @@ export function TerminalView({
 
     // WebGL gives one GL context per terminal, and they are not free: Chromium
     // drops the *oldest* context once a page holds too many, and a GPU driver
-    // reset (routine on Windows) takes them all out at once. xterm waits 3s for
+    // reset (routine on Windows) takes them all out at once. That first case is
+    // reachable now that every session of a running container is mounted rather
+    // than only the ones you clicked — a couple of dozen sessions and the earliest
+    // terminals get their contexts taken. It degrades rather than breaks, which is
+    // the whole point of the handler below. xterm waits 3s for
     // a restore and then gives up via onContextLoss — and a renderer that has
     // given up simply stops painting, which is the terminal that "breaks" and
     // won't come back. Dropping the addon falls back to the DOM renderer:
@@ -550,23 +554,50 @@ export function TerminalView({
       passive: false
     })
 
-    // open the pty (starts/builds the container if needed; output streams above)
-    ;(async () => {
+    // --- open the pty ------------------------------------------------------
+    // This never starts the container: main refuses to (see ipc.ts openSession),
+    // the user starts it explicitly and TerminalHost mounts this view once it is
+    // up. Container build/create output still streams in through onContainerOutput
+    // above, so a cold start is visible here.
+    //
+    // Why this retries: mounting is what opens a pty, and a container coming up
+    // now mounts *every* one of its sessions at once. Main re-checks
+    // `docker inspect` per open, and isRunning() reads any non-zero exit as
+    // "stopped" — so under that burst one of them can be told the container is
+    // stopped when it plainly isn't. A single attempt left that terminal dark for
+    // good, because nothing remounts it while the store still says running. So
+    // retry the transient answers for as long as the store disagrees with them,
+    // and only report failure once we've stopped trying.
+    let cancelled = false
+    let retry: ReturnType<typeof setTimeout> | null = null
+    const openPty = async (attempt: number): Promise<void> => {
       const res = await window.vivarium.openSession(project.id, session.id, term.cols, term.rows)
+      if (cancelled) return
       if (res.ok) {
         setLive(session.id, true)
-      } else if (res.reason === 'docker-missing') {
+        return
+      }
+      const transient = res.reason === 'container-stopped' || res.reason === 'spawn-failed'
+      const stillUp = !!useStore.getState().states[project.id]?.running
+      if (transient && stillUp && attempt < 3) {
+        retry = setTimeout(() => void openPty(attempt + 1), 700 * 2 ** (attempt - 1))
+        return
+      }
+      // Out of attempts: `live` may still be true from the pty this view replaced
+      // (a cross-project move kills that one silently), so clear it — otherwise
+      // TerminalHost keeps a dead terminal mounted on the strength of it.
+      setLive(session.id, false)
+      if (res.reason === 'docker-missing') {
         term.write('\r\n\x1b[31mdocker not found on PATH — start Docker/Rancher Desktop.\x1b[0m\r\n')
       } else if (res.reason === 'container-stopped') {
-        // The container isn't running — the TerminalHost placeholder normally
-        // covers this, but a state race can still land here. Don't auto-start.
+        // The TerminalHost placeholder normally covers this; a state race can
+        // still land here.
         term.write('\r\n\x1b[2mcontainer is stopped — start it to open this session.\x1b[0m\r\n')
-      } else if (res.reason === 'container-failed') {
-        term.write('\r\n\x1b[31mcontainer failed to start (see output above).\x1b[0m\r\n')
       } else {
         term.write('\r\n\x1b[31mfailed to open session.\x1b[0m\r\n')
       }
-    })()
+    }
+    void openPty(1)
 
     // debounced resize on element/window size changes (~100ms) — the TUI
     // corrupts without this (plan: Resize papercut).
@@ -591,6 +622,8 @@ export function TerminalView({
     document.addEventListener('visibilitychange', onVisible)
 
     return () => {
+      cancelled = true
+      if (retry) clearTimeout(retry)
       dataSub.dispose()
       resultsSub.dispose()
       searchRef.current = null
@@ -607,8 +640,11 @@ export function TerminalView({
       term.dispose()
       termRef.current = null
     }
+    // project.id is in here because a session can be moved to another project:
+    // TerminalHost keys this view on the pair, so the change remounts and this
+    // effect re-execs into the new container.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.id])
+  }, [session.id, project.id])
 
   // --- on becoming visible: refit + resize the pty + focus ---
   React.useEffect(() => {
