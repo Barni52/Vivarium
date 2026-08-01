@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { watch, type FSWatcher } from 'node:fs'
 import { mkdir, open, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AgentHookEvent, AgentHookKind } from '@shared/types'
+import type { AgentActivityEvent, AgentHookKind } from '@shared/types'
 
 // The "bridge" is how agent lifecycle events get out of the container: a small
 // host dir (one per project) bind-mounted at /vivarium, holding a Claude Code hooks
@@ -17,6 +17,13 @@ import type { AgentHookEvent, AgentHookKind } from '@shared/types'
 // Scoping them to `--settings` rather than the shared
 // /home/node/.claude/settings.json keeps claude-box.ps1 sessions and
 // manually-launched `claude` runs unaffected.
+//
+// This bridge serves **pty `agent` sessions only**. A `chat` session is never
+// pointed at /vivarium/hooks.json and never gets a VIVARIUM_SESSION_ID: it
+// derives the same working/waiting/idle triple from its own stream-json output
+// (main/chat.ts), and double-emitting would give the store two producers for one
+// session. What the two share is the *event* — both emit AgentActivityEvent, and
+// the hook→state mapping below is why hook vocabulary no longer crosses IPC.
 
 // Everything hook.sh can legally write. A line with anything else in the first
 // field is dropped rather than forwarded — the file is a plain append log, and a
@@ -31,6 +38,30 @@ const HOOK_KINDS: readonly AgentHookKind[] = [
 
 function isHookKind(v: string): v is AgentHookKind {
   return (HOOK_KINDS as readonly string[]).includes(v)
+}
+
+/**
+ * Hook vocabulary → the state the rest of the app reasons about. This mapping
+ * used to live in the renderer store, which meant the *hook kinds themselves*
+ * crossed IPC — fine while hooks were the only producer, wrong the moment chat
+ * sessions started deriving the same triple from stream-json. Doing it here
+ * keeps the attention rules (waiting → "?", idle → "!") in exactly one place
+ * rather than once per source.
+ *
+ * The mapping survives the collapse almost intact:
+ *  - AskUserQuestion / ExitPlanMode  → waiting   (blocked on the user, mid-turn)
+ *  - Stop                            → idle
+ *  - Resumed                         → working   (the store's setActivity already
+ *    does the coming-back-from-a-wait arithmetic in its waitedFrom branch)
+ *  - UserPromptSubmit                → working, **plus turnStart** — the one bit
+ *    a bare state cannot carry, since a queued prompt starts a new turn while
+ *    the state is already 'working', where setActivity deliberately no-ops.
+ */
+function toActivityEvent(kind: AgentHookKind, sessionId: string, at: number): AgentActivityEvent {
+  if (kind === 'UserPromptSubmit') return { sessionId, activity: 'working', at, turnStart: true }
+  if (kind === 'Resumed') return { sessionId, activity: 'working', at }
+  if (kind === 'Stop') return { sessionId, activity: 'idle', at }
+  return { sessionId, activity: 'waiting', at }
 }
 
 /** Host-side bridge dir for a project (bind-mounted at /vivarium). */
@@ -121,7 +152,7 @@ export class BridgeWatcher {
 
   constructor(
     private dir: string,
-    private onEvent: (e: AgentHookEvent) => void
+    private onEvent: (e: AgentActivityEvent) => void
   ) {}
 
   async start(): Promise<void> {
@@ -195,11 +226,11 @@ export class BridgeWatcher {
 
     // The line's third field is the container's own timestamp; it stays in the
     // log for post-mortem reading but never reaches the UI — see
-    // AgentHookEvent.at for why the host stamps these instead.
+    // AgentActivityEvent.at for why the host stamps these instead.
     const at = Date.now()
     for (const line of chunk.subarray(0, nl).toString('utf8').split('\n')) {
       const [kind, sessionId] = line.split('\t')
-      if (sessionId && isHookKind(kind)) this.onEvent({ sessionId, kind, at })
+      if (sessionId && isHookKind(kind)) this.onEvent(toActivityEvent(kind, sessionId, at))
     }
   }
 }

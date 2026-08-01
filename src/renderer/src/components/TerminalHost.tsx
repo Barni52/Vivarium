@@ -6,6 +6,7 @@ import { TypeIcon } from './Icons'
 import { Logo } from './Logo'
 import { Elapsed, formatElapsed } from './Elapsed'
 import { TerminalView } from './TerminalView'
+import { ChatView } from './chat/ChatView'
 
 // Agent turn state for the terminal header. This is the one part of the window
 // you are actually looking at while an agent works, and until now the only thing
@@ -96,6 +97,13 @@ export function TerminalHost(): React.ReactElement {
   //    no history. A live pty is the better evidence anyway (the docker exec client
   //    dies with its container). A container that really stopped ends the pty,
   //    `live` clears, and the view unmounts exactly as before.
+  //
+  // No chat arm, deliberately: one filter reading the same for every session type.
+  // The third clause is genuinely *optional* for a chat — main keeps the full log
+  // and re-reads incrementally at every turn end, so a remount re-hydrates over
+  // IPC from a cache that is already current and never touches docker. It is kept
+  // for cheapness, not survival, which is also why nobody should later "fix" this
+  // by adding a type branch.
   const toRender = allSessions.filter(
     ({ project, session }) =>
       session.type === 'host-shell' || !!states[project.id]?.running || !!live[session.id]
@@ -125,8 +133,10 @@ export function TerminalHost(): React.ReactElement {
         background: 'var(--terminal-bg)'
       }}
     >
-      {/* header — only a selected session has one to show */}
-      {sel && (
+      {/* Header — only a selected session has one to show, and a chat brings its
+          own (the mode chip, the model chip and the context meter have nowhere
+          else to live). */}
+      {sel && sel.session.type !== 'chat' && (
         <div
           style={{
             flex: 'none',
@@ -179,21 +189,34 @@ export function TerminalHost(): React.ReactElement {
       {/* data-terminal-host lets the context-menu catcher detect a click
           that lands in here and re-focus the visible terminal (ContextMenu). */}
       <div data-terminal-host style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-        {toRender.map(({ project, session }) => (
-          // Keyed by project *and* session: a session dragged to another project has
-          // to re-exec into that project's container, and the remount is what
-          // reopens the pty there — it also re-captures `project` for the
-          // container-output filter and the /clip paste dir. It does drop that
-          // terminal's scrollback: the guard elsewhere is against an *incidental*
-          // docker-probe blip, whereas a move deliberately ends that pty, and for an
-          // agent `claude --resume` re-renders the conversation itself.
-          <TerminalView
-            key={`${project.id}:${session.id}`}
-            project={project}
-            session={session}
-            visible={session.id === selected}
-          />
-        ))}
+        {/* Keyed by project *and* session: a session dragged to another project
+            has to re-exec into that project's container, and the remount is what
+            reopens it there — it also re-captures `project` for the
+            container-output filter and the /clip paste dir. It drops that
+            terminal's scrollback: the guard elsewhere is against an *incidental*
+            docker-probe blip, whereas a move deliberately ends that pty, and for
+            an agent `claude --resume` re-renders the conversation itself. A chat
+            fares better — its log is the transcript, which every container reads
+            from the same path — but it does lose the composer draft.
+            The chat surface sits *beside* the terminal views, never in place of
+            them: those views are what hold the ptys. */}
+        {toRender.map(({ project, session }) =>
+          session.type === 'chat' ? (
+            <ChatView
+              key={`${project.id}:${session.id}`}
+              project={project}
+              session={session}
+              visible={session.id === selected}
+            />
+          ) : (
+            <TerminalView
+              key={`${project.id}:${session.id}`}
+              project={project}
+              session={session}
+              visible={session.id === selected}
+            />
+          )
+        )}
         {selBlocked && sel && <StoppedPlaceholder project={sel.project} session={sel.session} />}
         {!sel && <EmptyState />}
       </div>

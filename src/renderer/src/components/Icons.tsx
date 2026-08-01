@@ -26,6 +26,29 @@ export const Sparkle = ({ size = 15, color = 'currentColor', style }: P): React.
     style
   )
 
+// Chat. A rounded speech outline with the agent's own spark inside it — the
+// fourth clearly distinct silhouette after the star, the window frame and the
+// cube. It says *the agent, spoken to* rather than inventing an unrelated mark,
+// which is what the type is: the same Claude Code, driven through a chat surface
+// instead of a terminal.
+export const ChatBubble = ({ size = 15, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <>
+      <path
+        d="M2 4.2A1.6 1.6 0 013.6 2.6h8.8A1.6 1.6 0 0114 4.2v5.4a1.6 1.6 0 01-1.6 1.6H6.6L3.2 14V11.2h-.2A1.1 1.1 0 012 10.1z"
+        stroke={color}
+        strokeWidth="1.15"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M8 4.4c.25 1.9 1.15 2.8 3.05 3.05-1.9.25-2.8 1.15-3.05 3.05-.25-1.9-1.15-2.8-3.05-3.05C6.85 7.2 7.75 6.3 8 4.4Z"
+        fill={color}
+      />
+    </>,
+    style
+  )
+
 export const Folder = ({ size = 15, color = 'currentColor', style }: P): React.ReactElement =>
   svg(
     size,
@@ -452,6 +475,7 @@ export const PanelToggle = ({ size = 15, color = 'currentColor', style }: P): Re
 // the terminal header and the new-session picker all read without color.
 export function TypeIcon({ type, size = 15, color }: { type: string; size?: number; color?: string }): React.ReactElement {
   if (type === 'agent') return <Sparkle size={size} color={color} />
+  if (type === 'chat') return <ChatBubble size={size} color={color} />
   if (type === 'host-shell') return <HostWindow size={size} color={color} />
   return <ContainerCube size={size} color={color} />
 }

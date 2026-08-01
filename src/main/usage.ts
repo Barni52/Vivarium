@@ -76,6 +76,8 @@ function parseSnapshot(body: RawUsage): UsageSnapshot {
 
 export class UsageService {
   private creds: OauthCreds | null = null
+  /** last snapshot that actually carried limits — the base a stream top-up merges into */
+  private last: UsageSnapshot | null = null
   /** epoch ms until which the endpoint told us to back off (429 Retry-After).
    * Measured limit is ~5 requests / 5 min; a trip locks the rest of the
    * window, so requests during the backoff are guaranteed 429s — skip them. */
@@ -181,6 +183,49 @@ export class UsageService {
     }
     if (res.status === 0) return fail('network')
     if (!res.body) return fail(`http-${res.status}`)
-    return parseSnapshot(res.body)
+    const snap = parseSnapshot(res.body)
+    if (snap.limits.length) this.last = snap
+    return snap
+  }
+
+  /**
+   * A chat stream's `rate_limit_event` carries the same five_hour / seven_day
+   * utilisation the title-bar chips poll for, so it tops the last good snapshot
+   * up and re-stamps `fetchedAt` — keeping the staleness dimming truthful.
+   *
+   * The poll is unchanged and the stream cannot replace it: a stream event is
+   * only as fresh as your last turn, so an hour without talking to an agent tells
+   * you nothing while the poll has told you twenty times. Accepted cost: a
+   * stream-sourced top-up carries no `severity` and no per-model limits, which is
+   * invisible in practice — the chips render only the two windows and filter
+   * per-model limits out.
+   *
+   * **Observed reality on Claude Code 2.1.211: the event carries no utilisation
+   * number**, only a status and a reset time, so this no-ops today. It is wired
+   * anyway because the shape is version-dependent and a no-op merge costs
+   * nothing, while discovering the field later would mean re-deriving all of the
+   * above. A missing percentage never overwrites a real one.
+   */
+  applyStreamLimits(five: Record<string, unknown> | null, seven: Record<string, unknown> | null): void {
+    const base = this.last
+    if (!base) return
+    const merge = (kind: string, w: Record<string, unknown> | null): void => {
+      const pct = typeof w?.utilization === 'number' ? w.utilization : null
+      if (pct === null) return
+      // epoch seconds (the stream's form) or an ISO string (the endpoint's)
+      const resetsAt =
+        typeof w?.resets_at === 'string'
+          ? w.resets_at
+          : typeof w?.resets_at === 'number'
+            ? new Date(w.resets_at * 1000).toISOString()
+            : null
+      const i = base.limits.findIndex((l) => l.kind === kind)
+      const next = { ...(base.limits[i] ?? { kind, severity: 'normal', modelName: null, isActive: false }), percent: pct, resetsAt }
+      if (i >= 0) base.limits[i] = next
+      else base.limits.push(next)
+    }
+    merge('session', five)
+    merge('weekly_all', seven)
+    base.fetchedAt = Date.now()
   }
 }

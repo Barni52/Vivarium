@@ -8,14 +8,22 @@ import { CH } from '@shared/ipc'
 import type {
   AppInfo,
   BadgePayload,
+  ChatAnswer,
+  ChatAttachment,
+  ChatEntry,
+  ChatEvent,
+  ChatMode,
+  ChatOpenResult,
   ClaudeStatus,
   ClaudeUpdateResult,
   Config,
   ContainerState,
   DiffResult,
   DockerStatus,
+  MountNode,
   NewProjectInput,
   OutputNode,
+  Project,
   SessionType,
   SpawnResult,
   UpdateProjectInput,
@@ -25,6 +33,7 @@ import type {
 import { ConfigStore } from './config'
 import { DockerService } from './docker'
 import { BridgeWatcher, bridgeDir } from './bridge'
+import { ChatService } from './chat'
 import { gitBranch, writeBranchDiff } from './git'
 import { PtyManager } from './pty'
 import { pasteImage } from './clipboard'
@@ -40,6 +49,39 @@ export function registerIpc(win: BrowserWindow): void {
   const pty = new PtyManager(docker, emit)
   const usage = new UsageService(docker)
   const claude = new ClaudeService(docker)
+
+  // ---- chat sessions ------------------------------------------------------
+  // One CLI process per chat session (see main/chat.ts). Its four callbacks are
+  // the things only this module can do: persist, and reach the title bar.
+  const chat = new ChatService(
+    docker,
+    (e: ChatEvent) => emit(CH.chatEvent, e),
+    (e) => emit(CH.agentActivity, e),
+    (sessionId, next, previous) => {
+      // `/clear` is forwarded verbatim like any other command and *handled*, not
+      // intercepted: the outgoing id is retired onto the session rather than
+      // deleted, so an accidental /clear stays recoverable through Claude's own
+      // --resume picker, and the delete cascade later takes the whole chain.
+      void store.mutate((cfg) => {
+        for (const p of cfg.projects) {
+          const s = p.sessions.find((x) => x.id === sessionId)
+          if (!s) continue
+          s.previousClaudeSessionIds = [...(s.previousClaudeSessionIds ?? []), previous]
+          s.claudeSessionId = next
+        }
+        return cfg
+      })
+    },
+    (projectId, commands) => {
+      void store.mutate((cfg) => {
+        const p = cfg.projects.find((x) => x.id === projectId)
+        if (p) p.slashCommands = commands
+        return cfg
+      })
+    },
+    (five, seven) => usage.applyStreamLimits(five, seven)
+  )
+  ;(win as unknown as { __chat?: ChatService }).__chat = chat
 
   // ---- claude plan usage --------------------------------------------------
   // Polled by the renderer (TitleBar chips); all token/HTTP logic lives in
@@ -64,8 +106,9 @@ export function registerIpc(win: BrowserWindow): void {
 
   // ---- agent hook bridge --------------------------------------------------
   // One watcher per project tails its bridge events.log (see bridge.ts) and
-  // forwards Claude Code hook events to the renderer, which derives the
-  // working/idle indicator and the agent-finished notification from them.
+  // forwards the *state* it derives from Claude Code's hooks. Chat sessions
+  // reach the same channel from the other producer (ChatService above), which is
+  // why hook vocabulary no longer crosses IPC at all.
   const bridges = new Map<string, BridgeWatcher>()
 
   function syncBridgeWatchers(): void {
@@ -78,10 +121,67 @@ export function registerIpc(win: BrowserWindow): void {
     }
     for (const id of ids) {
       if (!bridges.has(id)) {
-        const w = new BridgeWatcher(bridgeDir(id), (e) => emit(CH.agentHook, e))
+        const w = new BridgeWatcher(bridgeDir(id), (e) => emit(CH.agentActivity, e))
         bridges.set(id, w)
         void w.start()
       }
+    }
+  }
+
+  // ---- the transcript delete debt ----------------------------------------
+  // Delete means delete: a chat session's conversation goes with it, and so does
+  // every id its /clear calls retired. The list is the *mechanism*, not an error
+  // handler — every delete records its uuids in the same atomic mutate that
+  // removes the session, then kicks a drain. There is no success path and no
+  // failure path, just "the debt is recorded" followed by "the debt is paid",
+  // where the fast case is a drain that runs immediately and succeeds.
+  //
+  // Chosen over try-then-enqueue-on-failure because in that shape "the session is
+  // gone" and "we owe its transcript" are two separate durable facts with a
+  // window between them: the config write lands, the app dies before the docker
+  // run returns, and the transcript is stranded with no record that anyone ever
+  // meant to delete it — precisely the state this list exists to make impossible.
+  function conversationIds(project: Project | undefined, sessionId?: string): string[] {
+    const out: string[] = []
+    for (const s of project?.sessions ?? []) {
+      if (sessionId && s.id !== sessionId) continue
+      // Terminal `agent` sessions are out of scope and keep stranding transcripts
+      // exactly as they do today; shell sessions never own a conversation at all.
+      if (s.type !== 'chat') continue
+      if (s.claudeSessionId) out.push(s.claudeSessionId)
+      out.push(...(s.previousClaudeSessionIds ?? []))
+    }
+    return out
+  }
+
+  let draining = false
+  /**
+   * Pay the debt. Runs at app launch and after each successful container start —
+   * the two moments the daemon is proven up, with no new timer. Piggybacking the
+   * 3s container poll was rejected: `isRunning` is documented as reporting false
+   * for any non-zero exit, and hanging file deletion off a signal the codebase
+   * calls unreliable is asking for it.
+   *
+   * One container for the whole drain, and the uuids are dropped **only on exit
+   * 0**, so a failed drain leaves the debt intact. `rm -rf` exits 0 on a missing
+   * path, so a debt whose files are already gone self-clears.
+   */
+  async function drainTranscriptDeletes(): Promise<void> {
+    if (draining) return
+    const owed = store.get().pendingTranscriptDeletes ?? []
+    if (owed.length === 0) return
+    draining = true
+    try {
+      if (!(await docker.deleteTranscripts(owed))) return
+      await store.mutate((cfg) => {
+        cfg.pendingTranscriptDeletes = (cfg.pendingTranscriptDeletes ?? []).filter(
+          (id) => !owed.includes(id)
+        )
+        if (cfg.pendingTranscriptDeletes.length === 0) delete cfg.pendingTranscriptDeletes
+        return cfg
+      })
+    } finally {
+      draining = false
     }
   }
 
@@ -105,6 +205,8 @@ export function registerIpc(win: BrowserWindow): void {
     docker.setSharedOutput(cfg.sharedOutputFolder)
     startOutputWatcher()
     syncBridgeWatchers()
+    // App launch is one of the two moments Docker is proven up (see the debt list).
+    void drainTranscriptDeletes()
     return cfg
   })
 
@@ -144,15 +246,29 @@ export function registerIpc(win: BrowserWindow): void {
 
   ipcMain.handle(CH.deleteProject, async (_e, id: string): Promise<Config> => {
     const project = store.getProject(id)
+    // Deleting a project cascades to every chat session it holds. Without this the
+    // larger, more destructive gesture would be the leakier one — the way to
+    // *keep* a conversation would be to delete the whole project.
+    const owed = conversationIds(project)
     if (project) {
-      for (const s of project.sessions) pty.kill(s.id)
+      for (const s of project.sessions) {
+        pty.kill(s.id)
+        chat.close(s.id)
+      }
       await docker.remove(project)
     }
     const cfg = await store.mutate((cfg) => {
       cfg.projects = cfg.projects.filter((p) => p.id !== id)
+      // Enqueued inside the mutate that removes the project, so this cannot race
+      // the `docker rm -f` above: a config write and a container removal are
+      // different things entirely.
+      if (owed.length) {
+        cfg.pendingTranscriptDeletes = [...(cfg.pendingTranscriptDeletes ?? []), ...owed]
+      }
       return cfg
     })
     syncBridgeWatchers()
+    void drainTranscriptDeletes()
     return cfg
   })
 
@@ -160,14 +276,25 @@ export function registerIpc(win: BrowserWindow): void {
     CH.addSession,
     async (_e, projectId: string, type: SessionType, name: string): Promise<Config> => {
       const id = randomUUID()
-      // Agent sessions get a second UUID pinned as Claude Code's conversation id
+      // Both agent kinds get a second UUID pinned as Claude Code's conversation id
       // so the conversation can be resumed across container/app restarts (see
       // Session.claudeSessionId + docker.execArgs). Shell sessions have no
       // conversation to resume, so they don't get one.
-      const claudeSessionId = type === 'agent' ? randomUUID() : undefined
+      const owns = type === 'agent' || type === 'chat'
+      const claudeSessionId = owns ? randomUUID() : undefined
       return store.mutate((cfg) => {
         const p = cfg.projects.find((x) => x.id === projectId)
-        if (p) p.sessions.push({ id, name, type, claudeSessionId })
+        if (p) {
+          p.sessions.push({
+            id,
+            name,
+            type,
+            claudeSessionId,
+            // A new chat starts in bypass, matching today's terminal agent:
+            // nothing in daily use gets slower and no habit needs retraining.
+            mode: type === 'chat' ? 'bypassPermissions' : undefined
+          })
+        }
         return cfg
       })
     }
@@ -189,11 +316,18 @@ export function registerIpc(win: BrowserWindow): void {
     CH.removeSession,
     async (_e, projectId: string, sessionId: string): Promise<Config> => {
       pty.kill(sessionId)
-      return store.mutate((cfg) => {
+      chat.close(sessionId)
+      const owed = conversationIds(store.getProject(projectId), sessionId)
+      const cfg = await store.mutate((cfg) => {
         const p = cfg.projects.find((x) => x.id === projectId)
         if (p) p.sessions = p.sessions.filter((s) => s.id !== sessionId)
+        if (owed.length) {
+          cfg.pendingTranscriptDeletes = [...(cfg.pendingTranscriptDeletes ?? []), ...owed]
+        }
         return cfg
       })
+      void drainTranscriptDeletes()
+      return cfg
     }
   )
 
@@ -264,6 +398,15 @@ export function registerIpc(win: BrowserWindow): void {
         return store.get()
       }
       pty.kill(sessionId, true)
+      // A chat's process is a `docker exec -i` client bound to the old container,
+      // so it dies exactly as a pty does and for the same reason. Everything else
+      // transfers for free and *better* than the terminal case: the transcript
+      // slug is identical in every container and the transcript is the model, so
+      // the remounted chat re-reads it and shows an identical log, where a
+      // terminal agent's move drops its scrollback. What does not survive is the
+      // composer — the draft text and every pending chip — and the confirm dialog
+      // says so.
+      chat.close(sessionId)
       return store.mutate((cfg) => {
         const from = cfg.projects.find((x) => x.id === fromProjectId)
         const to = cfg.projects.find((x) => x.id === toProjectId)
@@ -343,6 +486,8 @@ export function registerIpc(win: BrowserWindow): void {
     if (!p) return false
     const ok = await docker.start(p, sinkFor(projectId))
     emit(CH.containerStateChanged, { projectId, running: ok })
+    // The second of the two moments Docker is proven up (see the debt list).
+    if (ok) void drainTranscriptDeletes()
     return ok
   })
 
@@ -558,6 +703,137 @@ export function registerIpc(win: BrowserWindow): void {
     pty.resize(sessionId, cols, rows)
   )
   ipcMain.on(CH.killSession, (_e, sessionId: string) => pty.kill(sessionId))
+
+  // ---- chat sessions ------------------------------------------------------
+  // Its own handler rather than a fourth branch of openSession — cols/rows are
+  // meaningless for a chat — but it shares the same openGate, because a chat open
+  // still costs three docker.exe launches and the burst is exactly what makes
+  // `docker inspect` answer non-zero.
+  ipcMain.handle(
+    CH.chatOpen,
+    async (_e, projectId: string, sessionId: string, retry = false): Promise<ChatOpenResult> => {
+      const p = store.getProject(projectId)
+      const s = p?.sessions.find((x) => x.id === sessionId)
+      if (!p || !s) return { ok: false, reason: 'not-found' }
+      if (!retry && chat.has(sessionId)) return chat.open(p, s)
+      return openGate(() => chat.open(p, s, retry))
+    }
+  )
+
+  ipcMain.handle(
+    CH.chatSend,
+    (_e, sessionId: string, text: string, attachments: ChatAttachment[]): Promise<boolean> =>
+      chat.send(sessionId, text, attachments ?? [])
+  )
+
+  ipcMain.handle(CH.chatInterrupt, (_e, sessionId: string): Promise<void> =>
+    chat.interrupt(sessionId)
+  )
+
+  ipcMain.handle(
+    CH.chatAnswer,
+    (_e, sessionId: string, requestId: string, answer: ChatAnswer): Promise<void> =>
+      chat.answer(sessionId, requestId, answer)
+  )
+
+  ipcMain.handle(CH.chatSetMode, async (_e, sessionId: string, mode: ChatMode): Promise<Config> => {
+    await chat.setMode(sessionId, mode)
+    // Persisted, deliberately: a per-session user preference about how the agent
+    // runs is not runtime state observed from Docker, which is exactly what
+    // config.json is for. Restored at reopen as the launch --permission-mode.
+    return store.mutate((cfg) => {
+      for (const p of cfg.projects) {
+        const s = p.sessions.find((x) => x.id === sessionId)
+        if (s) s.mode = mode
+      }
+      return cfg
+    })
+  })
+
+  ipcMain.handle(CH.chatSetModel, async (_e, sessionId: string, model: string): Promise<Config> => {
+    await chat.setModel(sessionId, model)
+    return store.mutate((cfg) => {
+      for (const p of cfg.projects) {
+        const s = p.sessions.find((x) => x.id === sessionId)
+        if (s) s.model = model || undefined
+      }
+      return cfg
+    })
+  })
+
+  ipcMain.handle(CH.chatModels, (_e, sessionId: string): Promise<string[]> =>
+    chat.listModels(sessionId)
+  )
+
+  ipcMain.on(CH.chatClose, (_e, sessionId: string) => chat.close(sessionId))
+
+  ipcMain.handle(CH.chatBody, (_e, sessionId: string, entryId: string): string | null =>
+    chat.body(sessionId, entryId)
+  )
+
+  ipcMain.handle(
+    CH.chatEarlier,
+    (_e, sessionId: string, mounted: number): { entries: ChatEntry[]; total: number } =>
+      chat.earlier(sessionId, mounted)
+  )
+
+  ipcMain.handle(
+    CH.chatSubagent,
+    (_e, sessionId: string, toolUseId: string, agentId: string | null): Promise<ChatEntry[]> =>
+      chat.subagent(sessionId, toolUseId, agentId)
+  )
+
+  // The `@` typeahead's source, and the composer's routing table: a dropped file
+  // under one of these becomes a container path, anything else becomes inline
+  // content. Walked from the host side — nothing here touches docker.
+  ipcMain.handle(CH.chatMountTree, async (_e, projectId: string): Promise<MountNode[]> => {
+    const p = store.getProject(projectId)
+    if (!p) return []
+    const roots = docker.mountTargets(p)
+    const out: MountNode[] = []
+    for (const { hostPath, target } of roots) {
+      out.push({
+        name: target.split('/').pop() ?? target,
+        hostPath,
+        containerPath: target,
+        type: 'dir',
+        children: await scanMounts(hostPath, target, 0)
+      })
+    }
+    return out
+  })
+
+  // Bounded on both axes: this feeds a typeahead, not a file browser, and a deep
+  // node_modules would otherwise cost seconds of stat() for entries nobody scrolls
+  // to. The shadow volumes make those directories the container's copy anyway.
+  const MOUNT_SKIP = new Set(['node_modules', '.git', '.angular', 'target', 'dist', 'out'])
+  async function scanMounts(dir: string, target: string, depth: number): Promise<MountNode[]> {
+    if (depth > 5) return []
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      return []
+    }
+    const out: MountNode[] = []
+    for (const e of entries.slice(0, 400)) {
+      if (e.name.startsWith('.') || MOUNT_SKIP.has(e.name)) continue
+      const hostPath = join(dir, e.name)
+      const containerPath = `${target}/${e.name}`
+      if (e.isDirectory()) {
+        out.push({
+          name: e.name,
+          hostPath,
+          containerPath,
+          type: 'dir',
+          children: await scanMounts(hostPath, containerPath, depth + 1)
+        })
+      } else if (e.isFile()) {
+        out.push({ name: e.name, hostPath, containerPath, type: 'file' })
+      }
+    }
+    return out
+  }
 
   // ---- clipboard ---------------------------------------------------------
   ipcMain.handle(CH.pasteImage, async (_e, projectId: string): Promise<string | null> =>

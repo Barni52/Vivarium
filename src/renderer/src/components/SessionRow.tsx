@@ -88,7 +88,9 @@ export function SessionRow({ project, session }: { project: Project; session: Se
 
   const selected = session.id === selectedId
   const editing = session.id === editingId
-  const isAgent = session.type === 'agent'
+  // Both agent kinds: a chat is an agent session, spoken to rather than typed at,
+  // and it reports the same working/waiting/idle triple from the same channel.
+  const isAgent = session.type === 'agent' || session.type === 'chat'
   const accent = ACCENT[session.type]
   const working = isAgent && activity === 'working' && live
   // Mid-turn but blocked on the user (a question, or a plan waiting for

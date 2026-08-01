@@ -1,8 +1,17 @@
 import { create } from 'zustand'
 import type { ReactNode } from 'react'
 import type {
-  AgentHookEvent,
+  AgentActivityEvent,
   AppInfo,
+  ChatAnswer,
+  ChatAttachment,
+  ChatBlockingCard,
+  ChatContextUsage,
+  ChatEntry,
+  ChatErrorInfo,
+  ChatEvent,
+  ChatMode,
+  ChatTodo,
   ClaudeStatus,
   ClaudeUpdateResult,
   Config,
@@ -137,6 +146,79 @@ interface DeleteProjectTarget {
   name: string
 }
 
+/**
+ * Everything one chat session shows. Kept in the store rather than in ChatView
+ * so a hidden view keeps its log — the window stays mounted on deselect like a
+ * terminal, but for a weaker reason: nothing in a chat is unrecoverable, so
+ * terminals *must* stay mounted while a chat merely *may*. What it buys is
+ * scroll position, which cards are expanded and the composer draft; those three
+ * live in the component precisely because a move is meant to drop them.
+ */
+export interface ChatSessionState {
+  entries: ChatEntry[]
+  /** how many entries main holds — there is an "earlier" whenever this is larger */
+  total: number
+  todos: ChatTodo[]
+  blocking: ChatBlockingCard | null
+  context: ChatContextUsage | null
+  commands: string[]
+  model: string | null
+  mode: ChatMode
+  /** the process is up and the log is real */
+  open: boolean
+  opening: boolean
+  /** why the open failed: 'container-stopped' | 'docker-missing' | 'spawn-failed' */
+  reason?: string
+  /** the history read failed — a banner above the log, cleared only by a good read */
+  historyError?: string
+  /** crash / timeout, each offering the one Retry there is */
+  error?: ChatErrorInfo
+  /** full tool bodies fetched on expand, by entry id */
+  bodies: Record<string, string>
+  /** a subagent's sub-log, by its spawning tool_use id */
+  subagents: Record<string, ChatEntry[]>
+}
+
+const emptyChat = (): ChatSessionState => ({
+  entries: [],
+  total: 0,
+  todos: [],
+  blocking: null,
+  context: null,
+  commands: [],
+  model: null,
+  mode: 'bypassPermissions',
+  open: false,
+  opening: false,
+  bodies: {},
+  subagents: {}
+})
+
+/**
+ * Merge incoming rows into a log, upserting by id.
+ *
+ * Ids are stable across the stream→transcript settle (both envelopes carry the
+ * same `message.id` and block index), so a tool card completing, a streamed
+ * paragraph filling in and a settled row replacing a provisional one are all the
+ * same operation.
+ */
+function applyEntries(list: ChatEntry[], incoming: ChatEntry[]): ChatEntry[] {
+  const next = list.slice()
+  for (const e of incoming) {
+    // "The stop row *is* the frozen clock row": an interrupted or crashed turn
+    // has nothing to freeze to, so the live `working · 4m` row is replaced rather
+    // than left showing a number that never resolves.
+    if (e.kind === 'stop') {
+      const clock = next.findIndex((x) => x.turn === e.turn && x.kind === 'turn')
+      if (clock >= 0) next.splice(clock, 1)
+    }
+    const i = next.findIndex((x) => x.id === e.id)
+    if (i >= 0) next[i] = e
+    else next.push(e)
+  }
+  return next
+}
+
 interface AppState {
   config: Config
   states: Record<string, ContainerState>
@@ -173,6 +255,8 @@ interface AppState {
   agentWaitingSince: Record<string, number>
   /** agent sessions needing attention while unwatched — "!" (finished) or "?" (question) until opened */
   notifications: Record<string, AttentionKind>
+  /** chat sessions' logs and chrome, keyed by session id */
+  chats: Record<string, ChatSessionState>
   /** container start/stop/restart currently in flight, keyed by project id */
   containerOps: Record<string, ContainerOp>
   /** last failed container op's message, keyed by project id (auto-clears) */
@@ -267,7 +351,21 @@ interface AppState {
   notifyAgentAttention: (sessionId: string, kind: AttentionKind) => void
   /** Window activation: the session already on screen counts as viewed. */
   acknowledgeSelected: () => void
-  handleAgentHook: (e: AgentHookEvent) => void
+  /** One handler for both producers — the hook bridge and the chat stream. */
+  handleAgentActivity: (e: AgentActivityEvent) => void
+
+  // chat sessions
+  handleChatEvent: (e: ChatEvent) => void
+  openChat: (projectId: string, sessionId: string, retry?: boolean) => Promise<void>
+  closeChat: (sessionId: string) => void
+  sendChat: (sessionId: string, text: string, attachments: ChatAttachment[]) => Promise<void>
+  interruptChat: (sessionId: string) => Promise<void>
+  answerChat: (sessionId: string, requestId: string, answer: ChatAnswer) => Promise<void>
+  setChatMode: (sessionId: string, mode: ChatMode) => Promise<void>
+  setChatModel: (sessionId: string, model: string) => Promise<void>
+  loadEarlier: (sessionId: string) => Promise<void>
+  loadBody: (sessionId: string, entryId: string) => Promise<void>
+  loadSubagent: (sessionId: string, toolUseId: string, agentId: string | null) => Promise<void>
 
   // dialogs
   openAddProject: () => void
@@ -327,7 +425,14 @@ const emptyDraft = (): ProjectDraft => ({
 })
 
 export function defaultSessionName(project: Project | undefined, type: SessionType): string {
-  const base = type === 'agent' ? 'agent' : type === 'container-shell' ? 'bash' : 'ps-host'
+  const base =
+    type === 'agent'
+      ? 'agent'
+      : type === 'chat'
+        ? 'chat'
+        : type === 'container-shell'
+          ? 'bash'
+          : 'ps-host'
   const n = (project?.sessions.filter((s) => s.type === type).length ?? 0) + 1
   return `${base}-${n}`
 }
@@ -389,6 +494,7 @@ export const useStore = create<AppState>((set, get) => ({
   agentSince: {},
   agentWaitingSince: {},
   notifications: {},
+  chats: {},
   containerOps: {},
   containerErrors: {},
   usage: null,
@@ -704,11 +810,14 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   notifyAgentAttention: (sessionId, kind) => {
-    // Only agent sessions get the "!" — host/container shells never do (a stray
-    // hook event for a shell session, if one ever arrived, must not light one up).
+    // Only the two agent kinds get the "!" — host/container shells never do (a
+    // stray event for a shell session, if one ever arrived, must not light one
+    // up). This type guard is the *only* edit chat needed anywhere in this path:
+    // select, acknowledgeSelected, windowFocused and pushBadge are all keyed on
+    // selectedSessionId / notifications and never look at a session type.
     const proj = get().config.projects.find((p) => p.sessions.some((x) => x.id === sessionId))
     const sess = proj?.sessions.find((x) => x.id === sessionId)
-    if (sess?.type !== 'agent') return
+    if (sess?.type !== 'agent' && sess?.type !== 'chat') return
     const focused = document.hasFocus()
     // Already watching this session in a focused window → nothing to flag.
     if (focused && get().selectedSessionId === sessionId) return
@@ -736,31 +845,252 @@ export const useStore = create<AppState>((set, get) => ({
     pushBadge(get().notifications, false)
   },
 
-  handleAgentHook: (e) => {
+  /**
+   * One handler, two producers. `bridge.ts` maps Claude Code hooks for pty
+   * agents and `chat.ts` derives the same triple from stream-json; this cannot
+   * tell them apart, which is the point — the attention rules live here once
+   * rather than once per source.
+   */
+  handleAgentActivity: (e) => {
     const s = get()
     // Ignore events for sessions that were killed while the turn was running.
     const exists = s.config.projects.some((p) => p.sessions.some((x) => x.id === e.sessionId))
     if (!exists) return
-    if (e.kind === 'UserPromptSubmit') {
-      s.setActivity(e.sessionId, 'working', e.at)
+    if (e.activity === 'working') {
+      // Coming back from a wait is not a new turn: resumeAgent is guarded on
+      // 'waiting' and preserves the clock, pushing agentSince forward by the
+      // whole wait so the reading always means work done, not wall time.
+      if (s.activity[e.sessionId] === 'waiting') s.resumeAgent(e.sessionId, e.at)
+      else s.setActivity(e.sessionId, 'working', e.at)
       // A queued prompt lands while the indicator is already 'working', where
       // setActivity deliberately no-ops — restart the clock explicitly so the
       // duration always means "this turn", not "this busy streak".
-      set((st) => ({ agentSince: { ...st.agentSince, [e.sessionId]: e.at } }))
-    } else if (e.kind === 'AskUserQuestion' || e.kind === 'ExitPlanMode') {
-      // The agent is blocked on the user — a question, or a plan waiting for
-      // approval. Both are mid-turn (the turn ends at Stop, not here) but the
-      // agent is doing nothing, so this is its own state: the row shows "?"
-      // instead of the working ellipsis, and the turn clock stops until the
-      // answer arrives.
+      if (e.turnStart) set((st) => ({ agentSince: { ...st.agentSince, [e.sessionId]: e.at } }))
+    } else if (e.activity === 'waiting') {
+      // Blocked on the user — a question, a plan waiting for approval, or (chat
+      // only) an ordinary permission prompt. All are mid-turn but nothing is
+      // running, so this is its own state: the row shows "?" instead of the
+      // working ellipsis, and the turn clock stops until the answer arrives.
       s.setActivity(e.sessionId, 'waiting', e.at)
       s.notifyAgentAttention(e.sessionId, 'question')
-    } else if (e.kind === 'Resumed') {
-      s.resumeAgent(e.sessionId, e.at)
     } else {
       s.setActivity(e.sessionId, 'idle', e.at)
-      s.notifyAgentAttention(e.sessionId, 'finished')
+      // `quiet` is set for the idle that follows an interrupt: you ended the
+      // turn, so being told it finished is noise.
+      if (!e.quiet) s.notifyAgentAttention(e.sessionId, 'finished')
     }
+  },
+
+  // ---- chat sessions ------------------------------------------------------
+  handleChatEvent: (e) => {
+    const patch = (fn: (c: ChatSessionState) => ChatSessionState): void =>
+      set((s) => {
+        const cur = s.chats[e.sessionId]
+        if (!cur) return {}
+        return { chats: { ...s.chats, [e.sessionId]: fn(cur) } }
+      })
+
+    switch (e.kind) {
+      // `total` is main's count, which is only larger than what is mounted when
+      // history was clipped to the tail at open — so it grows with the log but
+      // never shrinks to it, or `load earlier` would vanish the moment a new turn
+      // landed on a long conversation.
+      case 'entries-appended':
+        patch((c) => {
+          const entries = applyEntries(c.entries, e.entries)
+          return { ...c, entries, total: Math.max(c.total, entries.length) }
+        })
+        break
+      case 'turn-settled':
+        // The transcript-derived replacement for one whole turn. Anything more
+        // than a few seconds old is therefore always the same bytes a restart
+        // would render — and a mapper disagreement shows up as a visible twitch
+        // here rather than as a bug report after a restart weeks later.
+        patch((c) => {
+          const entries = [...c.entries.filter((x) => x.turn !== e.turn), ...e.entries]
+          return { ...c, entries, total: Math.max(c.total, entries.length) }
+        })
+        break
+      case 'blocking':
+        patch((c) => ({ ...c, blocking: e.card }))
+        break
+      case 'blocking-cleared':
+        patch((c) => (c.blocking?.requestId === e.requestId ? { ...c, blocking: null } : c))
+        break
+      case 'task':
+        patch((c) => ({
+          ...c,
+          subagents: {
+            ...c.subagents,
+            [e.toolUseId]: [...(c.subagents[e.toolUseId] ?? []), ...e.entries]
+          }
+        }))
+        break
+      case 'todo':
+        patch((c) => ({ ...c, todos: e.todos }))
+        break
+      case 'context':
+        patch((c) => ({ ...c, context: e.context }))
+        break
+      case 'reset':
+        // `/clear` landed. Live and reopened views stay identical the instant the
+        // reset does: the log is dropped and the todo fold goes with it.
+        patch((c) => ({ ...c, entries: [], total: 0, todos: [], blocking: null, subagents: {} }))
+        break
+      case 'error':
+        patch((c) => ({ ...c, error: e.error }))
+        break
+      case 'exit':
+        patch((c) => ({ ...c, open: false }))
+        set((s) => {
+          const live = { ...s.live }
+          delete live[e.sessionId]
+          return { live }
+        })
+        break
+      case 'meta':
+        patch((c) => ({
+          ...c,
+          model: e.model ?? c.model,
+          mode: e.mode ?? c.mode,
+          commands: e.commands ?? c.commands
+        }))
+        break
+    }
+  },
+
+  openChat: async (projectId, sessionId, retry = false) => {
+    const cur = get().chats[sessionId]
+    if (cur?.opening) return
+    set((s) => ({
+      chats: {
+        ...s.chats,
+        [sessionId]: { ...(s.chats[sessionId] ?? emptyChat()), opening: true, error: undefined }
+      }
+    }))
+    const res = await window.vivarium.chatOpen(projectId, sessionId, retry)
+    set((s) => {
+      const base = s.chats[sessionId] ?? emptyChat()
+      if (!res.ok || !res.state) {
+        return {
+          chats: { ...s.chats, [sessionId]: { ...base, opening: false, open: false, reason: res.reason } }
+        }
+      }
+      const st = res.state
+      return {
+        chats: {
+          ...s.chats,
+          [sessionId]: {
+            ...base,
+            entries: st.entries,
+            total: st.total,
+            todos: st.todos,
+            blocking: st.blocking,
+            context: st.context,
+            commands: st.commands,
+            model: st.model,
+            mode: st.mode,
+            open: true,
+            opening: false,
+            reason: undefined,
+            historyError: st.historyError
+          }
+        },
+        // A chat with a live process counts as live, exactly as a pty does: it is
+        // what the sidebar's working indicator and TerminalHost's third render
+        // clause read.
+        live: { ...s.live, [sessionId]: true }
+      }
+    })
+  },
+
+  closeChat: (sessionId) => {
+    window.vivarium.chatClose(sessionId)
+    set((s) => {
+      const live = { ...s.live }
+      delete live[sessionId]
+      const chats = { ...s.chats }
+      if (chats[sessionId]) chats[sessionId] = { ...chats[sessionId], open: false }
+      return { live, chats }
+    })
+  },
+
+  sendChat: async (sessionId, text, attachments) => {
+    await window.vivarium.chatSend(sessionId, text, attachments)
+  },
+
+  interruptChat: async (sessionId) => {
+    await window.vivarium.chatInterrupt(sessionId)
+  },
+
+  answerChat: async (sessionId, requestId, answer) => {
+    // Optimistic: the card's buttons must not sit there looking pressable while
+    // the round trip happens. main echoes a blocking-cleared either way.
+    set((s) => {
+      const c = s.chats[sessionId]
+      if (!c || c.blocking?.requestId !== requestId) return {}
+      return { chats: { ...s.chats, [sessionId]: { ...c, blocking: null } } }
+    })
+    await window.vivarium.chatAnswer(sessionId, requestId, answer)
+  },
+
+  setChatMode: async (sessionId, mode) => {
+    set((s) => {
+      const c = s.chats[sessionId]
+      return c ? { chats: { ...s.chats, [sessionId]: { ...c, mode } } } : {}
+    })
+    const config = await window.vivarium.chatSetMode(sessionId, mode)
+    set({ config })
+  },
+
+  setChatModel: async (sessionId, model) => {
+    set((s) => {
+      const c = s.chats[sessionId]
+      return c ? { chats: { ...s.chats, [sessionId]: { ...c, model } } } : {}
+    })
+    const config = await window.vivarium.chatSetModel(sessionId, model)
+    set({ config })
+  },
+
+  loadEarlier: async (sessionId) => {
+    const c = get().chats[sessionId]
+    if (!c) return
+    const res = await window.vivarium.chatEarlier(sessionId, c.entries.length)
+    set((s) => {
+      const cur = s.chats[sessionId]
+      if (!cur) return {}
+      return {
+        chats: {
+          ...s.chats,
+          [sessionId]: { ...cur, entries: [...res.entries, ...cur.entries], total: res.total }
+        }
+      }
+    })
+  },
+
+  // Expanding a clipped card asks main for the rest — the whole point of keeping
+  // full bodies there is that a 10 MB transcript is never a 10 MB resident store.
+  loadBody: async (sessionId, entryId) => {
+    if (get().chats[sessionId]?.bodies[entryId] !== undefined) return
+    const body = await window.vivarium.chatBody(sessionId, entryId)
+    if (body === null) return
+    set((s) => {
+      const c = s.chats[sessionId]
+      if (!c) return {}
+      return { chats: { ...s.chats, [sessionId]: { ...c, bodies: { ...c.bodies, [entryId]: body } } } }
+    })
+  },
+
+  loadSubagent: async (sessionId, toolUseId, agentId) => {
+    if (get().chats[sessionId]?.subagents[toolUseId]?.length) return
+    const entries = await window.vivarium.chatSubagent(sessionId, toolUseId, agentId)
+    set((s) => {
+      const c = s.chats[sessionId]
+      if (!c) return {}
+      return {
+        chats: { ...s.chats, [sessionId]: { ...c, subagents: { ...c.subagents, [toolUseId]: entries } } }
+      }
+    })
   },
 
   openAddProject: () => set({ dialog: 'addProject', ap: emptyDraft() }),
@@ -885,11 +1215,14 @@ export const useStore = create<AppState>((set, get) => ({
       const agentWaitingSince: Record<string, number> = {}
       for (const id of Object.keys(s.agentWaitingSince))
         if (alive.has(id)) agentWaitingSince[id] = s.agentWaitingSince[id]
+      const chats: Record<string, ChatSessionState> = {}
+      for (const id of Object.keys(s.chats)) if (alive.has(id)) chats[id] = s.chats[id]
       return {
         config,
         notifications,
         agentSince,
         agentWaitingSince,
+        chats,
         selectedSessionId:
           s.selectedSessionId && !alive.has(s.selectedSessionId) ? null : s.selectedSessionId
       }
@@ -1018,6 +1351,8 @@ export const useStore = create<AppState>((set, get) => ({
       delete agentSince[killTarget.sessionId]
       const agentWaitingSince = { ...s.agentWaitingSince }
       delete agentWaitingSince[killTarget.sessionId]
+      const chats = { ...s.chats }
+      delete chats[killTarget.sessionId]
       return {
         config,
         dialog: null,
@@ -1026,6 +1361,7 @@ export const useStore = create<AppState>((set, get) => ({
         notifications,
         agentSince,
         agentWaitingSince,
+        chats,
         selectedSessionId: stillExists ? s.selectedSessionId : null
       }
     })
