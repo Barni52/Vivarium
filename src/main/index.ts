@@ -3,6 +3,7 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { registerIpc } from './ipc'
 import type { PtyManager } from './pty'
+import type { ChatService } from './chat'
 
 // Optional smoke-test hook: when VIVARIUM_CDP_PORT is set, expose the Chrome
 // DevTools Protocol on that port and keep the window hidden so an automated
@@ -73,11 +74,15 @@ app.whenReady().then(() => {
   })
 })
 
-// On quit: kill only local pty processes — never stop containers.
+// On quit: kill only local processes — never stop containers. A chat's CLI
+// process is a `docker exec -i` client, so ending it costs exactly what ending a
+// pty costs: an in-flight turn, and nothing else. The *conversation* is on the
+// creds volume and comes back on the next open.
 app.on('before-quit', () => {
   for (const win of BrowserWindow.getAllWindows()) {
-    const p = (win as unknown as { __pty?: PtyManager }).__pty
-    p?.killAll()
+    const w = win as unknown as { __pty?: PtyManager; __chat?: ChatService }
+    w.__pty?.killAll()
+    w.__chat?.closeAll()
   }
 })
 

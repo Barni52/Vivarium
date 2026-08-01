@@ -2,21 +2,51 @@
 
 export type ImageVariant = 'slim' | 'full'
 
-export type SessionType = 'agent' | 'container-shell' | 'host-shell'
+export type SessionType = 'agent' | 'chat' | 'container-shell' | 'host-shell'
+
+/**
+ * The two permission modes a chat session runs in, and nothing else.
+ *
+ * Both enforce nothing: a session that can reach `bypassPermissions` has plan
+ * mode's blocks unenforced, and today's terminal agents already launch with
+ * `--dangerously-skip-permissions`, so plan mode in Vivarium was only ever a
+ * suggestion. `plan` is kept because the agent reliably reaches for
+ * `ExitPlanMode` in it — and *that call is the plan card*.
+ */
+export type ChatMode = 'plan' | 'bypassPermissions'
 
 export interface Session {
   id: string
   name: string
   type: SessionType
   /**
-   * For `agent` sessions only: a stable UUID pinned as Claude Code's own
+   * For `agent` and `chat` sessions: a stable UUID pinned as Claude Code's own
    * conversation id (`claude --session-id <uuid>` on first launch, `--resume <uuid>`
    * after), so a conversation survives the container being stopped/recreated and the
    * app restarting — the transcript persists on the claude-box-creds volume, and we
    * re-attach the *conversation* without any multiplexer. Undefined for shell
    * sessions, and for legacy agent sessions until backfilled on config load.
+   *
+   * NOT write-once for chat: `/clear` mints a new conversation and the outgoing id
+   * moves to `previousClaudeSessionIds`.
    */
   claudeSessionId?: string
+  /**
+   * chat only. Ids retired by `/clear`. Kept so the delete cascade can take the
+   * *whole chain* — deleting a chat takes everything it ever said, not only its
+   * latest incarnation. `/clear` itself destroys nothing, so an accidental one
+   * stays recoverable through Claude's own `--resume` picker.
+   */
+  previousClaudeSessionIds?: string[]
+  /**
+   * chat only. A deliberate exception to "runtime state is queried live, never
+   * persisted": this is a per-session *user preference* about how the agent runs,
+   * not state observed from Docker — which is exactly what config.json is for.
+   * Restored at reopen as the launch `--permission-mode`.
+   */
+  mode?: ChatMode
+  /** chat only. Same exception, same argument; applied as `--model` at spawn. */
+  model?: string
 }
 
 export interface Project {
@@ -30,6 +60,19 @@ export interface Project {
   /** Only meaningful for `full` projects; slim projects never publish a port. */
   publishedPort?: number
   sessions: Session[]
+  /**
+   * Last known `/`-command names for this project's container, cached so a chat
+   * opened cold has a menu before its first turn (nothing is emitted on the wire
+   * until the first user message, so there is no `init` to read yet).
+   *
+   * Runtime-derived data in config, and admissible for a reason that does not
+   * generalise: **the cache is a hint, never authority**. The composer forwards
+   * every `/…` verbatim and the CLI always decides, so a stale entry can only
+   * mis-suggest, never mis-execute. `Session.model` deliberately does *not* get
+   * the same treatment — a chip reading "opus" while the process spawned on
+   * something else is a reading that lies about a live fact.
+   */
+  slashCommands?: string[]
 }
 
 export interface Config {
@@ -46,6 +89,17 @@ export interface Config {
    * against (e.g. "origin/master"). Defaults to "origin/master" when unset.
    */
   diffBase?: string
+  /**
+   * Conversations owed a delete: bare Claude conversation uuids, enqueued in the
+   * *same* atomic mutate that removes the session or project that owned them.
+   *
+   * Not a never-persist exception. That invariant forbids persisting what can be
+   * queried live; a deletion you owe is exactly a fact that cannot be, since
+   * Docker being down is *why* you owe it. There is no success path and no
+   * failure path here — the debt is recorded, then the debt is paid, and the fast
+   * case is a drain that runs immediately and succeeds.
+   */
+  pendingTranscriptDeletes?: string[]
 }
 
 /** Result of the "Write branch diff" project action. */
@@ -79,8 +133,49 @@ export interface ContainerState {
 export type AgentActivity = 'idle' | 'working' | 'waiting'
 
 /**
- * Claude Code hook events forwarded from the container bridge (see
- * main/bridge.ts). `AskUserQuestion`/`ExitPlanMode` are the two tools whose
+ * What an agent session is doing, from either producer.
+ *
+ * There are two now, and they unify **at the event, not at the channel**:
+ * `bridge.ts` maps Claude Code hooks for pty `agent` sessions, `chat.ts` derives
+ * the same triple from the ordinary stream-json output for `chat` sessions. The
+ * store cannot tell them apart, which is the point — an adapter emitting hook
+ * *kinds* was the earlier design and it does not work in this direction: main
+ * would have to emit 'ExitPlanMode' to mean "waiting", and a working-directory
+ * permission prompt (which blocks a chat turn on a human just as much) has no
+ * hook kind to lie with at all.
+ */
+export interface AgentActivityEvent {
+  sessionId: string
+  activity: AgentActivity
+  /**
+   * Epoch ms, stamped on the HOST as the producer read the event — never a
+   * container-side timestamp: a WSL2 clock drifts from Windows across host sleep,
+   * and these values are subtracted from `Date.now()` to show "working 4m", so a
+   * skewed one would print a negative or absurd turn. The bridge's events.log
+   * keeps its own timestamp for post-mortem reading only.
+   */
+  at: number
+  /**
+   * The one bit a *state* cannot carry: a queued prompt starts a new turn while
+   * the state is already 'working', where setActivity deliberately no-ops. Set
+   * whenever a user message really was submitted.
+   */
+  turnStart?: true
+  /**
+   * The second such bit: land the state change but raise no attention flag. Set
+   * for the `idle` that follows an interrupt — you ended the turn, so being told
+   * it finished is noise. (Esc normally requires the session focused and
+   * selected, which notifyAgentAttention already declines, but there is a ~100 ms
+   * window in which clicking away first would flag the turn you just killed.)
+   */
+  quiet?: true
+}
+
+/**
+ * Claude Code hook events read out of the container bridge. `bridge.ts`'s own
+ * internal vocabulary now — it maps these to an AgentActivityEvent before
+ * anything crosses IPC, so the attention rules live in exactly one place instead
+ * of once per producer. `AskUserQuestion`/`ExitPlanMode` are the two tools whose
  * "execution" is waiting for the user; `Resumed` is their PostToolUse, i.e. the
  * answer landed and the agent is running again.
  */
@@ -90,19 +185,6 @@ export type AgentHookKind =
   | 'AskUserQuestion'
   | 'ExitPlanMode'
   | 'Resumed'
-
-export interface AgentHookEvent {
-  sessionId: string
-  kind: AgentHookKind
-  /**
-   * Epoch ms, stamped on the HOST when the bridge read the line, not the
-   * container-side timestamp the hook writes into events.log: a WSL2 clock drifts
-   * from Windows across host sleep, and these values are subtracted from
-   * `Date.now()` to show "working 4m", so a skewed one would print a negative or
-   * absurd turn. The log keeps its own timestamp for post-mortem reading only.
-   */
-  at: number
-}
 
 /**
  * One rate-limit window from the (undocumented) Claude OAuth usage endpoint —
@@ -252,6 +334,279 @@ export interface DockerStatus {
   available: boolean
   binary: string | null
   message?: string
+}
+
+// ---------------------------------------------------------------------------
+// chat sessions
+//
+// A `chat` session drives Claude Code over `claude -p --input-format stream-json
+// --output-format stream-json` (one live CLI process per session, `docker exec -i`,
+// never `-it`). Hooks, skills, CLAUDE.md, --resume and the whole harness stay
+// intact — this is not a bespoke agent loop against the Anthropic API.
+//
+// The *model* of a conversation is the container-side transcript, not anything
+// this app keeps: while a turn runs the log paints from the stream, and at the
+// turn's `result` main re-reads the bytes appended to the .jsonl and replaces
+// that turn's entries with transcript-derived ones. So anything more than a few
+// seconds old is always the same bytes a restart would render, and a mapper
+// disagreement shows up as a visible twitch at turn end during development
+// rather than as a bug report after a restart weeks later.
+// ---------------------------------------------------------------------------
+
+/**
+ * The gutter role of one log row — the fixed left column that makes a long turn
+ * scannable. Every row shares a left edge; this word is what it says.
+ */
+export type ChatRole =
+  | 'you'
+  | 'claude'
+  | 'think'
+  | 'read'
+  | 'edit'
+  | 'bash'
+  | 'run'
+  | 'ask'
+  | 'plan'
+  | 'cmd'
+  | 'task'
+  | 'todo'
+  | 'stop'
+
+export type ChatToolStatus = 'running' | 'ok' | 'error' | 'cancelled'
+
+/**
+ * A tool card's body. Main keeps the full text and hands the renderer a clipped
+ * copy (a read's body dropped entirely, a bash tail, a diff capped) — across a
+ * 20-transcript sample, 728 assistant text blocks weighed 1.2 MB while 2 074
+ * tool_result blocks weighed 14.6 MB, so prose is a rounding error and tool
+ * output is the entire weight. Expanding a clipped card fetches the rest over
+ * `chat:body`.
+ */
+export interface ChatToolBody {
+  kind: 'none' | 'text' | 'diff'
+  text: string
+  truncated: boolean
+}
+
+/** One attachment chip, in a `you` row or pending on the composer. */
+export interface ChatChip {
+  kind: 'path' | 'image' | 'document' | 'text' | 'error'
+  name: string
+  /** container path for `path`, dimensions for images, the reason for `error` */
+  detail?: string
+}
+
+export interface ChatQuestionOption {
+  label: string
+  description?: string
+}
+
+export interface ChatQuestion {
+  question: string
+  header?: string
+  multiSelect: boolean
+  options: ChatQuestionOption[]
+}
+
+interface ChatEntryBase {
+  /** stable across the stream→transcript settle, so the renderer upserts by id */
+  id: string
+  role: ChatRole
+  at: number
+  /** the turn this row belongs to; turn-end replacement swaps a whole turn */
+  turn: number
+}
+
+export type ChatEntry =
+  | (ChatEntryBase & { kind: 'text'; md: string; chips?: ChatChip[] })
+  /** collapsed to its first line with a `▸ show` */
+  | (ChatEntryBase & { kind: 'thinking'; md: string })
+  | (ChatEntryBase & {
+      kind: 'tool'
+      toolUseId: string
+      title: string
+      /** the one-line outcome shown beside the title ("+18 −11", "exit 0") */
+      result: string
+      status: ChatToolStatus
+      body: ChatToolBody
+    })
+  | (ChatEntryBase & {
+      kind: 'ask'
+      questions: ChatQuestion[]
+      /** chosen labels, recovered from the tool_result on reopen (may be empty) */
+      answers: string[]
+      pending?: boolean
+    })
+  | (ChatEntryBase & {
+      kind: 'plan'
+      md: string
+      state: 'pending' | 'approved' | 'denied' | 'cancelled'
+    })
+  /** a local slash command's output, a Skill call, or `Unknown command: /x` */
+  | (ChatEntryBase & { kind: 'cmd'; title: string; md: string; truncated: boolean })
+  | (ChatEntryBase & {
+      kind: 'task'
+      toolUseId: string
+      /** keys the sibling sub-log; null until the subagent reports one */
+      agentId: string | null
+      agentType: string
+      description: string
+      status: string
+      durationMs: number | null
+      tools: number | null
+      tokens: number | null
+      running?: boolean
+    })
+  | (ChatEntryBase & { kind: 'todo'; text: string })
+  /**
+   * An interrupt, a crash, a timeout or a desync. `alert` is the one place
+   * colour appears in the log body — an interrupt is something the user just
+   * did, so it stays muted; a crash is not.
+   */
+  | (ChatEntryBase & { kind: 'stop'; text: string; tone: 'muted' | 'alert'; retry?: boolean })
+  /** full-width `compacted · 144k → 11k` / `model · sonnet → opus` */
+  | (ChatEntryBase & { kind: 'divider'; text: string })
+  /**
+   * The turn clock, in the log rather than the header (#5 enumerated the
+   * header's three items without it). Live while the turn runs, frozen at
+   * `result` into Claude Code's own `turn_duration` — so a turn reads identically
+   * whether you watched it or reopened the session a week later. An interrupted
+   * or crashed turn has nothing to freeze to and gets no number at all: the
+   * `stop` row replaces this one.
+   */
+  | (ChatEntryBase & { kind: 'turn'; startedAt: number; durationMs?: number })
+
+export interface ChatTodo {
+  id: string
+  subject: string
+  activeForm?: string
+  status: 'pending' | 'in_progress' | 'completed'
+}
+
+/**
+ * A tool call blocked on the user. Plan approval, a question and an ordinary
+ * permission prompt all arrive as the *same* `can_use_tool` control request and
+ * are answered with the same result — one handler, not three.
+ */
+export interface ChatBlockingCard {
+  requestId: string
+  kind: 'plan' | 'question' | 'tool'
+  toolName: string
+  toolUseId?: string
+  /** the plan markdown, or a one-line description of the tool being asked about */
+  title: string
+  md?: string
+  questions?: ChatQuestion[]
+  at: number
+}
+
+/** What the user did with a blocking card. */
+export type ChatAnswer =
+  | { behavior: 'plan-approve' }
+  | { behavior: 'plan-deny'; message: string }
+  /** keyed by question *text* — an `allow` with no answers map yields "The user did not answer the questions." */
+  | { behavior: 'question'; answers: Record<string, string | string[]> }
+  | { behavior: 'allow' }
+  | { behavior: 'deny'; message?: string }
+  | { behavior: 'cancelled' }
+
+/**
+ * The context meter's reading. From the control protocol's `get_context_usage`
+ * (documented, and live from spawn — it answers with no user message ever
+ * written, which is what makes the open-time reading possible). `maxTokens` came
+ * back as 1 000 000 on one model, so thresholds are percentages, never counts.
+ */
+export interface ChatContextUsage {
+  percentage: number
+  totalTokens: number
+  maxTokens: number
+  /** derived from `result.usage` because get_context_usage failed — approximate, not absent */
+  approximate?: boolean
+}
+
+export interface ChatErrorInfo {
+  kind: 'crashed' | 'timeout' | 'transcript-read'
+  message: string
+}
+
+/** Everything a freshly-opened chat needs to paint itself. */
+export interface ChatState {
+  /** the tail the renderer mounts; earlier entries come from `chat:earlier` */
+  entries: ChatEntry[]
+  /** how many entries main holds, so the renderer knows there *is* an earlier */
+  total: number
+  todos: ChatTodo[]
+  mode: ChatMode
+  model: string | null
+  commands: string[]
+  context: ChatContextUsage | null
+  blocking: ChatBlockingCard | null
+  /** §12.3: the history read failed. The chat still works — this is a banner, not a takeover. */
+  historyError?: string
+}
+
+export interface ChatOpenResult {
+  ok: boolean
+  /** 'container-stopped' | 'docker-missing' | 'not-found' | 'spawn-failed' */
+  reason?: string
+  message?: string
+  state?: ChatState
+}
+
+/**
+ * Inbound chat traffic — ONE channel carrying a discriminated union, which is
+ * the single deliberate departure from this app's one-channel-per-payload style.
+ *
+ * ptyData/ptyExit can be separate channels safely because exit is terminal and
+ * data is opaque bytes. Chat's inbound is neither: a turn emits appended entries,
+ * then the turn-end *replacement* of those same entries, plus blocking cards,
+ * task/todo, reset and exit — and these are strictly ordered. Electron guarantees
+ * ordering *within* a channel, not across channels, so split them and a blocking
+ * card can overtake the text it refers to, rendering a question above the
+ * sentence asking it. The alternative is a sequence number and a reorder buffer
+ * in the renderer: the same guarantee bought back at a higher price.
+ *
+ * Activity is the one thing that does *not* ride here — it goes out as an
+ * AgentActivityEvent on `agent:activity`, the channel it shares with the hook
+ * bridge, precisely so the store cannot tell the two producers apart.
+ */
+export type ChatEvent =
+  | { kind: 'entries-appended'; sessionId: string; entries: ChatEntry[] }
+  /** the transcript-derived replacement for one whole turn */
+  | { kind: 'turn-settled'; sessionId: string; turn: number; entries: ChatEntry[] }
+  | { kind: 'blocking'; sessionId: string; card: ChatBlockingCard }
+  | { kind: 'blocking-cleared'; sessionId: string; requestId: string }
+  /** live sub-log frames for one subagent, buffered by its spawning tool_use id */
+  | { kind: 'task'; sessionId: string; toolUseId: string; entries: ChatEntry[] }
+  | { kind: 'todo'; sessionId: string; todos: ChatTodo[] }
+  | { kind: 'context'; sessionId: string; context: ChatContextUsage | null }
+  /** `/clear` landed: a new conversation id, and the log is dropped */
+  | { kind: 'reset'; sessionId: string; claudeSessionId: string }
+  | { kind: 'error'; sessionId: string; error: ChatErrorInfo }
+  | { kind: 'exit'; sessionId: string; exitCode: number }
+  /** model / mode / command list, from each turn's re-emitted `init` */
+  | { kind: 'meta'; sessionId: string; model?: string; mode?: ChatMode; commands?: string[] }
+
+/**
+ * What the renderer hands `chat:send` alongside the prose. Routed by
+ * reachability, decided in the renderer against the mount tree: a file under one
+ * of the project's mounts becomes a **container path**, anything else becomes
+ * **inline content**. Nothing is copied, /clip is never written to, and no mount
+ * is ever changed.
+ */
+export type ChatAttachment =
+  | { kind: 'path'; name: string; containerPath: string }
+  | { kind: 'image'; name: string; mediaType: string; data: string }
+  | { kind: 'document'; name: string; mediaType: string; data: string }
+  | { kind: 'text'; name: string; text: string }
+
+/** One node of a project's mounted tree, for the composer's `@` typeahead. */
+export interface MountNode {
+  name: string
+  hostPath: string
+  containerPath: string
+  type: 'file' | 'dir'
+  children?: MountNode[]
 }
 
 /** Draft used by the Add-Project dialog. */

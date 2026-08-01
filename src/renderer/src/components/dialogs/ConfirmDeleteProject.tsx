@@ -20,8 +20,9 @@ export function ConfirmDeleteProject(): React.ReactElement | null {
             <span style={{ color: 'var(--text)', fontFamily: MONO }}>
               {target.name}
             </span>{' '}
-            and all its sessions, and force-removes its container. Your folders on the host are
-            not touched.
+            and all its sessions, and force-removes its container. Any chat session’s{' '}
+            <b style={{ color: 'var(--text)' }}>conversation is deleted with it</b>. Your folders on
+            the host are not touched.
           </div>
         </div>
         <div style={{ display: 'flex', borderTop: '1px solid var(--border-2)' }}>

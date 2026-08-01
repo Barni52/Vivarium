@@ -1,15 +1,22 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { CH } from '../shared/ipc'
 import type {
-  AgentHookEvent,
+  AgentActivityEvent,
   AppInfo,
   BadgePayload,
+  ChatAnswer,
+  ChatAttachment,
+  ChatEntry,
+  ChatEvent,
+  ChatMode,
+  ChatOpenResult,
   ClaudeStatus,
   ClaudeUpdateResult,
   Config,
   ContainerState,
   DiffResult,
   DockerStatus,
+  MountNode,
   NewProjectInput,
   OutputNode,
   PtyDataEvent,
@@ -129,10 +136,47 @@ const api = {
     ipcRenderer.on(CH.containerStateChanged, h)
     return () => ipcRenderer.removeListener(CH.containerStateChanged, h)
   },
-  onAgentHook: (cb: (e: AgentHookEvent) => void): (() => void) => {
-    const h = (_: unknown, p: AgentHookEvent): void => cb(p)
-    ipcRenderer.on(CH.agentHook, h)
-    return () => ipcRenderer.removeListener(CH.agentHook, h)
+  // Both producers — the hook bridge for pty agents, the stream reader for chat.
+  onAgentActivity: (cb: (e: AgentActivityEvent) => void): (() => void) => {
+    const h = (_: unknown, p: AgentActivityEvent): void => cb(p)
+    ipcRenderer.on(CH.agentActivity, h)
+    return () => ipcRenderer.removeListener(CH.agentActivity, h)
+  },
+
+  // chat sessions
+  chatOpen: (projectId: string, sessionId: string, retry = false): Promise<ChatOpenResult> =>
+    ipcRenderer.invoke(CH.chatOpen, projectId, sessionId, retry),
+  chatSend: (sessionId: string, text: string, attachments: ChatAttachment[]): Promise<boolean> =>
+    ipcRenderer.invoke(CH.chatSend, sessionId, text, attachments),
+  chatInterrupt: (sessionId: string): Promise<void> =>
+    ipcRenderer.invoke(CH.chatInterrupt, sessionId),
+  chatAnswer: (sessionId: string, requestId: string, answer: ChatAnswer): Promise<void> =>
+    ipcRenderer.invoke(CH.chatAnswer, sessionId, requestId, answer),
+  chatSetMode: (sessionId: string, mode: ChatMode): Promise<Config> =>
+    ipcRenderer.invoke(CH.chatSetMode, sessionId, mode),
+  chatSetModel: (sessionId: string, model: string): Promise<Config> =>
+    ipcRenderer.invoke(CH.chatSetModel, sessionId, model),
+  chatModels: (sessionId: string): Promise<string[]> => ipcRenderer.invoke(CH.chatModels, sessionId),
+  chatClose: (sessionId: string): void => ipcRenderer.send(CH.chatClose, sessionId),
+  chatBody: (sessionId: string, entryId: string): Promise<string | null> =>
+    ipcRenderer.invoke(CH.chatBody, sessionId, entryId),
+  chatEarlier: (
+    sessionId: string,
+    mounted: number
+  ): Promise<{ entries: ChatEntry[]; total: number }> =>
+    ipcRenderer.invoke(CH.chatEarlier, sessionId, mounted),
+  chatSubagent: (
+    sessionId: string,
+    toolUseId: string,
+    agentId: string | null
+  ): Promise<ChatEntry[]> => ipcRenderer.invoke(CH.chatSubagent, sessionId, toolUseId, agentId),
+  chatMountTree: (projectId: string): Promise<MountNode[]> =>
+    ipcRenderer.invoke(CH.chatMountTree, projectId),
+  // The one union channel — see the ChatEvent doc comment for why it is one.
+  onChatEvent: (cb: (e: ChatEvent) => void): (() => void) => {
+    const h = (_: unknown, p: ChatEvent): void => cb(p)
+    ipcRenderer.on(CH.chatEvent, h)
+    return () => ipcRenderer.removeListener(CH.chatEvent, h)
   },
 
   // clipboard

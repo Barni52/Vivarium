@@ -49,7 +49,31 @@ export const CH = {
   ptyExit: 'pty:exit',
   containerOutput: 'container:output',
   containerStateChanged: 'container:state-changed',
-  agentHook: 'agent:hook',
+  // Both agent producers — the hook bridge for pty `agent` sessions, the
+  // stream reader for `chat` — emit AgentActivityEvent here. The store cannot
+  // tell them apart, which is the point.
+  agentActivity: 'agent:activity',
+
+  // chat sessions — granular out, ONE union in. `chat:event` is the only channel
+  // in this object that carries a discriminated union rather than one kind of
+  // payload, and it is deliberate: entry-append, turn-end replacement, blocking
+  // cards, task/todo, reset and exit are strictly ordered, and Electron
+  // guarantees ordering only *within* a channel. Split them and a blocking card
+  // can overtake the text it refers to — a question rendered above the sentence
+  // asking it. See the ChatEvent doc comment.
+  chatOpen: 'chat:open',
+  chatSend: 'chat:send',
+  chatInterrupt: 'chat:interrupt',
+  chatAnswer: 'chat:answer',
+  chatSetMode: 'chat:set-mode',
+  chatSetModel: 'chat:set-model',
+  chatModels: 'chat:models',
+  chatClose: 'chat:close',
+  chatBody: 'chat:body',
+  chatEarlier: 'chat:earlier',
+  chatSubagent: 'chat:subagent',
+  chatMountTree: 'chat:mount-tree',
+  chatEvent: 'chat:event',
 
   // clipboard
   pasteImage: 'clipboard:paste-image',

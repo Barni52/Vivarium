@@ -2,7 +2,9 @@
 
 Vivarium is a **Windows-only Electron desktop app**: a session manager that runs Claude Code
 agents in per-project Docker containers with selective folder mounts, plus container-bash and
-host-PowerShell terminals, all in one xterm view. Personal corporate tool — no external users.
+host-PowerShell terminals. Agents come in two kinds — a terminal `agent` (xterm + the TUI) and a
+`chat`, a custom chat surface driving the same CLI over stream-json. Personal corporate tool — no
+external users.
 
 ## Architecture
 
@@ -15,6 +17,10 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
     the Volumes dialog (`listVolumes` / `removeVolume`).
   - `dockerfiles.ts` — inline slim/full Dockerfiles, `IMAGE_VERSION`, shared volume names.
   - `pty.ts` — `PtyManager`: node-pty processes keyed by session id.
+  - `chat.ts` — `ChatService`: one live `claude -p --input-format stream-json` process per `chat`
+    session (same shape as `PtyManager`), plus the transcript reader and its byte offset, the
+    full-body cache, the todo fold and the subagent buffer. `chatMapper.ts` is the one mapper
+    turning Claude Code's JSON — stream frames *and* transcript lines — into log rows.
   - `bridge.ts` — the agent hook bridge: per-project host dir (bind-mounted at `/vivarium`)
     holding Claude Code hook settings + `hook.sh`; `BridgeWatcher` tails its `events.log`.
   - `config.ts` — atomic persistence of the single `%APPDATA%/vivarium/config.json`.
@@ -31,14 +37,29 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
   deselect, never destroyed, so scrollback survives switching. `theme.ts` owns the palette *and*
   `SESSION_TYPES` — the one place session-type wording, hue and popover geometry are defined; the
   picker, sidebar, terminal header and empty state all read from it, and `TypeIcon` gives each type
-  its own silhouette so they never depend on color alone. `Elapsed.tsx` is the only thing in the UI
+  its own silhouette so they never depend on color alone (four of them now: the star, the speech
+  bubble, the window frame, the cube). `theme.ts` also owns `CHIP`, the chat chrome's tints — none
+  of which may be the container teal or the running-indicator green, since a mode chip must never
+  share a colour with a container state. `components/chat/` is the chat window: `ChatView` (chrome,
+  the three-band pinned region, the composer that is only a box), `ChatLog` (the gutter rows),
+  `Markdown`, `attach` (routing an attachment by reachability). `Elapsed.tsx` is the only thing in the UI
   that ticks: it re-renders three characters of duration instead of its host row, on an interval
   that follows the granularity on screen (1s while showing seconds, 15s once only minutes can
   change), and its `until` prop draws a *stopped* clock — the reading holds, no interval at all.
 
 **Adding an IPC feature** touches four places in order: channel name in `src/shared/ipc.ts` →
 handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → renderer call via
-`window.vivarium.*` (usually from a store action).
+`window.vivarium.*` (usually from a store action). No exceptions for chat — its ten outbound
+channels each follow this path.
+
+**`chat:event` is the one deliberate departure** from one-channel-per-payload: it carries a
+discriminated `ChatEvent` union. `ptyData`/`ptyExit` can be separate channels safely because exit
+is terminal and data is opaque bytes; chat's inbound is neither. A turn emits appended entries,
+then the turn-end *replacement* of those same entries, plus blocking cards, task/todo, reset and
+exit — and these are strictly ordered. Electron guarantees ordering **within** a channel, not
+across channels, so splitting them lets a blocking card overtake the text it refers to and render
+a question above the sentence asking it. The alternative is a sequence number and a reorder buffer
+in the renderer: the same guarantee bought back at a higher price.
 
 ## Invariants — do not break
 
@@ -47,8 +68,12 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   original script.
 - Quitting the app **never stops containers** — only each project's explicit stop control does.
   App quit only kills local pty processes (`PtyManager.killAll`).
-- **No multiplexer by design** (tmux was deliberately removed). Agent sessions die with the app
-  and cannot be reattached across restarts — accepted model, don't add tmux/reattach logic.
+- **No multiplexer by design** (tmux was deliberately removed), and no detached process. **A live
+  turn dies with the app** for both agent kinds — accepted model, don't add tmux/reattach logic.
+  What *does* survive is narrower than "nothing": a `chat` session recovers its whole conversation
+  across a restart for free, because chat and pty write the same container-side transcript and the
+  chat's log is read from it rather than kept in the app. A terminal `agent` recovers the same
+  conversation the same way, via `claude --resume` redrawing it. Only the in-flight turn is lost.
 - Bind mounts use `--mount`, never `-v`: a Windows source path's drive-letter colon breaks the
   `-v` parser.
 - Bump `IMAGE_VERSION` in `dockerfiles.ts` whenever either Dockerfile string changes — it is
@@ -60,11 +85,23 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
 - Runtime state (container running, live ptys) is **queried live, never persisted**.
   `config.json` holds only projects/mounts/sessions/settings; writes go through
   `ConfigStore.mutate` (atomic temp-file + rename).
+  **Three deliberate exceptions, all for the same reason** — these are per-session *user
+  preferences*, or facts that cannot be queried live, not runtime state observed from Docker:
+  `Session.mode` and `Session.model` (how a chat's agent runs; restored at spawn as
+  `--permission-mode` / `--model`), and `Session.previousClaudeSessionIds` +
+  `Config.pendingTranscriptDeletes` — which are not really an exception at all, since a deletion
+  you owe is exactly a fact that cannot be queried, Docker being down being *why* you owe it.
+  Deliberately **not** persisted, for contrast: the `list_models` result (global to the account,
+  cached in main for the app run) and the composer draft + pending chips. `Project.slashCommands`
+  *is* cached, on a different argument — it is a **hint, never authority**: the CLI always decides,
+  so a stale entry can only mis-suggest, never mis-execute.
 - Mounts may only change while the container is stopped (`ipc.ts` enforces it); saving settings
   on a running container recreates it.
 - **All terminal resizing goes through `fitNow()`** in `TerminalView` — never call `fit.fit()` or
   `resizeSession` directly. FitAddon clamps a collapsed container to 2×1 instead of refusing, and
-  a 2-column fit reflows the whole 50k-line scrollback irrecoverably. `fitNow` also only messages
+  a 2-column fit reflows the whole 50k-line scrollback irrecoverably. (Chat sessions have no
+  terminal and no fit — `ChatView` sits *beside* the terminal views in `TerminalHost`, never in
+  place of them, because those views are what hold the ptys.) `fitNow` also only messages
   the pty when the size really changed (a resize per fit meant a SIGWINCH storm on zoom) and
   re-syncs the scrollbar, whose geometry xterm only recomputes inside a `requestAnimationFrame` —
   frames a minimized/occluded window never gets, which is what left agent terminals unable to
@@ -77,6 +114,13 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   is measured off `.xterm-screen`, never taken from xterm: the viewport caches the *renderer's*
   dimensions object by reference, and a renderer swap at an unchanged size (WebGL context loss →
   DOM fallback) fires no onDimensionsChange, leaving it sizing the bar from a dead one.
+- **`TerminalHost` keeps one long-lived view per opened session — terminals *must*, chat *may*.**
+  Unmounting a terminal disposes its xterm and 50k-line scrollback irrecoverably; nothing in a chat
+  is unrecoverable, because main holds the log and re-reads the transcript incrementally at every
+  turn end, so a remount re-hydrates over IPC from a cache that is already current and never
+  touches docker. `toRender` therefore gains **no chat arm** — the `live[]` clause is kept for
+  chat too, for *cheapness rather than survival*, and that reason belongs in the comment so nobody
+  later "fixes" it by adding a type branch.
 - **A terminal's lifetime follows its pty, not the container probe.** `TerminalHost`'s `toRender`
   filter decides which sessions have an xterm at all, and its third clause (`live[session.id]`)
   must never be dropped: unmounting disposes the xterm and the 50k-line scrollback with it, and
@@ -145,19 +189,107 @@ handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → rend
   nothing on exactly the controls that need it. It is `:focus-visible`, so pointer input never
   lights it up; the find bar's input opts out with an inline `boxShadow:'none'` because it is
   focused for as long as the bar exists.
-- Agent idle/working detection and the attention-notification are driven by **Claude Code
-  hooks** (`UserPromptSubmit`/`Stop`, plus `PreToolUse` matchers on the two tools whose
-  execution *is* a wait — `AskUserQuestion` and `ExitPlanMode` — and their `PostToolUse`, which
-  is the answer landing), not by parsing terminal output. Agents launch with
-  `--settings /vivarium/hooks.json` + `-e VIVARIUM_SESSION_ID=<id>`; the hook script appends to
-  `/vivarium/events.log`, which the main process tails (`bridge.ts`). Never scope the hooks via the
-  shared `/home/node/.claude/settings.json` — that would leak them into claude-box sessions.
-  Gotchas: `Stop` does not fire on a user esc-interrupt (the renderer resets the indicator on Esc);
-  `PostToolUse` does not fire when a call is *rejected*, and "No, keep planning" is exactly that, so
-  `TerminalView` also resumes on the Enter that answers a prompt (a no-op in every state but
-  `waiting`); bridge files are rewritten and the log truncated on every container start, so a
-  container that was already up serves the old `hooks.json` to newly launched agents until it is
-  restarted; and `start()` auto-recreates containers that lack the `/vivarium` mount.
+- Agent idle/working detection and the attention-notification have **two producers that unify at
+  the event, not at the channel.** Both emit `AgentActivityEvent` on `agent:activity`, and the
+  store cannot tell them apart — which is the point. Do not reintroduce hook *kinds* over IPC: an
+  adapter emitting the old `AgentHookEvent` shape was the earlier design and it does not work in
+  this direction, since main would have to emit `'ExitPlanMode'` to mean "waiting" and a chat's
+  working-directory permission prompt has no hook kind to lie with at all.
+  - **pty `agent` sessions: Claude Code hooks**, exactly as before (`UserPromptSubmit`/`Stop`, plus
+    `PreToolUse` matchers on the two tools whose execution *is* a wait — `AskUserQuestion` and
+    `ExitPlanMode` — and their `PostToolUse`, which is the answer landing), never by parsing
+    terminal output. Agents launch with `--settings /vivarium/hooks.json` +
+    `-e VIVARIUM_SESSION_ID=<id>`; the hook script appends to `/vivarium/events.log`, which the
+    main process tails (`bridge.ts`), and **`bridge.ts` now owns the hook→state mapping** so that
+    vocabulary stops at the process boundary. Never scope the hooks via the shared
+    `/home/node/.claude/settings.json` — that would leak them into claude-box sessions.
+  - **`chat` sessions: derived from the ordinary stream**, which costs no extra parsing because
+    main is already reading every message to render the log — `assistant` → working, *any* pending
+    `can_use_tool` → waiting, `result` → idle. A chat is **never** pointed at
+    `/vivarium/hooks.json` and never gets a `VIVARIUM_SESSION_ID`: double-emitting would give the
+    store two producers for one session. `system/session_state_changed` is deliberately **not**
+    used and `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` is never set, even though it exists and is a
+    1:1 match — an undocumented env-gated signal in a CLI this app has the user update by hand is
+    the silent breakage hooks were introduced to end. That reading is also strictly *more* correct
+    than the pty's: bypass does not dissolve the working-directory guard, so an out-of-mounts read
+    still blocks the turn on a human, and the hook bridge cannot see that case at all.
+  - Hook gotchas, **now scoped to pty agents only**: `Stop` does not fire on a user esc-interrupt
+    (the renderer resets the indicator on Esc); `PostToolUse` does not fire when a call is
+    *rejected*, and "No, keep planning" is exactly that, so `TerminalView` also resumes on the
+    Enter that answers a prompt (a no-op in every state but `waiting`). Both are TUI artifacts and
+    **neither exists over stream-json** — "keep planning" arrives as a plain `deny` observed
+    identically to approve, and an interrupt reports cleanly as `aborted_streaming` /
+    `aborted_tools`. `TerminalView.tsx`'s Esc/Enter heuristics must not be reproduced in the chat.
+  - Still true for both: bridge files are rewritten and the log truncated on every container start,
+    so a container that was already up serves the old `hooks.json` to newly launched agents until
+    it is restarted; and `start()` auto-recreates containers that lack the `/vivarium` mount.
+- **A chat session drives Claude Code; it is not a bespoke agent loop.** One live
+  `docker exec -i … claude -p --input-format stream-json --output-format stream-json` process per
+  session — **`-i`, never `-it`**, no TTY anywhere in the path. Three flags are load-bearing:
+  `--permission-prompt-tool stdio` is a *sentinel, not a real MCP server*, it is undocumented and
+  absent from `claude --help`, and without it a raw `-p` run **auto-denies every prompt** *and*
+  drops `AskUserQuestion`/`ExitPlanMode` from the tool list entirely; `--forward-subagent-text`
+  is what makes the live sub-log match the settled sibling file block for block;
+  `--include-partial-messages` gives the token deltas the log paints from. **Nothing is emitted
+  until the first user message is written** — `system/init` is the answer to turn one, not a
+  greeting, so a client that waits for it deadlocks. The *control* channel is a separate matter and
+  is live from spawn, which is what makes the open-time context reading possible.
+- **The transcript is the chat's model, not a log of it.** History comes from the container-side
+  `/home/node/.claude/projects/-workspace/<uuid>.jsonl`, read with `docker exec`; there is **no
+  host-side mirror**, because a mirror only knows turns the app streamed and can drift from the
+  file `--resume` actually feeds the model. While a turn runs the log paints from the stream
+  (provisional); at `result` main re-reads the bytes appended since its stored **byte offset** and
+  *replaces that turn's rows* with transcript-derived ones — so anything more than a few seconds
+  old is always the same bytes a restart would render, and a mapper disagreement shows up as a
+  visible twitch at turn end during development rather than as a bug report weeks later. Accepted
+  cost: **no history while the container is stopped**, which lands on the `StoppedPlaceholder` that
+  already explains why.
+- **`isSidechain` is never filtered on in the chat mapper.** A transcript written by `claude -p`
+  marks **every** line `isSidechain: true`, main conversation included — the exact inverse of a
+  TUI-written transcript, where every line is `false` (verified on 2.1.211). Dropping those lines
+  blanks the entire log for exactly the sessions this feature creates. It is unnecessary anyway:
+  subagent work is not written into the parent file at all, it lives in a sibling `subagents/`
+  directory read on demand.
+- **Chat entry ids carry the block *type*.** Claude Code writes one transcript line per content
+  block but gives every line of one API message the same `message.id`, so a message whose text and
+  tool call are two lines yields two blocks both at index 0 — without the type in the key the tool
+  card silently overwrites the paragraph above it. Ids must stay stable across the stream→transcript
+  settle, since the renderer upserts by id.
+- **Delete means delete, for chat conversations.** Deleting a chat session deletes its conversation,
+  and deleting a project cascades to every chat session it holds — otherwise the larger, more
+  destructive gesture would be the leakier one. Both take the whole chain (`claudeSessionId` plus
+  every id `/clear` retired). The mechanism is a **debt list** (`Config.pendingTranscriptDeletes`)
+  written in the *same atomic mutate* that removes the session, then drained — not try-then-enqueue,
+  which leaves a window where the session is gone and nothing records that anyone meant to delete
+  its transcript. Drains at app launch and after each successful container start, the two moments
+  Docker is proven up; never off the 3s container poll, which `isRunning` already documents as
+  unreliable. The delete always proceeds even with Docker down, matching `deleteProject`, which
+  already discards `docker.remove`'s exit code. **There is no sweep and there never will be:** the
+  `-workspace` slug holds Vivarium's transcripts *and* claude-box's, identical on disk, and
+  sweep-by-exclusion would silently destroy real conversations on the one volume that is never
+  removable. Everything stranded before this landed stays, deliberately.
+  The removal runs `docker run --rm -v claude-box-creds:… vivarium:slim sh -c 'rm -rf …'` —
+  **`-v` is legitimate here** (that invariant is about a Windows drive-letter colon, and a named
+  volume has none), and `docker exec` was rejected because `deleteProject` force-removes the
+  container in the same handler and a stopped project has nothing to exec into. **This is `rm -rf`
+  with an interpolated variable: the safety rests entirely on the uuid coming from `randomUUID()`,
+  and a transcript is a *directory* (`<uuid>/subagents/…`), not a file.**
+- **The chat has no terminal states, and nothing retries itself.** Every failure is recovered by the
+  same single act — respawn the process and re-read the transcript — because the conversation is in
+  the transcript rather than in the process. A stopped container is the only state it cannot
+  recover from on its own. Detection is thinner than it looks: killing the in-container `claude`
+  mid-stream is **completely silent** (no result, no error line, no torn line) and the `docker exec`
+  exit code is the only signal, while a broken credential emits a normal-looking `init` and then
+  nothing at all — hence a **60s silence timeout on *any* frame**, not on `result`. Recovery is
+  **never automatic**, the timeout row least of all: a wedged CLI would otherwise be respawned every
+  minute for as long as the app is open.
+- **`terminal_reason` is the only test that distinguishes cancelled from failed.** `is_error` cannot
+  — a clean deny-then-interrupt reports `is_error: true`. On reopen, where there is no
+  `terminal_reason`, a cancelled tool is detected **structurally** (the error results with nothing
+  after them in the turn but the interrupt marker), never by matching the refusal wording. The one
+  accepted prose-parsing rule in the whole design is recovering an answered `AskUserQuestion`'s
+  ticked chip, and it has a graceful fallback; keeping it to one is why the cancelled rule is
+  positional.
 - **An attention flag is cleared by viewing its session — and focusing the window is viewing.**
   `notifyAgentAttention` declines to flag only when the window is focused *and* that session is
   selected, so anything landing while the app is in the background flags the session you are

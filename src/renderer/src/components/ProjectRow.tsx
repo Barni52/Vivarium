@@ -74,7 +74,7 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
   const attention = useStore((s): AttentionKind | null => {
     let worst: AttentionKind | null = null
     for (const x of project.sessions) {
-      if (x.type !== 'agent') continue
+      if (x.type !== 'agent' && x.type !== 'chat') continue
       // A live agent blocked on the user counts even when it carries no
       // notification (one you are watching clears its flag but is still
       // waiting) — collapsing the project must not hide that nothing is moving.
@@ -91,7 +91,10 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
   // attention; a waiting one is mid-turn but reads as "?" above, not as busy)
   const hasWorking = useStore((s) =>
     project.sessions.some(
-      (x) => x.type === 'agent' && s.activity[x.id] === 'working' && s.live[x.id]
+      (x) =>
+        (x.type === 'agent' || x.type === 'chat') &&
+        s.activity[x.id] === 'working' &&
+        s.live[x.id]
     )
   )
   const projectIds = useStore((s) => s.config.projects.map((p) => p.id))

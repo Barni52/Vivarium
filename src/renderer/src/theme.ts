@@ -69,8 +69,38 @@ export const MONO = "'JetBrains Mono', 'IBM Plex Mono', monospace"
 // only reinforces it.
 export const ACCENT: Record<string, string> = {
   agent: '#a78bdb',
+  // A muted pink-violet that sits *beside* the agent violet without being it —
+  // a chat session is an agent session, spoken to rather than typed at.
+  chat: '#c08bb8',
   'container-shell': '#59a8a4',
   'host-shell': '#7d9ec9'
+}
+
+/**
+ * The chat window's chrome tints, in one place so the collisions can be reasoned
+ * about once. All muted — three saturated hues next to this slate palette read
+ * as neon, which is the lesson ACCENT above already learnt.
+ *
+ * Deliberately *not* used: the container teal `#59a8a4` and the green of the
+ * "container running" indicator. A mode chip must never share a colour with a
+ * container state — that is the exact bug the session accents were re-picked for.
+ */
+export const CHIP = {
+  /** plan: a deliberate, temporary mode — amber is the "hold on" register */
+  plan: '#c2a15e',
+  /** bypass: the ordinary state, so it wears the session's own hue */
+  bypass: ACCENT.chat,
+  /** muted indigo: near the agent violet without being it */
+  model: '#8fa0cc',
+  /** context fill, escalating — steel while there is room, then amber, then red */
+  ctx: ['#6f93a8', '#c2a15e', '#c97b7b']
+}
+
+/** Which context tint a percentage earns. Colour appears when it means something. */
+export function ctxColor(pct: number): string {
+  // Percentages, never token counts: maxTokens came back as 1 000 000 on one
+  // model, so a threshold expressed in tokens would never fire there.
+  return pct >= 85 ? CHIP.ctx[2] : pct >= 60 ? CHIP.ctx[1] : CHIP.ctx[0]
 }
 
 export interface SessionTypeMeta {
@@ -91,9 +121,13 @@ export interface SessionTypeMeta {
 }
 
 /**
- * The three session kinds, in picker order: agent first (it's the point of the
- * app), then the shells with **host above container** — host is the one that
- * gets picked nearly every time.
+ * The four session kinds, in picker order: the two agent kinds first (they are
+ * the point of the app), then the shells with **host above container** — host is
+ * the one that gets picked nearly every time.
+ *
+ * `chat` is a fourth type *alongside* `agent`, not a replacement — though it is
+ * designed so it could swallow it later, so nothing here may assume the terminal
+ * agent is gone.
  */
 export const SESSION_TYPES: SessionTypeMeta[] = [
   {
@@ -103,6 +137,14 @@ export const SESSION_TYPES: SessionTypeMeta[] = [
     shell: 'claude',
     where: 'in the container',
     accent: ACCENT.agent
+  },
+  {
+    type: 'chat',
+    title: 'Chat',
+    group: '',
+    shell: 'claude -p',
+    where: 'in the container',
+    accent: ACCENT.chat
   },
   {
     type: 'host-shell',
@@ -127,7 +169,7 @@ export const SESSION_TYPES: SessionTypeMeta[] = [
  * because openAddSession (store.ts) needs it to keep the panel on screen, and
  * the component importing the store already makes the other direction a cycle.
  */
-export const ADD_SESSION_POPOVER = { width: 336, height: 380 }
+export const ADD_SESSION_POPOVER = { width: 336, height: 434 }
 
 export function typeMeta(type: string): SessionTypeMeta {
   return SESSION_TYPES.find((t) => t.type === type) ?? SESSION_TYPES[0]

@@ -21,7 +21,8 @@ export function App(): React.ReactElement {
   const refreshUsage = useStore((s) => s.refreshUsage)
   const refreshClaude = useStore((s) => s.refreshClaude)
   const refreshOutputTree = useStore((s) => s.refreshOutputTree)
-  const handleAgentHook = useStore((s) => s.handleAgentHook)
+  const handleAgentActivity = useStore((s) => s.handleAgentActivity)
+  const handleChatEvent = useStore((s) => s.handleChatEvent)
   const acknowledgeSelected = useStore((s) => s.acknowledgeSelected)
   const requestQuit = useStore((s) => s.requestQuit)
   const dialog = useStore((s) => s.dialog)
@@ -53,7 +54,13 @@ export function App(): React.ReactElement {
       claudeDebounce = setTimeout(() => refreshClaude(), 2000)
     })
     const offOutput = window.vivarium.onOutputChanged(() => refreshOutputTree())
-    const offHook = window.vivarium.onAgentHook((e) => handleAgentHook(e))
+    // One channel, two producers: the hook bridge for pty agents, the stream
+    // reader for chat sessions. This side cannot tell them apart.
+    const offActivity = window.vivarium.onAgentActivity((e) => handleAgentActivity(e))
+    // …and one union channel in, because a chat turn's appended rows, its
+    // turn-end replacement, its blocking cards and its exit are strictly ordered
+    // and Electron only guarantees ordering *within* a channel.
+    const offChat = window.vivarium.onChatEvent((e) => handleChatEvent(e))
     // Bringing the app to the front means looking at the selected session, so its
     // attention flag (and its share of the taskbar number) is answered for.
     const offFocus = window.vivarium.onWindowFocused(() => acknowledgeSelected())
@@ -65,7 +72,8 @@ export function App(): React.ReactElement {
       if (claudeDebounce) clearTimeout(claudeDebounce)
       off()
       offOutput()
-      offHook()
+      offActivity()
+      offChat()
       offFocus()
       offQuit()
     }
@@ -76,7 +84,8 @@ export function App(): React.ReactElement {
     refreshOutputTree,
     refreshUsage,
     refreshClaude,
-    handleAgentHook,
+    handleAgentActivity,
+    handleChatEvent,
     acknowledgeSelected,
     requestQuit
   ])

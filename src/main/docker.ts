@@ -120,27 +120,42 @@ export class DockerService {
   // (version probe, npm install): docker exec has no timeout of its own and a
   // hung child would leave the caller's spinner up forever.
   private async exec(args: string[], timeoutMs?: number): Promise<ExecResult> {
+    const r = await this.execBuf(args, timeoutMs)
+    return { code: r.code, stdout: r.stdout.toString('utf8'), stderr: r.stderr }
+  }
+
+  /**
+   * The same runner, keeping stdout as bytes. Decoding per chunk (as the string
+   * form used to) mangles any multi-byte character that straddles a chunk
+   * boundary, which a 10 MB transcript read will hit sooner or later — and the
+   * caller counts *bytes* to resume the read from, so a re-encoded length would
+   * drift from the file's own offsets.
+   */
+  private async execBuf(
+    args: string[],
+    timeoutMs?: number
+  ): Promise<{ code: number; stdout: Buffer; stderr: string }> {
     const bin = await this.docker()
     return new Promise((resolve) => {
       const child = spawn(bin, args, { windowsHide: true })
-      let stdout = ''
+      const chunks: Buffer[] = []
       let stderr = ''
       let timer: ReturnType<typeof setTimeout> | null = null
-      const done = (r: ExecResult): void => {
+      const done = (code: number, err?: string): void => {
         if (timer) clearTimeout(timer)
-        resolve(r)
+        resolve({ code, stdout: Buffer.concat(chunks), stderr: err ?? stderr })
       }
       if (timeoutMs) {
+        // 124 mirrors coreutils `timeout` so callers can tell it apart.
         timer = setTimeout(() => {
           child.kill()
-          // 124 mirrors coreutils `timeout` so callers can tell it apart.
-          done({ code: 124, stdout, stderr: stderr || 'timed out' })
+          done(124, stderr || 'timed out')
         }, timeoutMs)
       }
-      child.stdout.on('data', (d) => (stdout += d.toString()))
+      child.stdout.on('data', (d: Buffer) => chunks.push(d))
       child.stderr.on('data', (d) => (stderr += d.toString()))
-      child.on('close', (code) => done({ code: code ?? 0, stdout, stderr }))
-      child.on('error', () => done({ code: 1, stdout, stderr: stderr || 'spawn failed' }))
+      child.on('close', (code) => done(code ?? 0))
+      child.on('error', () => done(1, stderr || 'spawn failed'))
     })
   }
 
@@ -342,6 +357,39 @@ export class DockerService {
     return vols
   }
 
+  /**
+   * Where each of a project's mounted folders lands inside the container.
+   *
+   * Read by the run-arg builder *and* by the chat composer's attachment routing —
+   * a file under one of these becomes a container path, anything else becomes
+   * inline content — so the leaf naming lives in exactly one place. A chat chip
+   * shows the container path it produced, which is also what disarms the shadow
+   * volume trap: `<mount>/node_modules` and friends are overlaid by volumes, so a
+   * file dragged from `D:\proj\node_modules\…` resolves to the copy the
+   * *container* installed rather than the one you dragged, and showing the
+   * translated path means you can see what you actually got.
+   */
+  mountTargets(project: Project): Array<{ hostPath: string; target: string; shared?: true }> {
+    const out: Array<{ hostPath: string; target: string; shared?: true }> = []
+    const usedNames = new Set<string>()
+    // Shared output folder: always mounted (read-write) at /workspace/output so
+    // agents in every project drop artifacts to the same place. Reserve the
+    // "output" leaf first so a project folder literally named "output" gets a
+    // hash-suffixed target instead of colliding with this one.
+    if (this.sharedOutput) {
+      usedNames.add('output')
+      out.push({ hostPath: this.sharedOutput, target: '/workspace/output', shared: true })
+    }
+    for (const abs of project.mounts) {
+      const leafRaw = sanitize(basename(abs))
+      let leaf = leafRaw
+      if (usedNames.has(leaf)) leaf = `${leafRaw}-${shortHash(abs)}`
+      usedNames.add(leaf)
+      out.push({ hostPath: abs, target: `/workspace/${leaf}` })
+    }
+    return out
+  }
+
   // ---- run-args construction (ref 537-795, ported to /workspace) ----------
   private async buildRunArgs(project: Project): Promise<string[]> {
     const name = this.containerName(project)
@@ -394,25 +442,11 @@ export class DockerService {
     // a drive-letter colon, and docker's -v parser mis-splits it into a bogus
     // third "mode" segment ("invalid mode: /workspace/..."). --mount is
     // comma/key=value delimited, so the colon is unambiguous.
-    const usedNames = new Set<string>()
-
-    // Shared output folder: always mounted (read-write) at /workspace/output so
-    // agents in every project drop artifacts to the same place. Reserve the
-    // "output" leaf first so a project folder literally named "output" gets a
-    // hash-suffixed target instead of colliding with this one.
-    if (this.sharedOutput) {
-      usedNames.add('output')
-      args.push('--mount', `type=bind,source=${this.sharedOutput},target=/workspace/output`)
-    }
-
-    for (const abs of project.mounts) {
-      const leafRaw = sanitize(basename(abs))
-      let leaf = leafRaw
-      if (usedNames.has(leaf)) leaf = `${leafRaw}-${shortHash(abs)}`
-      usedNames.add(leaf)
-      const target = `/workspace/${leaf}`
-      args.push('--mount', `type=bind,source=${abs},target=${target}`)
-      args.push(...this.shadowMounts(abs, target, shadowPrefix(abs)))
+    for (const { hostPath, target, shared } of this.mountTargets(project)) {
+      args.push('--mount', `type=bind,source=${hostPath},target=${target}`)
+      // The shared output folder is one folder for every project; it gets no
+      // per-project shadow volumes.
+      if (!shared) args.push(...this.shadowMounts(hostPath, target, shadowPrefix(hostPath)))
     }
 
     // Clip dir for image-paste (host-managed bind mount).
@@ -707,8 +741,57 @@ export class DockerService {
   }
 
   /** Build the argv (minus the leading binary) for a session's exec/attach. */
-  async execArgs(project: Project, kind: 'agent' | 'shell', sessionId: string): Promise<string[]> {
+  async execArgs(
+    project: Project,
+    kind: 'agent' | 'chat' | 'shell',
+    sessionId: string,
+    /**
+     * Whether the conversation transcript already exists, when the caller has
+     * just read it and knows. A chat open costs three docker.exe launches under
+     * one gate slot (probe, transcript read, exec client); letting it re-probe
+     * here would quietly make it four.
+     */
+    conversationExists?: boolean
+  ): Promise<string[]> {
     const name = this.containerName(project)
+    if (kind === 'chat') {
+      const session = project.sessions.find((s) => s.id === sessionId)
+      // `-i`, never `-it`: there is no TTY anywhere in this path, which is the
+      // whole point of the chat type. Everything below rides one NDJSON stream in
+      // each direction (see main/chat.ts).
+      const args = ['exec', '-i', '-w', '/workspace', name, 'claude', '-p']
+      args.push('--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose')
+      // Load-bearing and undocumented — it is not in `claude --help`. A sentinel,
+      // not a real MCP server: without it a raw `-p` run **auto-denies every
+      // prompt**, *and* AskUserQuestion / EnterPlanMode / ExitPlanMode are not in
+      // the session's tool list at all (verified by diffing init.tools with and
+      // without it). Every turn needs it, including a slash-command turn.
+      args.push('--permission-prompt-tool', 'stdio')
+      // Token deltas, so prose paints as it is generated rather than landing in
+      // one block at the end. Chunky over docker exec (~16 events in 5s), but real.
+      args.push('--include-partial-messages')
+      // Required for the live sub-log to match the settled sibling file block for
+      // block. Without it the stream withholds a subagent's prose and thinking, so
+      // the sub-log would *grow paragraphs* at completion — a systematic twitch,
+      // which is not what the turn-end settle is meant to expose.
+      args.push('--forward-subagent-text')
+      args.push('--permission-mode', session?.mode ?? 'bypassPermissions')
+      // Vivarium owns the model: a chip reading "opus" at reopen while the process
+      // actually spawned on the CLI's configured default is a reading that lies
+      // about a live fact, in a header made entirely of readings.
+      if (session?.model) args.push('--model', session.model)
+      // Deliberately absent: --settings /vivarium/hooks.json and
+      // VIVARIUM_SESSION_ID. The hook bridge stays for pty agents only; a chat
+      // derives its own activity from this stream, and double-emitting would give
+      // the store two producers for one session.
+      const claudeId = session?.claudeSessionId
+      if (claudeId) {
+        const resume =
+          conversationExists ?? (await this.claudeConversationExists(name, claudeId))
+        args.push(resume ? '--resume' : '--session-id', claudeId)
+      }
+      return args
+    }
     if (kind === 'agent') {
       // VIVARIUM_SESSION_ID tags this exec's hook events with the owning
       // session; --settings loads the bridge hooks without touching the shared
@@ -763,6 +846,119 @@ export class DockerService {
       `ls /home/node/.claude/projects/*/${uuid}.jsonl 2>/dev/null`
     ])
     return res.code === 0 && res.stdout.trim() !== ''
+  }
+
+  // ---- chat transcripts ---------------------------------------------------
+  /**
+   * Read a conversation transcript out of the container, optionally resuming
+   * from a byte offset.
+   *
+   * The container-side .jsonl is the *model* of a chat conversation, not a log of
+   * it — reading Claude's own file is what makes cross-type resume free (a
+   * conversation started in an xterm agent opens in chat with its full history,
+   * and vice versa) and what stops the UI from ever showing something other than
+   * what `--resume` actually feeds the model. The accepted cost is that history
+   * is unreadable while the container is stopped, which lands on the same
+   * "Container stopped" placeholder that already explains it.
+   *
+   * Globbed across the projects dir for the same reason claudeConversationExists
+   * globs: hardcoding the escaped cwd (`/workspace` → `-workspace`) would break
+   * silently if Claude changed its path escaping. `tail -c +N` is 1-based.
+   */
+  async readTranscript(
+    project: Project,
+    uuid: string,
+    fromByte = 0
+  ): Promise<{ ok: boolean; text: string; bytes: number; message?: string }> {
+    const path = `/home/node/.claude/projects/*/${uuid}.jsonl`
+    const cmd =
+      fromByte > 0 ? `tail -c +${fromByte + 1} ${path} 2>/dev/null` : `cat ${path} 2>/dev/null`
+    // 60s: a 10 MB read over `docker exec` on a busy daemon, not a metadata probe.
+    const r = await this.execBuf(['exec', this.containerName(project), 'sh', '-c', cmd], 60_000)
+    // A conversation that has never been messaged has no file yet: `cat` exits
+    // non-zero with nothing on stdout, which is an empty history, not a failure.
+    if (r.code !== 0 && r.stdout.length === 0) {
+      const msg = r.stderr.trim().split('\n')[0]
+      if (r.code === 124) return { ok: false, text: '', bytes: 0, message: 'timed out' }
+      // exit 1 from the glob simply means "no such file".
+      if (r.code === 1 && !msg) return { ok: true, text: '', bytes: 0 }
+      if (msg) return { ok: false, text: '', bytes: 0, message: msg }
+    }
+    return { ok: true, text: r.stdout.toString('utf8'), bytes: r.stdout.length }
+  }
+
+  /**
+   * Read one subagent's sibling log. Subagent inner work is *not* written into
+   * the parent transcript — the parent file already is the collapsed view and
+   * this file already is the expansion — so this is only ever read on demand,
+   * keyed by the agentId the parent's own tool result reports.
+   */
+  async readSubagentLog(project: Project, uuid: string, agentId: string): Promise<string | null> {
+    const cmd = `cat /home/node/.claude/projects/*/${uuid}/subagents/agent-${agentId}.jsonl 2>/dev/null`
+    const r = await this.execBuf(['exec', this.containerName(project), 'sh', '-c', cmd], 30_000)
+    return r.stdout.length > 0 ? r.stdout.toString('utf8') : null
+  }
+
+  async volumeExists(name: string): Promise<boolean> {
+    const r = await this.exec(['volume', 'inspect', name])
+    return r.code === 0
+  }
+
+  /**
+   * Delete conversations by uuid, through a throwaway container.
+   *
+   * `docker exec` was rejected and this is the load-bearing choice: exec needs
+   * the project's container alive, but deleteProject force-removes it in the same
+   * handler, and a project sitting stopped — the normal state for one you are
+   * deleting because you are done with it — has nothing to exec into. The
+   * transcript was never really *in* the container; it is on a named volume any
+   * container can mount, so running, stopped and already-destroyed collapse into
+   * one path with no branch and no ordering constraint.
+   *
+   * `-v` rather than `--mount` is legitimate here: that invariant is about a
+   * Windows source path's drive-letter colon breaking docker's -v parser, and a
+   * named volume has no drive letter. SLIM_IMAGE is guaranteed present wherever a
+   * transcript can exist, because FULL_IMAGE is built on top of it.
+   *
+   * **This is `rm -rf` with interpolated variables, and the safety argument has
+   * to sit right here rather than be inferred:** every uuid comes from
+   * `randomUUID()` — hex and hyphens, never user input — and the glob names one
+   * conversation, so other projects' and claude-box's transcripts are
+   * untouchable by construction. A transcript is a *directory*, not a file: the
+   * `<uuid>/` half holds `subagents/*.jsonl`, which is where most of the bytes
+   * and most of the conversation actually are. The blast radius of getting the
+   * interpolation wrong is no longer one file.
+   */
+  async deleteTranscripts(uuids: string[]): Promise<boolean> {
+    const safe = uuids.filter((u) => /^[0-9a-fA-F-]{36}$/.test(u))
+    if (safe.length === 0) return true
+    if (!(await this.detect())) return false
+    // Or `docker run -v` would *create* claude-box-creds on a machine that has
+    // never run a container — housekeeping manufacturing the very thing the
+    // housekeeping dialog reports.
+    if (!(await this.volumeExists(CREDS_VOLUME))) return false
+    const paths = safe
+      .flatMap((u) => [
+        `/home/node/.claude/projects/*/${u}.jsonl`,
+        `/home/node/.claude/projects/*/${u}/`
+      ])
+      .join(' ')
+    const r = await this.exec(
+      [
+        'run',
+        '--rm',
+        '-v',
+        `${CREDS_VOLUME}:/home/node/.claude`,
+        SLIM_IMAGE,
+        'sh',
+        '-c',
+        `rm -rf ${paths}`
+      ],
+      60_000
+    )
+    // rm -rf exits 0 on a missing path, so a debt whose files are already gone
+    // self-clears; anything else leaves the debt intact for the next drain.
+    return r.code === 0
   }
 
   async binaryName(): Promise<string | null> {
