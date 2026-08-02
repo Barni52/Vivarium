@@ -9,6 +9,7 @@ import type {
   ChatEntry,
   ChatEvent,
   ChatMode,
+  ChatModelOption,
   ChatOpenResult,
   ChatState,
   ChatTodo,
@@ -20,8 +21,11 @@ import {
   ATTACH_CLOSE,
   ATTACH_OPEN,
   ChatMapper,
+  completeLines,
   parseNdjson,
   parseQuestions,
+  takeTurn,
+  textBlockId,
   truncateBody
 } from './chatMapper'
 
@@ -50,6 +54,17 @@ function arr(v: unknown): unknown[] {
 }
 
 /**
+ * Total assistant prose in a set of rows. Tool cards and clocks are excluded on
+ * purpose: they are reproduced identically by both sources, so only the prose
+ * can tell a transcript that is one line behind from one that is complete.
+ */
+function prose(entries: ChatEntry[]): number {
+  let n = 0
+  for (const e of entries) if (e.kind === 'text' && e.role === 'claude') n += e.md.length
+  return n
+}
+
+/**
  * A turn is failed when the stream has produced no frame **of any kind** for
  * this long after the user's message.
  *
@@ -67,6 +82,58 @@ const SILENCE_MS = 60_000
 /** How many entries the renderer mounts; the rest come from `chat:earlier`. */
 const MOUNT_WINDOW = 300
 
+/**
+ * How long after a turn's `result` to re-read the transcript, when the first
+ * settle came back with less prose than the stream had already painted.
+ *
+ * `result` arrives over a pipe and the transcript is a file the CLI is writing
+ * on its own schedule, so the two are not ordered against each other: the last
+ * assistant line is occasionally still in flight when the settle reads. Since a
+ * settle *replaces* the turn, losing that race deleted the final paragraph of
+ * the answer from a log that had just finished painting it. One delayed re-read,
+ * fired only on evidence that something is missing, costs a `docker exec` in the
+ * rare case and nothing at all in the common one.
+ */
+const RESETTLE_MS = 700
+
+/**
+ * What the picker offers when `list_models` answers with nothing — an old CLI,
+ * a control request it does not implement, or a timed-out round trip.
+ *
+ * These are the aliases Claude Code has accepted for `--model` throughout, and
+ * they resolve on the CLI's side, so a stale entry here can only mis-suggest,
+ * never mis-execute — the same argument that lets `Project.slashCommands` be
+ * cached. An empty menu, by contrast, leaves the chip unusable with no way to
+ * tell whether the account has no models or the request simply failed.
+ */
+const FALLBACK_MODELS: ChatModelOption[] = [
+  { value: 'default', label: 'Default', detail: 'whatever the CLI is configured for' },
+  { value: 'opus', label: 'Opus', detail: 'the latest Opus' },
+  { value: 'sonnet', label: 'Sonnet', detail: 'the latest Sonnet' },
+  { value: 'haiku', label: 'Haiku', detail: 'the latest Haiku' }
+]
+
+/**
+ * The assistant message being streamed right now.
+ *
+ * `stream_event` numbers content blocks across the whole message while the
+ * transcript writes one block per line (index always 0), so the delta's index
+ * cannot be used as an id — it is translated here into the per-type ordinal
+ * `ChatMapper` counts, via `textBlockId`. Only text blocks are painted, so only
+ * text blocks claim an ordinal, and they claim it in arrival order, which is the
+ * order the mapper will see them in too.
+ */
+interface Streaming {
+  msgId: string
+  at: number
+  /** content-block index → the row id it was given */
+  ids: Map<number, string>
+  /** text accumulated per content-block index */
+  text: Map<number, string>
+  /** how many text blocks this message has opened */
+  texts: number
+}
+
 interface Live {
   session: Session
   project: Project
@@ -82,6 +149,13 @@ interface Live {
   subagents: Map<string, ChatEntry[]>
   /** byte offset into the transcript that has already been mapped */
   offset: number
+  /**
+   * Where the running turn's lines begin. A settle re-maps the turn from here
+   * rather than from wherever the last read stopped, which is what makes
+   * settling the same turn twice idempotent — the second pass replaces the same
+   * rows with the same ids instead of appending a second copy of them.
+   */
+  turnOffset: number
   /**
    * Whether the conversation already has a transcript, when the read could tell.
    * `undefined` after a *failed* read — then execArgs must fall back to its own
@@ -104,7 +178,7 @@ interface Live {
   commands: string[]
   context: ChatContextUsage | null
   /** the assistant message currently streaming, for partial-text painting */
-  streaming: Map<string, ChatEntry>
+  streaming: Streaming | null
   turnRunning: boolean
   /** set by an interrupt so the turn's `idle` raises no attention flag */
   interrupted: boolean
@@ -120,7 +194,7 @@ export class ChatService {
    * global fact — and persisting it would be a third dent in a rule this feature
    * already dents twice. A stale entry can only mis-suggest.
    */
-  private models: string[] | null = null
+  private models: ChatModelOption[] | null = null
   /**
    * The `input` object each outstanding can_use_tool arrived with, so the answer
    * can rebuild `updatedInput` from the original rather than from what the
@@ -179,6 +253,7 @@ export class ChatService {
       todos: new Map(),
       subagents: new Map(),
       offset: 0,
+      turnOffset: 0,
       transcriptExists: undefined,
       turn: 0,
       mapper: null,
@@ -190,7 +265,7 @@ export class ChatService {
       model: session.model ?? null,
       commands: project.slashCommands ?? [],
       context: null,
-      streaming: new Map(),
+      streaming: null,
       turnRunning: false,
       interrupted: false,
       closing: false
@@ -272,10 +347,14 @@ export class ChatService {
     }
     const r = await this.docker.readTranscript(l.project, uuid, 0)
     if (!r.ok) return r.message || 'could not read the conversation'
-    l.offset = r.bytes
+    // Whole lines only — a read that lands mid-line must leave that line to the
+    // next read rather than consume half of it (see completeLines).
+    const { complete, bytes } = completeLines(r.text)
+    l.offset = bytes
+    l.turnOffset = bytes
     l.transcriptExists = r.bytes > 0
     const mapper = new ChatMapper(0)
-    const { lines } = parseNdjson(r.text)
+    const { lines } = parseNdjson(complete)
     const now = Date.now()
     for (const line of lines) mapper.feed(line, now)
     mapper.markCancelled(0)
@@ -291,26 +370,42 @@ export class ChatService {
   }
 
   /**
-   * Turn-end settle: re-read the bytes appended since the stored offset, map
-   * them, and replace this turn's rows with the transcript-derived ones.
+   * Turn-end settle: re-read the bytes this turn appended, map them, and replace
+   * this turn's rows with the transcript-derived ones.
    *
    * This is what makes anything more than a few seconds old always
    * transcript-derived — the same bytes a restart would render. It is
-   * incremental rather than a re-read, which also picks up lines written by
-   * *another* client on the same conversation for free.
+   * incremental rather than a whole-file re-read, which also picks up lines
+   * written by *another* client on the same conversation for free.
+   *
+   * It reads from the turn's own start offset rather than from wherever the last
+   * read stopped, so running it twice on one turn replaces the same rows instead
+   * of appending a second copy — which is what lets a late flush be recovered by
+   * simply doing it again.
    */
-  private async settleTurn(l: Live, turn: number): Promise<void> {
+  private async settleTurn(l: Live, turn: number, from: number, retry = true): Promise<void> {
     const uuid = l.session.claudeSessionId
     if (!uuid) return
-    const r = await this.docker.readTranscript(l.project, uuid, l.offset)
+    const r = await this.docker.readTranscript(l.project, uuid, from)
     if (!r.ok || !r.text.trim()) return
-    l.offset += r.bytes
+    const { complete } = completeLines(r.text)
+    if (!complete) return
+    // One turn per settle: a queued follow-up is already in the file by the time
+    // this read lands, and mapping it here would stamp it with the turn above it.
+    const { lines, bytes } = takeTurn(complete)
+    this.accounted(l, from + bytes)
     const mapper = new ChatMapper(turn)
-    const { lines } = parseNdjson(r.text)
     const now = Date.now()
     for (const line of lines) mapper.feed(line, now)
     mapper.markCancelled(0)
     if (mapper.entries.length === 0) return
+
+    // How much prose the stream painted, against how much the transcript holds.
+    // A settle is a *replacement*, so a file still one line behind deletes the
+    // paragraph the user just watched arrive; comparing the two is the evidence
+    // that says "read again in a moment" instead of guessing at a delay.
+    const painted = prose(l.entries.filter((e) => e.turn === turn))
+    const landed = prose(mapper.entries)
 
     // Fold the mapped todos into the running fold rather than replacing it: the
     // fold spans the whole conversation and the mount window is only the tail, so
@@ -332,6 +427,18 @@ export class ChatService {
       entries: this.wireEntries(settled)
     })
     this.emit({ kind: 'todo', sessionId: l.session.id, todos: [...l.todos.values()] })
+
+    // Once, and only on evidence. A turn that genuinely ended there would re-read
+    // forever on a standing rule, and the second pass reads from the same `from`
+    // so it replaces these rows rather than appending beside them.
+    if (retry && landed < painted) {
+      setTimeout(() => {
+        // Not if a follow-up has since started: the missing line is only worth
+        // chasing while this is still the turn at the bottom of the log.
+        if (this.live.get(l.session.id) !== l || l.turn !== turn) return
+        void this.settleTurn(l, turn, from, false)
+      }, RESETTLE_MS)
+    }
   }
 
   // ---- process ------------------------------------------------------------
@@ -566,39 +673,35 @@ export class ChatService {
     const kind = str(ev.type)
     if (kind === 'message_start') {
       const msg = obj(ev.message)
-      l.streaming.set('current', {
-        id: str(msg?.id) || 'stream',
-        role: 'claude',
+      l.streaming = {
+        msgId: str(msg?.id) || 'stream',
         at: Date.now(),
-        turn: l.turn,
-        kind: 'text',
-        md: ''
-      })
+        ids: new Map(),
+        text: new Map(),
+        texts: 0
+      }
       return
     }
     if (kind !== 'content_block_delta') return
     const delta = obj(ev.delta)
     if (str(delta?.type) !== 'text_delta') return
-    const base = l.streaming.get('current')
-    if (!base) return
+    const s = l.streaming
+    if (!s) return
     const index = num(ev.index) ?? 0
-    // Exactly what ChatMapper.blockId will compute for this block, so the
-    // finished `assistant` frame upserts into this row rather than duplicating it.
-    const key = `${base.id}#${index}#text`
-    const prev = l.streaming.get(key)
-    const so_far = prev && prev.kind === 'text' ? prev.md : ''
-    const entry: ChatEntry = {
-      id: key,
-      role: 'claude',
-      at: base.at,
-      turn: l.turn,
-      kind: 'text',
-      md: so_far + str(delta?.text)
+    let id = s.ids.get(index)
+    if (id === undefined) {
+      // The delta's index counts blocks across the whole message; the mapper
+      // counts them per type, because the transcript writes one block per line
+      // and always calls it index 0. Translating here is what keeps a partial row
+      // and its settled row the same row (see ChatMapper.blockId).
+      id = textBlockId(s.msgId, s.texts++)
+      s.ids.set(index, id)
     }
-    l.streaming.set(key, entry)
-    // Provisional: the `assistant` frame that follows carries the same message id
-    // and block index, so it upserts over this one rather than duplicating it.
-    this.upsert(l, [entry])
+    const md = (s.text.get(index) ?? '') + str(delta?.text)
+    s.text.set(index, md)
+    // Provisional: the `assistant` frame that follows computes this same id, so
+    // it upserts over this row rather than duplicating it.
+    this.upsert(l, [{ id, role: 'claude', at: s.at, turn: l.turn, kind: 'text', md }])
   }
 
   private taskEvent(l: Live, f: Json): void {
@@ -610,7 +713,10 @@ export class ChatService {
       entry.running = false
       entry.status = str(f.status) || 'completed'
       entry.durationMs = num(f.duration_ms) ?? entry.durationMs
-      this.upsert(l, [entry], false)
+      // Emitted, not silently folded into main's copy: the renderer holds its own
+      // rows, so a task row that is not shipped stays spinning on screen until the
+      // turn's settle lands — which for a long turn is minutes later.
+      this.upsert(l, [entry])
     }
   }
 
@@ -623,8 +729,9 @@ export class ChatService {
     // deny-then-interrupt reports is_error: true — so terminal_reason is the only
     // test, and it is the only one used anywhere in this file.
     const aborted = reason === 'aborted_streaming' || reason === 'aborted_tools'
+    const from = l.turnOffset
     l.turnRunning = false
-    l.streaming.clear()
+    l.streaming = null
 
     if (aborted) {
       this.appendEntries(l, [
@@ -660,8 +767,40 @@ export class ChatService {
     // approximate rather than absent.
     void this.refreshContext(l, obj(f.usage))
 
-    if (!aborted) void this.settleTurn(l, turn)
+    if (!aborted) void this.settleTurn(l, turn, from)
+    // An aborted turn keeps its streamed rows — there is nothing better to
+    // replace them with — but its lines still went into the file, so the offset
+    // has to step over them or the *next* turn's settle would map them again and
+    // stamp them with the next turn's number, duplicating the whole cut turn.
+    else void this.skipTurn(l, from)
     l.malformed = 0
+  }
+
+  /**
+   * Advance past a turn's transcript lines without rendering them. Used where a
+   * settle would be wrong (an interrupt) but the bytes still have to be accounted
+   * for, since every later read is relative to this offset.
+   */
+  private async skipTurn(l: Live, from: number): Promise<void> {
+    const uuid = l.session.claudeSessionId
+    if (!uuid) return
+    const r = await this.docker.readTranscript(l.project, uuid, from)
+    if (!r.ok) return
+    this.accounted(l, from + takeTurn(completeLines(r.text).complete).bytes)
+  }
+
+  /**
+   * Record that the transcript is mapped up to `to`.
+   *
+   * `turnOffset` moves with it rather than only at `send`, because both reads
+   * above are a `docker exec` round trip: a user who types the next message
+   * during it would otherwise have snapshotted the *previous* turn's start, and
+   * that turn's lines would be mapped a second time under the new turn's number.
+   * The re-settle is unaffected — it holds its own `from` in a local.
+   */
+  private accounted(l: Live, to: number): void {
+    l.offset = Math.max(l.offset, to)
+    l.turnOffset = Math.max(l.turnOffset, l.offset)
   }
 
   private reset(l: Live, next: string): void {
@@ -674,6 +813,8 @@ export class ChatService {
     l.todos.clear()
     l.subagents.clear()
     l.offset = 0
+    l.turnOffset = 0
+    l.streaming = null
     l.mapper = null
     this.emit({ kind: 'reset', sessionId: l.session.id, claudeSessionId: id })
     this.emit({ kind: 'todo', sessionId: l.session.id, todos: [] })
@@ -799,6 +940,10 @@ export class ChatService {
     l.mapper = null
     l.turnRunning = true
     l.interrupted = false
+    l.streaming = null
+    // Everything the CLI writes from here belongs to this turn, and the settle
+    // re-reads from exactly here.
+    l.turnOffset = l.offset
 
     if (inline.length > 0) {
       const blocks = inline.map((a) => inlineBlock(a))
@@ -951,24 +1096,41 @@ export class ChatService {
 
   /**
    * The picker's list, lazily. No round trip until the menu is actually used.
+   *
+   * Observed on 2.1.211: `{models: [{value, resolvedModel, displayName, …}]}`.
+   * `value` is the alias the CLI accepts back (`default` / `sonnet` / `opus` /
+   * `haiku` / a pinned id) — `resolvedModel` is what it resolves *to* and would
+   * not round-trip, so it stays a subtitle. Showing `value` as the label is what
+   * made the menu read as a list of four generic aliases with no sign of which
+   * generation they point at.
    */
-  async listModels(sessionId: string): Promise<string[]> {
+  async listModels(sessionId: string): Promise<ChatModelOption[]> {
     if (this.models) return this.models
     const l = this.live.get(sessionId) ?? [...this.live.values()][0]
-    if (!l) return []
+    if (!l) return FALLBACK_MODELS
     const r = await this.request(l, { subtype: 'list_models' })
-    // Observed on 2.1.211: `{models: [{value, resolvedModel, displayName, …}]}`.
-    // `value` is the alias the CLI accepts back (`default` / `sonnet` / `opus` /
-    // `haiku` / a pinned id) — `resolvedModel` is what it resolves *to* and would
-    // not round-trip.
-    const names = arr(r.response?.models)
-      .map((m) => {
-        const o = obj(m)
-        return o ? str(o.value) || str(o.model) || str(o.id) : str(m)
+    const options: ChatModelOption[] = []
+    for (const m of arr(r.response?.models)) {
+      const o = obj(m)
+      if (!o) {
+        const v = str(m)
+        if (v) options.push({ value: v, label: v })
+        continue
+      }
+      const value = str(o.value) || str(o.model) || str(o.id)
+      if (!value) continue
+      const label = str(o.displayName) || str(o.display_name) || str(o.name) || value
+      const resolved = str(o.resolvedModel) || str(o.resolved_model)
+      options.push({
+        value,
+        label,
+        detail: resolved && resolved !== label ? resolved : value !== label ? value : undefined
       })
-      .filter(Boolean)
-    if (names.length) this.models = names
-    return names
+    }
+    // Cached only when the CLI actually answered. The fallback is a guess and
+    // must never become the app's idea of what exists — the next open asks again.
+    if (options.length) this.models = options
+    return options.length ? options : FALLBACK_MODELS
   }
 
   /**
@@ -1053,19 +1215,17 @@ export class ChatService {
     })
   }
 
-  private upsert(l: Live, entries: ChatEntry[], emit = true): void {
+  private upsert(l: Live, entries: ChatEntry[]): void {
     for (const e of entries) {
       const i = l.entries.findIndex((x) => x.id === e.id)
       if (i >= 0) l.entries[i] = e
       else l.entries.push(e)
     }
-    if (emit) {
-      this.emit({
-        kind: 'entries-appended',
-        sessionId: l.session.id,
-        entries: this.wireEntries(entries)
-      })
-    }
+    this.emit({
+      kind: 'entries-appended',
+      sessionId: l.session.id,
+      entries: this.wireEntries(entries)
+    })
   }
 
   /**

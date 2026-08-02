@@ -40,6 +40,11 @@ export const GLOBAL_CSS = `
   @keyframes vover{from{opacity:0}to{opacity:1}}
   @keyframes vdlg{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
   @keyframes vpop{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
+  /* The chat log runs on its own near-black palette (CHAT in this file), and the
+     app-wide thumb above is mixed for --bg. Scoped to the one scroller rather
+     than themed globally: every other scrollbar in the app still sits on slate. */
+  .vchat-scroll::-webkit-scrollbar-thumb{background:#232A32;border:3px solid #0B0D10;background-clip:padding-box}
+  .vchat-scroll::-webkit-scrollbar-thumb:hover{background:#333C46}
 `
 
 /**
@@ -77,30 +82,73 @@ export const ACCENT: Record<string, string> = {
 }
 
 /**
- * The chat window's chrome tints, in one place so the collisions can be reasoned
- * about once. All muted — three saturated hues next to this slate palette read
- * as neon, which is the lesson ACCENT above already learnt.
+ * The chat window's own palette and metrics — every value in it read off
+ * `docs/redisign/Chat Terminal.html`, which is the design this window is built
+ * to. It is deliberately **not** the app's slate palette: the chat is a reading
+ * surface sitting inside a tool chrome, and it is darker and cooler than
+ * everything around it on purpose, the way the terminal pane already is.
  *
- * Deliberately *not* used: the container teal `#59a8a4` and the green of the
- * "container running" indicator. A mode chip must never share a colour with a
- * container state — that is the exact bug the session accents were re-picked for.
+ * One object rather than CSS custom properties, because these must not leak: the
+ * sidebar, the title bar and the terminals keep `--bg`/`--panel`/`--text`, and a
+ * chat colour reaching them would be a regression nobody notices until it ships.
+ *
+ * The two role hues are the whole point of the redesign and the answer to "the
+ * distinction between user turn, tool call and ai response is very hard to tell
+ * apart": warm coral for what *you* said, cool cyan for what Claude said, and
+ * neither for the machinery, which lives in bordered mono cards instead.
+ *
+ * `live` is a green and that is allowed here where a mode chip's green would not
+ * be: it marks the CLI process being up, which is the *same* fact the app's
+ * running-indicator green already means. The ban is on a colour meaning two
+ * different things, not on it meaning one thing twice.
  */
-export const CHIP = {
-  /** plan: a deliberate, temporary mode — amber is the "hold on" register */
-  plan: '#c2a15e',
-  /** bypass: the ordinary state, so it wears the session's own hue */
-  bypass: ACCENT.chat,
-  /** muted indigo: near the agent violet without being it */
-  model: '#8fa0cc',
-  /** context fill, escalating — steel while there is room, then amber, then red */
-  ctx: ['#6f93a8', '#c2a15e', '#c97b7b']
+export const CHAT = {
+  /** page, header, and the two panel fills */
+  bg: '#0B0D10',
+  header: '#0D1014',
+  card: '#0F1418',
+  composer: '#101419',
+  /** hairlines, coarsest to finest */
+  border: '#222A33',
+  borderSoft: '#1B2027',
+  borderCard: '#1E252D',
+  borderComposer: '#212831',
+  /** the band behind a `you` row — a lift, not a tint, so it works at any hue */
+  band: 'rgba(255,255,255,.03)',
+  /** type, brightest to dimmest */
+  text: '#E4E7EB',
+  prose: '#C3CBD4',
+  dim: '#8A93A0',
+  dim2: '#5C6470',
+  dim3: '#4E5661',
+  dim4: '#3F4753',
+  /** you: coral. Also the list bullet and the context bar's fill. */
+  you: '#E9825B',
+  /** claude: cool cyan, and the colour of a link */
+  claude: '#7FC3D6',
+  /** the permission mode chip */
+  mode: '#6E9FD4',
+  /** the model chip's label */
+  model: '#8FD0E0',
+  /** the process is up */
+  live: '#6FBF8B',
+  /** plan / question — the "hold on" register, kept from the old CHIP */
+  hold: '#C2A15E',
+  danger: '#E06C6C',
+  /** context fill, escalating — accent while there is room, then amber, then red */
+  ctx: ['#E9825B', '#C2A15E', '#C97B7B']
 }
+
+/** The reading column. Everything in the log is centred in it, header to composer. */
+export const CHAT_MEASURE = 880
+/** Timestamp + role word. One number, so a row and a divider cannot drift apart. */
+export const CHAT_GUTTER = 96
 
 /** Which context tint a percentage earns. Colour appears when it means something. */
 export function ctxColor(pct: number): string {
   // Percentages, never token counts: maxTokens came back as 1 000 000 on one
   // model, so a threshold expressed in tokens would never fire there.
-  return pct >= 85 ? CHIP.ctx[2] : pct >= 60 ? CHIP.ctx[1] : CHIP.ctx[0]
+  return pct >= 85 ? CHAT.ctx[2] : pct >= 60 ? CHAT.ctx[1] : CHAT.ctx[0]
 }
 
 export interface SessionTypeMeta {

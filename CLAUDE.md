@@ -38,10 +38,18 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
   `SESSION_TYPES` — the one place session-type wording, hue and popover geometry are defined; the
   picker, sidebar, terminal header and empty state all read from it, and `TypeIcon` gives each type
   its own silhouette so they never depend on color alone (four of them now: the star, the speech
-  bubble, the window frame, the cube). `theme.ts` also owns `CHIP`, the chat chrome's tints — none
-  of which may be the container teal or the running-indicator green, since a mode chip must never
-  share a colour with a container state. `components/chat/` is the chat window: `ChatView` (chrome,
-  the three-band pinned region, the composer that is only a box), `ChatLog` (the gutter rows),
+  bubble, the window frame, the cube). `theme.ts` also owns `CHAT` — **the chat window's own
+  palette and metrics, deliberately not the app's slate one.** The chat is built to
+  `docs/redisign/Chat Terminal.html` and runs near-black and cooler than everything around it, the
+  way the terminal pane already does; it is a plain object rather than CSS custom properties
+  precisely so it cannot leak into the sidebar, the title bar or the terminals. Its two role hues
+  (`you` coral, `claude` cyan) are load-bearing — telling a user turn, an assistant turn and a tool
+  call apart is what the redesign is *for*, and the one grey mono line each that preceded it is
+  what made the log unreadable. `CHAT.live` is a green and that is allowed where a mode chip's
+  green would not be: it marks the CLI process being up, which is the same fact the app's
+  running-indicator green already means. The ban is on a colour meaning two things, not on it
+  meaning one thing twice. `components/chat/` is the chat window: `ChatView` (chrome, the reading
+  column, the pinned bands, the composer), `ChatLog` (the two-column message grid),
   `Markdown`, `attach` (routing an attachment by reachability). `Elapsed.tsx` is the only thing in the UI
   that ticks: it re-renders three characters of duration instead of its host row, on an interval
   that follows the granularity on screen (1s while showing seconds, 15s once only minutes can
@@ -244,17 +252,45 @@ in the renderer: the same guarantee bought back at a higher price.
   visible twitch at turn end during development rather than as a bug report weeks later. Accepted
   cost: **no history while the container is stopped**, which lands on the `StoppedPlaceholder` that
   already explains why.
+  **Three rules make that replacement safe, and all three exist because it deletes what it
+  replaces.** (1) *Whole lines only* — a read of a file the CLI is still appending to lands mid-line
+  routinely, and advancing the offset past the fragment loses that whole message forever, so
+  `completeLines` consumes up to the last newline and lets the boundary re-read itself. (2) *One
+  turn per settle* — `takeTurn` stops at Claude Code's own `system/turn_duration` line, because a
+  queued follow-up is already in the file by the time `result` sends us off to read, and mapping it
+  under the turn above it shows that message twice. The boundary is that marker rather than a guess
+  at what a user line looks like: an interrupt marker, a command echo and its
+  `<local-command-stdout>` reply are all plain user text lines *inside* a turn. (3) *A settle reads
+  from the turn's own start offset*, which makes settling twice idempotent — that is what lets a
+  late flush be recovered by simply doing it again, once, on the evidence that the settled turn
+  holds less prose than the stream already painted. An **aborted** turn is not settled but its
+  bytes are still stepped over (`skipTurn`), or the next turn would map them again.
 - **`isSidechain` is never filtered on in the chat mapper.** A transcript written by `claude -p`
   marks **every** line `isSidechain: true`, main conversation included — the exact inverse of a
   TUI-written transcript, where every line is `false` (verified on 2.1.211). Dropping those lines
   blanks the entire log for exactly the sessions this feature creates. It is unnecessary anyway:
   subagent work is not written into the parent file at all, it lives in a sibling `subagents/`
   directory read on demand.
-- **Chat entry ids carry the block *type*.** Claude Code writes one transcript line per content
-  block but gives every line of one API message the same `message.id`, so a message whose text and
-  tool call are two lines yields two blocks both at index 0 — without the type in the key the tool
-  card silently overwrites the paragraph above it. Ids must stay stable across the stream→transcript
-  settle, since the renderer upserts by id.
+- **Chat entry ids are `<message id>#<block type>#<ordinal among blocks of that type>` — never the
+  content-array index.** Claude Code writes one transcript line per content block but gives every
+  line of one API message the same `message.id`, so a message whose text and tool call are two
+  lines yields two blocks both at index 0: without the *type* in the key the tool card silently
+  overwrites the paragraph above it. The *ordinal* is there because the index means three different
+  things depending on where a block arrives — a transcript line and a per-block `assistant` frame
+  each carry a one-element content array (index always 0), while `stream_event` deltas number
+  blocks across the whole message. A `[thinking, text]` message therefore painted `msg#1#text` from
+  deltas while its settled row was `msg#0#text`, and the paragraph rendered twice until turn end.
+  Counting per type is the one derivation all three sources agree on, since blocks arrive in order
+  everywhere. `chatMapper.textBlockId` is the single spelling of that rule, exported so `chat.ts`
+  can compute a partial row's id without a second copy of it. Ids must stay stable across the
+  stream→transcript settle, since the renderer upserts by id.
+- **A slash command's own output is not something the user typed.** Claude Code records a local
+  command as `<command-name>`/`<command-message>`/`<command-args>` and its result as a separate
+  `<local-command-stdout>` — both on ordinary **user** lines, sometimes on the same one. The mapper
+  recognises them there, not only in the `system/local_command` branch, or the raw tags render
+  inside the tinted `you` bubble as though you had typed the markup. The three command tags are
+  read separately because they are *not* adjacent: a pattern that required args to follow the name
+  dropped every argument silently.
 - **Delete means delete, for chat conversations.** Deleting a chat session deletes its conversation,
   and deleting a project cascades to every chat session it holds — otherwise the larger, more
   destructive gesture would be the leakier one. Both take the whole chain (`claudeSessionId` plus

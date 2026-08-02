@@ -13,6 +13,7 @@ import type {
   ChatEntry,
   ChatEvent,
   ChatMode,
+  ChatModelOption,
   ChatOpenResult,
   ClaudeStatus,
   ClaudeUpdateResult,
@@ -761,7 +762,7 @@ export function registerIpc(win: BrowserWindow): void {
     })
   })
 
-  ipcMain.handle(CH.chatModels, (_e, sessionId: string): Promise<string[]> =>
+  ipcMain.handle(CH.chatModels, (_e, sessionId: string): Promise<ChatModelOption[]> =>
     chat.listModels(sessionId)
   )
 

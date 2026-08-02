@@ -358,7 +358,8 @@ interface AppState {
   handleChatEvent: (e: ChatEvent) => void
   openChat: (projectId: string, sessionId: string, retry?: boolean) => Promise<void>
   closeChat: (sessionId: string) => void
-  sendChat: (sessionId: string, text: string, attachments: ChatAttachment[]) => Promise<void>
+  /** false when the process is gone — the composer puts the draft back rather than eating it */
+  sendChat: (sessionId: string, text: string, attachments: ChatAttachment[]) => Promise<boolean>
   interruptChat: (sessionId: string) => Promise<void>
   answerChat: (sessionId: string, requestId: string, answer: ChatAnswer) => Promise<void>
   setChatMode: (sessionId: string, mode: ChatMode) => Promise<void>
@@ -1016,7 +1017,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   sendChat: async (sessionId, text, attachments) => {
-    await window.vivarium.chatSend(sessionId, text, attachments)
+    return window.vivarium.chatSend(sessionId, text, attachments)
   },
 
   interruptChat: async (sessionId) => {
