@@ -7,3 +7,6 @@ dist/
 # Local agent-skill config (mattpocock-skills). Machine-local setup, not project
 # source — and the repo is public, so it stays out of it.
 docs/agents/
+
+# Playwright MCP scratch output (screenshots, console logs) from driving the app.
+.playwright-mcp/

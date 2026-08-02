@@ -8,10 +8,24 @@ import type { ChatService } from './chat'
 // Optional smoke-test hook: when VIVARIUM_CDP_PORT is set, expose the Chrome
 // DevTools Protocol on that port and keep the window hidden so an automated
 // check can confirm the renderer loaded without a visible window popping up.
+// VIVARIUM_CDP_SHOW opts back into a visible window, which `npm run dev:cdp`
+// sets: a hidden window is never composited, so a screenshot has no frame to
+// hand back, and an agent driving the app blind is also an agent nobody can
+// watch.
 const cdpPort = process.env['VIVARIUM_CDP_PORT']
+const cdpShow = Boolean(process.env['VIVARIUM_CDP_SHOW'])
 if (cdpPort) {
   app.commandLine.appendSwitch('remote-debugging-port', cdpPort)
   app.commandLine.appendSwitch('remote-allow-origins', '*')
+  // Windows tells Chromium when a window is fully covered by another one, and
+  // Chromium then stops compositing it entirely: no frames, so
+  // Page.captureScreenshot hangs until it times out, requestAnimationFrame never
+  // fires, and a CSS entry animation freezes at its first keyframe — which is
+  // opacity 0 for every dialog in this app (`vover`/`vdlg` in ui.tsx). An agent
+  // driving the app would open a dialog and be told, correctly, that nothing is
+  // on screen. Only ever set under CDP: the throttle is worth having when the
+  // window is genuinely out of sight and nobody is driving it.
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -35,7 +49,13 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Only while being driven over CDP: an occluded window has its
+      // timers and animation frames throttled, so a click lands and the UI
+      // re-renders a second later — which reads to the driver as "the click did
+      // nothing". Left on for normal runs, where the cost of a background
+      // window ticking is real and the benefit is not.
+      ...(cdpPort ? { backgroundThrottling: false } : {})
     }
   })
 
@@ -55,7 +75,7 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    if (!cdpPort) mainWindow?.show()
+    if (!cdpPort || cdpShow) mainWindow?.show()
   })
 
   // electron-vite exposes the dev server URL in dev, the built file in prod.

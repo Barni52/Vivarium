@@ -234,6 +234,16 @@ interface AppState {
   sidebarWidth: number
   sidebarCollapsed: boolean
   terminalFontSize: number
+  /**
+   * The chat window's zoom factor, shared by every chat session the way
+   * `terminalFontSize` is shared by every terminal — you zoom because of the
+   * monitor you are sitting at, not because of the conversation.
+   *
+   * A factor rather than a font size: the chat is a whole layout (a gutter, a
+   * measure, cards, a composer) and scaling only the type would leave the
+   * gutter and the reading column behind at their 13px-era proportions.
+   */
+  chatZoom: number
   /** session ids that currently have a live pty */
   live: Record<string, boolean>
   activity: Record<string, AgentActivity>
@@ -343,6 +353,9 @@ interface AppState {
   toggleSidebar: () => void
   zoomTerminal: (delta: number) => void
   resetTerminalZoom: () => void
+  /** The chat window's own zoom — one step per call, the terminal's convention. */
+  zoomChat: (delta: number) => void
+  resetChatZoom: () => void
   setLive: (sessionId: string, live: boolean) => void
   /** `at` (from a hook event) keeps the turn clock on main's timestamp */
   setActivity: (sessionId: string, a: AgentActivity, at?: number) => void
@@ -490,6 +503,7 @@ export const useStore = create<AppState>((set, get) => ({
   sidebarWidth: 292,
   sidebarCollapsed: false,
   terminalFontSize: 13,
+  chatZoom: 1,
   live: {},
   activity: {},
   agentSince: {},
@@ -757,6 +771,13 @@ export const useStore = create<AppState>((set, get) => ({
   zoomTerminal: (delta) =>
     set((s) => ({ terminalFontSize: Math.max(8, Math.min(32, s.terminalFontSize + delta)) })),
   resetTerminalZoom: () => set({ terminalFontSize: 13 }),
+  // 10% a step, floored at 70% and capped at 220%. The range is wider at the
+  // top than the terminal's because prose is what people zoom *into*.
+  zoomChat: (delta) =>
+    set((s) => ({
+      chatZoom: Math.max(0.7, Math.min(2.2, Math.round((s.chatZoom + delta * 0.1) * 100) / 100))
+    })),
+  resetChatZoom: () => set({ chatZoom: 1 }),
   setLive: (sessionId, live) => set((s) => ({ live: { ...s.live, [sessionId]: live } })),
 
   setActivity: (sessionId, a, at) =>
@@ -908,7 +929,16 @@ export const useStore = create<AppState>((set, get) => ({
         // would render — and a mapper disagreement shows up as a visible twitch
         // here rather than as a bug report after a restart weeks later.
         patch((c) => {
-          const entries = [...c.entries.filter((x) => x.turn !== e.turn), ...e.entries]
+          // By id as well as by turn — main filters the same two ways and for
+          // the same reason (see settleTurn). A row mapped under one turn and
+          // re-mapped under another would otherwise appear twice, and a
+          // duplicate key is the one inconsistency this list cannot render:
+          // React drops or duplicates the row rather than erroring.
+          const ids = new Set(e.entries.map((x) => x.id))
+          const entries = [
+            ...c.entries.filter((x) => x.turn !== e.turn && !ids.has(x.id)),
+            ...e.entries
+          ]
           return { ...c, entries, total: Math.max(c.total, entries.length) }
         })
         break

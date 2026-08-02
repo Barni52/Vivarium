@@ -604,6 +604,23 @@ export function registerIpc(win: BrowserWindow): void {
     return shell.openPath(target) // OS default app; '' on success
   })
 
+  // A link in a chat message. The scheme allowlist is the whole point: the href
+  // comes from model output, and `shell.openExternal` will happily hand a
+  // `file:`/`ms-settings:`/custom-protocol URL to Windows to execute.
+  ipcMain.handle(CH.openExternal, async (_e, url: string): Promise<string> => {
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      return 'bad-url'
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'mailto:') {
+      return 'bad-scheme'
+    }
+    await shell.openExternal(parsed.href)
+    return ''
+  })
+
   // Reveal the shared-output root itself in Explorer (the header "open" button).
   ipcMain.handle(CH.openOutputFolder, async (): Promise<string> => {
     const folder = store.get().sharedOutputFolder

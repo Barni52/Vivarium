@@ -31,7 +31,18 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
     installed-version probe, behind the manual Claude Code update UI.
 - `src/preload/index.ts` — the typed `window.vivarium` API. The renderer never touches
   `ipcRenderer` directly.
-- `src/shared/` — `ipc.ts` (channel names, `CH`) and `types.ts` (all cross-process types).
+- `src/shared/` — `ipc.ts` (channel names, `CH`), `types.ts` (all cross-process types) and
+  `models.ts`. That third file is the only *logic* in `@shared` and it earns it: **both processes
+  name models** — the renderer for the header chip, the composer status line and the picker,
+  `chatMapper` for the `model · a → b` divider it writes into the log — so a second copy of the
+  rule would let two surfaces disagree about what is answering you. `modelName` reads the dashes
+  of an id as a decimal point (`claude-sonnet-4-5-…` → `Sonnet 4.5`, and the older
+  `claude-3-5-sonnet-…` → `Sonnet 3.5`, since the digits sit on the other side there) and returns
+  anything with no family word in it **unchanged** — inventing a name for a model this app has
+  never heard of is how a chip ends up lying. `modelOptionLabel` overrides the CLI's own label
+  only when it is a bare family word: `list_models` answers `Opus` / `Sonnet` (family named,
+  generation hidden — the one thing the menu exists to choose between), but `Default
+  (recommended)` is not a model name and must never be rewritten to whatever it resolves to today.
 - `src/renderer/src/` — React + zustand + xterm. `state/store.ts` is the single store for all
   UI state. `TerminalHost` keeps one long-lived `TerminalView` per opened session — hidden on
   deselect, never destroyed, so scrollback survives switching. `theme.ts` owns the palette *and*
@@ -50,7 +61,20 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
   running-indicator green already means. The ban is on a colour meaning two things, not on it
   meaning one thing twice. `components/chat/` is the chat window: `ChatView` (chrome, the reading
   column, the pinned bands, the composer), `ChatLog` (the two-column message grid),
-  `Markdown`, `attach` (routing an attachment by reachability). `Elapsed.tsx` is the only thing in the UI
+  `Markdown`, `attach` (routing an attachment by reachability).
+  `Markdown` is a **hand-rolled parser with no dependency, and it stays that way for one reason**:
+  everything renders as text nodes and nothing is ever set as HTML, so a tool result containing
+  markup is shown rather than run, and there is no sanitiser to get wrong. It covers what a
+  conversation actually contains — nested lists (by indentation, recursing back through the block
+  parser, which is the line that stops a sub-bullet being folded into the sentence above it), task
+  items, tables, blockquotes, fenced and indented code, rules, and the inline set including links.
+  Two rules are load-bearing and were both bugs first: an emphasis run closes only on a run of the
+  **same length** (in `*a **b** c*` the inner pair is length 2 against an opening 1, so it is
+  stepped over rather than closing the italics early), and a lazy list continuation stops at
+  anything that starts a block, or `## Next` under a bullet joins the bullet. Links go out through
+  `openExternal`, never an `<a>`: this window has no new-window handler, so a navigation would open
+  the page *inside* the app.
+  `Elapsed.tsx` is the only thing in the UI
   that ticks: it re-renders three characters of duration instead of its host row, on an interval
   that follows the granularity on screen (1s while showing seconds, 15s once only minutes can
   change), and its `until` prop draws a *stopped* clock — the reading holds, no interval at all.
@@ -291,6 +315,16 @@ in the renderer: the same guarantee bought back at a higher price.
   inside the tinted `you` bubble as though you had typed the markup. The three command tags are
   read separately because they are *not* adjacent: a pattern that required args to follow the name
   dropped every argument silently.
+  **The composer's typeahead has no highlight until you ask for one, and that null is what makes
+  Enter safe**: with nothing selected, Enter still sends `/clear` as the command you typed, and
+  only a deliberate reach into the list (Tab, or ↑↓) turns Enter into "take this row". Tab is two
+  presses — the first highlights the best match, the second inserts it — because one press cannot
+  be both (completing immediately means you can never *look* at the list; highlighting only means
+  Tab alone never completes). The list is deduped: `init` reports `slash_commands[]` and `skills[]`
+  separately and they overlap, so the raw concatenation offers `code-review` twice and collides its
+  React key. The composer tints a leading `/command` only when it is one the CLI actually has —
+  the tint means "this will expand", not "this begins with a slash" — drawn by a transparent twin
+  laid out behind the textarea, since a textarea holds one flat string and can carry no colour.
 - **Delete means delete, for chat conversations.** Deleting a chat session deletes its conversation,
   and deleting a project cascades to every chat session it holds — otherwise the larger, more
   destructive gesture would be the leakier one. Both take the whole chain (`claudeSessionId` plus
@@ -334,6 +368,52 @@ in the renderer: the same guarantee bought back at a higher price.
   row a CLI that emits no such message would produce at all. So whichever lands second is
   suppressed, per turn — never by a shared fixed id, or a conversation with five interrupted turns
   would collapse to one row.
+- **The context meter is only ever as fresh as the last thing that asked for it**, so changing the
+  model has to ask. `get_context_usage` is polled at open (the load-bearing half: nothing is
+  emitted on the wire until the first user message, so a chat reopened onto 80k of history would
+  otherwise show an empty meter at exactly the moment you look at it), at every `result`, and now
+  after `set_model` — the ceiling is a property of the model, and picking one used to leave a 200k
+  scale reading 1M until the next turn happened to refresh it. `setModel` also adopts the
+  *resolved* model for display while `Session.model` keeps the **alias**: the alias is what
+  `--model` needs at the next spawn, and the resolved id is what makes the chip say `Opus 5`
+  instead of `Opus`.
+- **A settled turn's rows are dropped by id as well as by turn.** A transcript line can be mapped
+  under one turn and then again under another: `set_model` writes a `Set model to …` line
+  *between* turns, no settle has accounted for it, so the next turn's settle reads from an offset
+  behind it and maps it a second time. Filtering only on `turn` keeps both copies, and two rows
+  sharing an id is the one inconsistency the log cannot survive — the renderer keys on the id, and
+  React answers a collision by silently dropping or duplicating a row rather than by erroring. Both
+  ends filter the same two ways (`ChatService.settleTurn`, the store's `turn-settled`).
+- **Streamed prose is revealed at a steady rate, and that is not decoration.** Measured against
+  `--include-partial-messages` on the host: text arrives in **~68-character jumps about every
+  460 ms** — nine paint steps for a 554-character paragraph — so the log lurched a line and a half
+  at a time. That cadence is Claude Code's own, which is why the fix cannot live in main: the
+  40 ms coalescing window there (`STREAM_FLUSH_MS`) bounds IPC and stops a burst becoming a burst
+  of renders, but the source is already coarser than any window worth batching over. `ChatLog`
+  drains the buffer instead, at a *rate* rather than a delay (`REVEAL_CATCHUP`), so a big chunk
+  drains proportionally faster and the text on screen can never lag the model by more than one
+  interval. Three constraints on it: only the row the running turn is writing into (history, a
+  settle and a reopened conversation all paint whole), it starts from whatever the row held when
+  it mounted so nothing ever re-types itself, and it snaps to full the instant the turn ends —
+  a typewriter still running after the answer is finished is worse than no smoothing at all.
+  `LogRow` is `React.memo`'d and `ChatView`'s `handlers` memoised for the same reason: without
+  both, every one of those paints re-rendered every row in the log, markdown parse included.
+- **The log follows the tail on a ResizeObserver, not on the entry count.** A turn streaming its
+  answer *grows the last row* rather than adding one, so a `[entries.length]` effect never fired
+  and the sentence being written slid off the bottom. Height is what actually moves. The observer
+  watches the content **and the scroller** — a composer growing to three lines takes height away
+  from the log without changing anything inside it — and `pinned` (within 40px of the bottom) is
+  what keeps it from yanking a user who has scrolled up to read.
+- **Chat zoom is CSS `zoom` on the two reading columns, never on the view root.** The chat is a
+  whole layout — a 96px gutter, an 880px measure, cards, a composer — so scaling only the type
+  would leave all of it behind at its 1× proportions. The root is `position:absolute; inset:0` and
+  a zoomed box scales its own edges; the columns are plain auto-width blocks, which fill the
+  scroller at any factor exactly the way browser zoom behaves. The log's column and the composer's
+  carry the same factor so the two stay aligned. `chatZoom` is session-only store state, shared by
+  every chat like `terminalFontSize` is shared by every terminal — you zoom because of the monitor
+  you are sitting at. Ctrl +/-/0 and Ctrl+wheel, the chords `TerminalView` already binds, and the
+  log's context menu is where they are written down (the terminal's menu is the precedent: a chord
+  nothing on screen mentions may as well not exist).
 - **An attention flag is cleared by viewing its session — and focusing the window is viewing.**
   `notifyAgentAttention` declines to flag only when the window is focused *and* that session is
   selected, so anything landing while the app is in the background flags the session you are
@@ -356,19 +436,44 @@ npm run build:win    # NSIS installer in dist/
 There is **no test suite, by design — don't add one.** Verify with:
 
 1. `npm run typecheck` — always.
-2. A headless smoke run of the real app inside this dev container (Linux):
+2. **On the Windows host: drive the real app with the `playwright` MCP server** (pinned in
+   `.mcp.json`, attached over CDP — it drives Electron, not a browser). Two steps, in order:
+   - `npm run dev:cdp` — the ordinary dev app plus `VIVARIUM_CDP_PORT=9366` and
+     `VIVARIUM_CDP_SHOW=1`. **Playwright can only attach, never launch**, so nothing works until
+     this is up; start it and retry rather than reaching for `browser_navigate`.
+   - Then `browser_snapshot` → `browser_click`/`browser_type`/`browser_press_key` →
+     `browser_take_screenshot`. `target` takes either a snapshot ref (fresh each snapshot) or a
+     plain selector, and a selector is what makes a flow re-runnable:
+     `button[title="Hide sidebar"]`, `input[placeholder="my-service"]`.
+   - `browser_evaluate` reaches the two debug handles the renderer exports, which is where this
+     app's truth actually lives: `window.__vivStore.getState()` (zustand — dialogs, container
+     states, chat entries) and `window.__vivTerms[sessionId]` (xterm, for scrollback that is on
+     a canvas and in no DOM). Verify against those, not against pixels.
+   Three things worth knowing before disbelieving what it shows you:
+   - **Occlusion is the whole ballgame.** Windows tells Chromium when the window is fully
+     covered and Chromium stops compositing it: screenshots time out, `requestAnimationFrame`
+     never fires, and every dialog's entry animation freezes at opacity 0 — so the app looks
+     empty and the click looks lost. `CalculateNativeWinOcclusion` is disabled under CDP for
+     exactly that reason.
+   - Not every chip is a button — the four session types under the empty state are a *legend*,
+     with no handler. Snapshot before assuming a click did nothing.
+   - **Never `browser_close`**: it closes the app, not a tab. It drives the *real* app, so it
+     will start containers and spend tokens if you click the things that do that.
+3. A headless smoke run of the real app inside this dev container (Linux):
    - Electron's system libs are not baked into the image; after a container recreation:
      `sudo apt-get install -y --no-install-recommends libgtk-3-0 libnss3 libasound2 libgbm1 libxss1`
    - `nohup Xvfb :93 -screen 0 1600x1000x24 &` (nohup specifically; plain `&` dies with the
      shell — verify with `DISPLAY=:93 xset q`)
    - `ELECTRON_DISABLE_SANDBOX=1 VIVARIUM_CDP_PORT=9366 DISPLAY=:93 nohup npm run dev &`
-     — `VIVARIUM_CDP_PORT` keeps the window hidden and exposes CDP on that port.
+     — `VIVARIUM_CDP_PORT` keeps the window hidden and exposes CDP on that port
+     (`VIVARIUM_CDP_SHOW=1` opts back into a visible window, which is what the MCP server sets:
+     a hidden window is never composited, so there is no frame to screenshot).
    - Drive it with Playwright: `chromium.connectOverCDP('http://127.0.0.1:9366')`; the app page
      is the one on `localhost:5173`. `window.__vivTerms[sessionId]` exposes each session's
      xterm instance for reading scrollback.
    - Vite HMR does not fire on this bind mount — kill Electron
      (`ps aux | grep '[e]lectron/dist'`) and relaunch to pick up renderer edits.
-3. Anything docker-, pwsh-, or WSL-dependent cannot run in this container — the user verifies
+4. Anything docker-, pwsh-, or WSL-dependent cannot run in this container — the user verifies
    those paths on the Windows host. Say so explicitly instead of claiming verification.
 
 ## Code style

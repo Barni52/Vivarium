@@ -87,6 +87,9 @@ const api = {
     return () => ipcRenderer.removeListener(CH.outputChanged, h)
   },
 
+  /** A link in a chat message → the user's browser. Main enforces the scheme. */
+  openExternal: (url: string): Promise<string> => ipcRenderer.invoke(CH.openExternal, url),
+
   // docker / containers
   dockerStatus: (): Promise<DockerStatus> => ipcRenderer.invoke(CH.dockerStatus),
   containerStates: (): Promise<ContainerState[]> => ipcRenderer.invoke(CH.containerStates),

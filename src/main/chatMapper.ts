@@ -8,6 +8,7 @@ import type {
   ChatToolBody,
   ChatToolStatus
 } from '@shared/types'
+import { modelName } from '@shared/models'
 
 // The chat log's one mapper: Claude Code's own JSON → the rows the window draws.
 //
@@ -582,7 +583,10 @@ export class ChatMapper {
           at,
           turn: this.turn,
           kind: 'divider',
-          text: `model · ${shortModel(this.model)} → ${shortModel(model)}`
+          // The same spelling the header chip and the composer use — one
+          // formatter in @shared, because a divider saying `sonnet → opus`
+          // under a chip saying `Opus 5` is two answers to one question.
+          text: `model · ${modelName(this.model)} → ${modelName(model)}`
         })
       }
       this.model = model
@@ -932,13 +936,7 @@ function tok(n: number): string {
   return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n)
 }
 
-/** `claude-opus-5-20260101` → `opus-5`; anything unrecognised passes through. */
-function shortModel(id: string): string {
-  const m = /^claude-([a-z]+(?:-[0-9.]+)?)/.exec(id)
-  return m ? m[1] : id
-}
-
-export { roleForTool, shortModel, toolTitle }
+export { roleForTool, toolTitle }
 
 /**
  * The id `ChatMapper.blockId` will compute for the `n`-th text block of a

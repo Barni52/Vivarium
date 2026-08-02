@@ -75,6 +75,11 @@ export const CH = {
   chatMountTree: 'chat:mount-tree',
   chatEvent: 'chat:event',
 
+  // A link in a chat message, opened in the user's own browser. The renderer
+  // never navigates: this window has no new-window handler, so an <a> would
+  // open the page *inside* the app with node integration a preload away.
+  openExternal: 'shell:open-external',
+
   // clipboard
   pasteImage: 'clipboard:paste-image',
   clipboardReadText: 'clipboard:read-text',
