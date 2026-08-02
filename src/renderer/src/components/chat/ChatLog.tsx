@@ -138,14 +138,28 @@ export interface LogHandlers {
   onRetry: () => void
 }
 
-export function LogRow({
+/**
+ * Memoised, and that is not a micro-optimisation.
+ *
+ * A streaming turn upserts the row it is filling ~25 times a second, and every
+ * one of those is a new `entries` array in the store. Without this, each of them
+ * re-rendered *every* row in the log — including the settled markdown above,
+ * which now costs a parse — and the answer arrived in visible steps. Rows are
+ * value objects the store replaces rather than mutates, so identity is an exact
+ * test for "did this row change", and `handlers` is memoised in ChatView for
+ * this to have anything to hold on to.
+ */
+export const LogRow = React.memo(function LogRow({
   entry,
   handlers,
-  depth = 0
+  depth = 0,
+  streaming = false
 }: {
   entry: ChatEntry
   handlers: LogHandlers
   depth?: number
+  /** this is the row the running turn is writing into — reveal it smoothly */
+  streaming?: boolean
 }): React.ReactElement | null {
   switch (entry.kind) {
     case 'text':
@@ -186,11 +200,7 @@ export function LogRow({
           </Line>
         )
       }
-      return (
-        <Line at={entry.at} role="claude" color={CHAT.claude}>
-          <Md src={entry.md} />
-        </Line>
-      )
+      return <ClaudeText entry={entry} streaming={streaming} />
 
     case 'thinking':
       return <Thinking at={entry.at} md={entry.md} />
@@ -372,6 +382,69 @@ export function LogRow({
         </Line>
       )
   }
+})
+
+/** How often the reveal advances. 30 fps — text has no motion to alias. */
+const REVEAL_TICK = 33
+/**
+ * How long the reveal takes to catch up with whatever is outstanding.
+ *
+ * Measured on the host against `claude -p --include-partial-messages`: prose
+ * arrives in **~68-character jumps about every 460 ms**, nine paint steps for a
+ * 554-character paragraph. That cadence is Claude Code's, not this app's — the
+ * frames really do land that far apart — and it is the whole of "streaming feels
+ * choppy": the log lurches a line and a half at a time and then sits still.
+ * Coalescing on main cannot help, because the source is already coarser than any
+ * window worth batching over.
+ *
+ * So the buffer is drained at a steady rate instead. 420 ms is deliberately just
+ * under the observed arrival interval: each chunk finishes revealing a moment
+ * before the next one lands, which is continuous motion rather than a typewriter
+ * that visibly falls behind. It is a *rate*, not a delay — a big chunk drains
+ * proportionally faster, so the text on screen can never lag the model by more
+ * than one interval however fast the model goes.
+ */
+const REVEAL_CATCHUP = 420
+
+/**
+ * The one row a running turn is writing into, revealed at a steady rate.
+ *
+ * It starts from whatever the row already held when it mounted and smooths only
+ * what arrives *after* — so a chat reopened mid-turn, a settle, and every row of
+ * history paint instantly, and nothing ever re-types itself.
+ */
+function ClaudeText({
+  entry,
+  streaming
+}: {
+  entry: Extract<ChatEntry, { kind: 'text' }>
+  streaming: boolean
+}): React.ReactElement {
+  const target = entry.md
+  const [shown, setShown] = React.useState(target.length)
+
+  React.useEffect(() => {
+    // The turn ended (or this was never the live row): everything is on screen.
+    // A typewriter still running after the answer is finished is worse than no
+    // smoothing at all.
+    if (!streaming) return
+    if (shown >= target.length) return
+    const t = setInterval(() => {
+      setShown((n) => {
+        if (n >= target.length) return target.length
+        const behind = target.length - n
+        return Math.min(target.length, n + Math.max(1, Math.ceil((behind * REVEAL_TICK) / REVEAL_CATCHUP)))
+      })
+    }, REVEAL_TICK)
+    return () => clearInterval(t)
+  }, [streaming, target, shown])
+
+  const md = streaming ? target.slice(0, Math.min(shown, target.length)) : target
+  return (
+    <Line at={entry.at} role="claude" color={CHAT.claude}>
+      <Md src={md} />
+    </Line>
+  )
 }
 
 /** Three-dot working indicator, reusing the app's existing vthink keyframes. */

@@ -7,6 +7,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:cdp": "set VIVARIUM_CDP_PORT=9366&& set VIVARIUM_CDP_SHOW=1&& electron-vite dev",
     "build": "electron-vite build && electron-builder",
     "build:win": "electron-vite build && electron-builder --win",
     "compile": "electron-vite build",

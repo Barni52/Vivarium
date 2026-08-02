@@ -635,6 +635,14 @@ export function TerminalView({
       document.removeEventListener('visibilitychange', onVisible)
       if (t) clearTimeout(t)
       term.dispose()
+      // …and drop the debug handle with it. Without this, killing a session
+      // leaves its *disposed* terminal — and the whole 50k-line scrollback the
+      // buffer still holds — referenced from window for the lifetime of the app.
+      // Guarded on identity rather than deleting blind: a session moved between
+      // projects remounts under the same id (TerminalHost keys the view on
+      // project:session), so if the replacement's effect has already registered
+      // itself, this cleanup must not delete *its* entry.
+      if (terms[session.id] === term) delete terms[session.id]
       termRef.current = null
     }
     // project.id is in here because a session can be moved to another project:

@@ -97,6 +97,24 @@ const MOUNT_WINDOW = 300
 const RESETTLE_MS = 700
 
 /**
+ * How long token deltas are gathered before the row they are filling is shipped
+ * to the renderer.
+ *
+ * The CLI emits `content_block_delta` per token — dozens a second — and each one
+ * used to be its own `chat:event`, its own zustand `set`, and its own render of
+ * the whole log. That is what "streaming feels choppy" was: not the text
+ * arriving unevenly, but the renderer spending every frame rebuilding rows that
+ * had not changed, so the ones that *had* landed in bursts.
+ *
+ * 40 ms is a coalescing window, not a throttle — nothing is dropped, the
+ * accumulated text is simply shipped once per window, which also makes the
+ * cadence *regular*, and regular is most of what reads as smooth. It is flushed
+ * synchronously before any non-delta frame is handled, so a settled assistant
+ * row can never overtake the partial row it replaces.
+ */
+const STREAM_FLUSH_MS = 40
+
+/**
  * What the picker offers when `list_models` answers with nothing — an old CLI,
  * a control request it does not implement, or a timed-out round trip.
  *
@@ -132,6 +150,8 @@ interface Streaming {
   text: Map<number, string>
   /** how many text blocks this message has opened */
   texts: number
+  /** block indices changed since the last flush (see STREAM_FLUSH_MS) */
+  dirty: Set<number>
 }
 
 interface Live {
@@ -179,6 +199,8 @@ interface Live {
   context: ChatContextUsage | null
   /** the assistant message currently streaming, for partial-text painting */
   streaming: Streaming | null
+  /** the pending coalesced flush of that message's deltas */
+  streamTimer: ReturnType<typeof setTimeout> | null
   turnRunning: boolean
   /** set by an interrupt so the turn's `idle` raises no attention flag */
   interrupted: boolean
@@ -266,6 +288,7 @@ export class ChatService {
       commands: project.slashCommands ?? [],
       context: null,
       streaming: null,
+      streamTimer: null,
       turnRunning: false,
       interrupted: false,
       closing: false
@@ -293,6 +316,7 @@ export class ChatService {
     if (!l) return
     l.closing = true
     if (l.silence) clearTimeout(l.silence)
+    if (l.streamTimer) clearTimeout(l.streamTimer)
     try {
       l.proc?.kill()
     } catch {
@@ -419,7 +443,15 @@ export class ChatService {
     // make the freeze look like a disappearance.
     const clock = l.entries.filter((e) => e.turn === turn && e.kind === 'turn')
     const settled = [...clock, ...mapper.entries]
-    l.entries = [...l.entries.filter((e) => e.turn !== turn), ...settled]
+    // Dropped by id as well as by turn. A transcript line can be mapped under
+    // one turn and then again under another — a `set_model` writes a `Set model
+    // to …` line **between** turns, which no settle has accounted for, so the
+    // next turn's settle reads from an offset behind it and maps it a second
+    // time. Filtering only on `turn` keeps both copies, and two rows sharing an
+    // id is the one thing the renderer cannot survive: it keys on the id, and
+    // React responds to a collision by silently dropping or duplicating a row.
+    const ids = new Set(settled.map((e) => e.id))
+    l.entries = [...l.entries.filter((e) => e.turn !== turn && !ids.has(e.id)), ...settled]
     this.emit({
       kind: 'turn-settled',
       sessionId: l.session.id,
@@ -471,6 +503,10 @@ export class ChatService {
     if (l.silence) clearTimeout(l.silence)
     l.silence = null
     l.proc = null
+    // Whatever the dead process had already generated still belongs on screen —
+    // the crash row goes *under* it, not in place of it.
+    this.flushStream(l)
+    l.streaming = null
     // Killing the in-container `claude` mid-stream is completely silent: no
     // result, no error line, no terminal_reason, and not one torn line even under
     // SIGKILL. The exit code is the only signal there is — and 137 vs 1 is the
@@ -570,6 +606,13 @@ export class ChatService {
   // ---- frame handling -----------------------------------------------------
   private frame(l: Live, f: Json): void {
     const type = str(f.type)
+
+    // Everything except a token delta settles the picture, so the buffered
+    // deltas are shipped first. Ordering within `chat:event` is the guarantee
+    // the whole design rests on (see the CH.chatEvent comment) — a partial row
+    // landing *after* the settled row that replaces it would paint half a
+    // paragraph and leave it there.
+    if (type !== 'stream_event') this.flushStream(l)
 
     if (type === 'control_request') return this.controlRequest(l, f)
     if (type === 'control_response') return this.controlResponse(l, f)
@@ -690,13 +733,15 @@ export class ChatService {
     if (!ev) return
     const kind = str(ev.type)
     if (kind === 'message_start') {
+      this.flushStream(l)
       const msg = obj(ev.message)
       l.streaming = {
         msgId: str(msg?.id) || 'stream',
         at: Date.now(),
         ids: new Map(),
         text: new Map(),
-        texts: 0
+        texts: 0,
+        dirty: new Set()
       }
       return
     }
@@ -706,20 +751,55 @@ export class ChatService {
     const s = l.streaming
     if (!s) return
     const index = num(ev.index) ?? 0
-    let id = s.ids.get(index)
-    if (id === undefined) {
+    if (!s.ids.has(index)) {
       // The delta's index counts blocks across the whole message; the mapper
       // counts them per type, because the transcript writes one block per line
       // and always calls it index 0. Translating here is what keeps a partial row
       // and its settled row the same row (see ChatMapper.blockId).
-      id = textBlockId(s.msgId, s.texts++)
-      s.ids.set(index, id)
+      s.ids.set(index, textBlockId(s.msgId, s.texts++))
     }
-    const md = (s.text.get(index) ?? '') + str(delta?.text)
-    s.text.set(index, md)
-    // Provisional: the `assistant` frame that follows computes this same id, so
-    // it upserts over this row rather than duplicating it.
-    this.upsert(l, [{ id, role: 'claude', at: s.at, turn: l.turn, kind: 'text', md }])
+    s.text.set(index, (s.text.get(index) ?? '') + str(delta?.text))
+    s.dirty.add(index)
+    // Coalesced rather than shipped per token — see STREAM_FLUSH_MS. The timer
+    // is armed once per window and cleared by the flush itself, so a long
+    // paragraph is one render every 40 ms rather than one per token.
+    if (!l.streamTimer) {
+      l.streamTimer = setTimeout(() => {
+        l.streamTimer = null
+        this.flushStream(l)
+      }, STREAM_FLUSH_MS)
+    }
+  }
+
+  /**
+   * Ship whatever the deltas have accumulated. Provisional rows: the `assistant`
+   * frame that follows computes these same ids, so it upserts over them rather
+   * than duplicating them.
+   */
+  private flushStream(l: Live): void {
+    if (l.streamTimer) {
+      clearTimeout(l.streamTimer)
+      l.streamTimer = null
+    }
+    const s = l.streaming
+    if (!s || s.dirty.size === 0) return
+    const rows: ChatEntry[] = []
+    // In index order: two text blocks in one message must not swap places in
+    // the log because a Set iterated them in insertion order.
+    for (const index of [...s.dirty].sort((a, b) => a - b)) {
+      const id = s.ids.get(index)
+      if (id === undefined) continue
+      rows.push({
+        id,
+        role: 'claude',
+        at: s.at,
+        turn: l.turn,
+        kind: 'text',
+        md: s.text.get(index) ?? ''
+      })
+    }
+    s.dirty.clear()
+    if (rows.length) this.upsert(l, rows)
   }
 
   private taskEvent(l: Live, f: Json): void {
@@ -749,6 +829,8 @@ export class ChatService {
     const aborted = reason === 'aborted_streaming' || reason === 'aborted_tools'
     const from = l.turnOffset
     l.turnRunning = false
+    if (l.streamTimer) clearTimeout(l.streamTimer)
+    l.streamTimer = null
     l.streaming = null
 
     if (aborted) {
@@ -842,6 +924,8 @@ export class ChatService {
     l.subagents.clear()
     l.offset = 0
     l.turnOffset = 0
+    if (l.streamTimer) clearTimeout(l.streamTimer)
+    l.streamTimer = null
     l.streaming = null
     l.mapper = null
     this.emit({ kind: 'reset', sessionId: l.session.id, claudeSessionId: id })
@@ -1118,8 +1202,28 @@ export class ChatService {
     const l = this.live.get(sessionId)
     if (!l) return true // persisted anyway; it applies as --model at the next spawn
     const r = await this.request(l, { subtype: 'set_model', model })
-    if (r.ok) l.model = model
-    return r.ok
+    if (!r.ok) return false
+
+    // What the picker sends is an *alias* (`opus`), because that is what the CLI
+    // accepts back. What the header must show is the model that alias resolves
+    // to, or picking "Opus" reads as `Opus` with no generation on it — which is
+    // half of the complaint the naming fix answers. The response knows, and
+    // `list_models` knew already, so either source will do.
+    const resolved =
+      str(r.response?.model) ||
+      str(r.response?.resolvedModel) ||
+      this.models?.find((m) => m.value === model)?.detail ||
+      model
+    l.model = resolved
+    this.emit({ kind: 'meta', sessionId, model: resolved })
+
+    // The context window is a property of the model, and until now the meter
+    // kept the previous one's ceiling until the next turn happened to refresh
+    // it — a 200k model showing a 1M scale, or the reverse, for as long as you
+    // sat there. The reading is only ever as fresh as the last thing that asked
+    // for it, so changing the model has to ask.
+    void this.refreshContext(l)
+    return true
   }
 
   /**
