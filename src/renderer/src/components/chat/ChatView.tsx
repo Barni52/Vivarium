@@ -681,6 +681,13 @@ function Header({
         <div style={{ display: 'flex', border: `1px solid ${CHAT.border}` }}>
           {(['plan', 'bypassPermissions'] as const).map((m) => {
             const active = mode === m
+            // A hue per mode, not one hue for "whichever is on". The toggle used
+            // the same blue either way, so the only thing telling you which mode
+            // you were in was reading the two five-letter words — which is the
+            // same failure the log rows had. Blue for plan, coral for bypass, and
+            // the composer's status chip already spells it that way, so the two
+            // places that report the mode now agree.
+            const hue = m === 'plan' ? CHAT.mode : CHAT.you
             return (
               <button
                 key={m}
@@ -693,7 +700,7 @@ function Header({
                   fontFamily: MONO,
                   fontSize: 11.5,
                   transition: '.14s',
-                  background: active ? CHAT.mode : 'transparent',
+                  background: active ? hue : 'transparent',
                   color: active ? CHAT.bg : '#6B7480',
                   fontWeight: active ? 500 : 400
                 }}
