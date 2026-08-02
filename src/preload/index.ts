@@ -9,6 +9,7 @@ import type {
   ChatEntry,
   ChatEvent,
   ChatMode,
+  ChatModelOption,
   ChatOpenResult,
   ClaudeStatus,
   ClaudeUpdateResult,
@@ -156,7 +157,8 @@ const api = {
     ipcRenderer.invoke(CH.chatSetMode, sessionId, mode),
   chatSetModel: (sessionId: string, model: string): Promise<Config> =>
     ipcRenderer.invoke(CH.chatSetModel, sessionId, model),
-  chatModels: (sessionId: string): Promise<string[]> => ipcRenderer.invoke(CH.chatModels, sessionId),
+  chatModels: (sessionId: string): Promise<ChatModelOption[]> =>
+    ipcRenderer.invoke(CH.chatModels, sessionId),
   chatClose: (sessionId: string): void => ipcRenderer.send(CH.chatClose, sessionId),
   chatBody: (sessionId: string, entryId: string): Promise<string | null> =>
     ipcRenderer.invoke(CH.chatBody, sessionId, entryId),

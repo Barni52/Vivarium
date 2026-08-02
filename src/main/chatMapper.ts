@@ -54,10 +54,38 @@ const ATTACH_RE = /<vivarium-attached>\n([\s\S]*?)\n<\/vivarium-attached>/g
 /** The synthetic user message Claude Code writes where a turn was cut. */
 const INTERRUPT_MARKER = '[Request interrupted by user]'
 
-/** A typed slash command records as a plain user row wrapped in these. */
-const COMMAND_RE = /<command-name>([^<]*)<\/command-name>(?:<command-args>([^<]*)<\/command-args>)?/
+/**
+ * A typed slash command records as a plain user row wrapped in these — three
+ * separate tags, read separately rather than as one anchored pattern. They are
+ * *not* adjacent: `/goal fix the bugs` writes
+ * `<command-name>` `<command-message>` `<command-args>`, in that order and on
+ * their own lines, so a pattern that required args to follow the name silently
+ * dropped every argument the user typed.
+ */
+const COMMAND_NAME_RE = /<command-name>([\s\S]*?)<\/command-name>/
+const COMMAND_ARGS_RE = /<command-args>([\s\S]*?)<\/command-args>/
 
+/**
+ * A local command's own output. It arrives as an ordinary **user** line — often
+ * in the same line as the command that produced it — which is why it has to be
+ * recognised here and not only in the `system/local_command` branch below.
+ * Without this the raw tags rendered inside a `you` bubble, as though the user
+ * had typed `<local-command-stdout>Set model to …</local-command-stdout>`.
+ */
 const LOCAL_STDOUT_RE = /<local-command-stdout>([\s\S]*?)<\/local-command-stdout>/
+
+/**
+ * Escape sequences in a local command's output. The CLI writes these coloured
+ * when it thinks it has a terminal, and a chat has none anywhere in its path, so
+ * they would land in the log as literal noise. Only real ESC-introduced
+ * sequences are stripped — a bare `[1m]` is left alone, because that is a model
+ * name suffix (the 1M-context variants) and not a colour code.
+ */
+const CSI_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`, 'g')
+
+function stripAnsi(s: string): string {
+  return s.replace(CSI_RE, '')
+}
 
 // Truncation budgets. Main keeps the full body and hands the renderer these —
 // tool output is the entire weight of a transcript and variant D keeps most of it
@@ -301,8 +329,8 @@ export class ChatMapper {
   private turn = 0
   /** index in `entries` where the current turn began, for the cancelled sweep */
   private turnStart = 0
-  /** ids already handed out this pass — see blockId for why that can happen */
-  private usedIds = new Set<string>()
+  /** how many blocks of each type one message has already contributed */
+  private blockSeq = new Map<string, number>()
 
   constructor(turn = 0) {
     this.turn = turn
@@ -318,32 +346,34 @@ export class ChatMapper {
   }
 
   /**
-   * The id of one content block's row.
+   * The id of one content block's row: message id, block type, and the ordinal
+   * of that block **among blocks of the same type in the same message**.
    *
-   * The block *type* is part of it, and that is load-bearing: Claude Code writes
-   * one transcript line per content block but gives every line the same
+   * The type is load-bearing and always was: Claude Code writes one transcript
+   * line per content block but gives every line of one API message the same
    * `message.id`, so a message whose text and tool call are two lines yields two
-   * blocks both at index 0. Without the type in the key the tool card would
-   * overwrite the paragraph above it — verified on a real 2.1.211 transcript,
-   * where `msg_011Cdc…` appeared once carrying `text` and once carrying
-   * `tool_use`, both at index 0.
+   * blocks both at content-array index 0. Without the type in the key the tool
+   * card silently overwrites the paragraph above it.
    *
-   * The counter suffix is the backstop for the remaining case (two blocks of the
-   * same type at the same index in one message). It is deliberately *not* used
-   * for the first occurrence, so a partial-text row painted from `stream_event`
-   * deltas — which computes this same id independently — upserts into the
-   * finished `assistant` frame's row instead of duplicating it.
+   * The *ordinal* replaces the content-array index, and that is the fix for the
+   * ids drifting apart across the three sources this id has to be computed from.
+   * The index means three different things depending on where the block arrives:
+   * a transcript line and a per-block `assistant` frame each carry a one-element
+   * content array (index always 0), while `stream_event` deltas number blocks
+   * across the whole message — so a `[thinking, text]` message painted from
+   * deltas produced `msg#1#text` while its settled row was `msg#0#text`, and the
+   * paragraph rendered twice until the turn ended. Counting per type is the one
+   * derivation all three agree on, since blocks arrive in order everywhere.
+   *
+   * The first occurrence deliberately has no suffix, so `chat.ts` can compute
+   * the same id for a partial-text row without knowing anything but the message
+   * id and how many text blocks it has already opened.
    */
-  private blockId(msgId: string, index: number, type: string): string {
-    const base = `${msgId}#${index}#${type}`
-    if (!this.usedIds.has(base)) {
-      this.usedIds.add(base)
-      return base
-    }
-    let n = 2
-    while (this.usedIds.has(`${base}#${n}`)) n++
-    this.usedIds.add(`${base}#${n}`)
-    return `${base}#${n}`
+  private blockId(msgId: string, type: string): string {
+    const key = `${msgId}#${type}`
+    const n = this.blockSeq.get(key) ?? 0
+    this.blockSeq.set(key, n + 1)
+    return n === 0 ? key : `${key}#${n}`
   }
 
   private push(e: ChatEntry): ChatEntry {
@@ -472,18 +502,45 @@ export class ChatMapper {
       return
     }
 
-    const cmd = COMMAND_RE.exec(text)
-    if (cmd) {
-      const args = (cmd[2] ?? '').trim()
-      this.push({
-        id,
-        role: 'you',
-        at,
-        turn: this.turn,
-        kind: 'text',
-        md: `${cmd[1]}${args ? ` ${args}` : ''}`,
-        chips: chips.length ? chips : undefined
-      })
+    // A slash command and its local output are *machinery*, and both arrive on
+    // ordinary user lines — sometimes on the same one. Rendering either as a
+    // `you` row is a lie in the same way the interrupt marker above is: the
+    // shipped version printed the raw `<local-command-stdout>…` tags inside the
+    // tinted bubble, as though the user had typed the markup.
+    const name = COMMAND_NAME_RE.exec(text)
+    const stdout = LOCAL_STDOUT_RE.exec(text)
+    if (name || stdout) {
+      if (name) {
+        const args = (COMMAND_ARGS_RE.exec(text)?.[1] ?? '').trim()
+        this.push({
+          id,
+          role: 'you',
+          at,
+          turn: this.turn,
+          kind: 'text',
+          md: `${name[1].trim()}${args ? ` ${args}` : ''}`,
+          chips: chips.length ? chips : undefined
+        })
+      }
+      if (stdout) {
+        const md = stripAnsi(stdout[1]).trim()
+        // Its own row when the command echo took `id`, so the two never collide
+        // and the log keeps reading command-then-answer.
+        const outId = name ? `${id}#out` : id
+        if (md) {
+          this.bodies.set(outId, md)
+          this.push({
+            id: outId,
+            role: 'cmd',
+            at,
+            turn: this.turn,
+            kind: 'cmd',
+            title: '',
+            md,
+            truncated: false
+          })
+        }
+      }
       return
     }
 
@@ -531,19 +588,39 @@ export class ChatMapper {
       this.model = model
     }
 
-    arr(message.content).forEach((block, i) => {
+    // The ordinal is claimed only where a row is actually pushed: an empty text
+    // block writes no transcript line and streams no delta, so counting it would
+    // shift every later block's id in one source and not the others.
+    arr(message.content).forEach((block) => {
       const b = obj(block)
       if (!b) return
       const type = str(b.type)
-      const id = this.blockId(msgId, i, type)
       if (type === 'text') {
         const md = str(b.text).trim()
-        if (md) this.push({ id, role: 'claude', at, turn: this.turn, kind: 'text', md })
+        if (md) {
+          this.push({
+            id: this.blockId(msgId, 'text'),
+            role: 'claude',
+            at,
+            turn: this.turn,
+            kind: 'text',
+            md
+          })
+        }
       } else if (type === 'thinking' || type === 'redacted_thinking') {
         const md = str(b.thinking) || str(b.text)
-        if (md) this.push({ id, role: 'think', at, turn: this.turn, kind: 'thinking', md })
+        if (md) {
+          this.push({
+            id: this.blockId(msgId, 'thinking'),
+            role: 'think',
+            at,
+            turn: this.turn,
+            kind: 'thinking',
+            md
+          })
+        }
       } else if (type === 'tool_use') {
-        this.toolUse(b, id, at)
+        this.toolUse(b, this.blockId(msgId, 'tool_use'), at)
       }
     })
   }
@@ -732,7 +809,7 @@ export class ChatMapper {
       // are replaced with transcript-derived ones.
       const raw = str(line.content)
       const m = LOCAL_STDOUT_RE.exec(raw)
-      const md = (m ? m[1] : raw).trim()
+      const md = stripAnsi(m ? m[1] : raw).trim()
       if (!md) return
       const id = str(line.uuid) || this.id('cmd')
       this.bodies.set(id, md)
@@ -862,6 +939,79 @@ function shortModel(id: string): string {
 }
 
 export { roleForTool, shortModel, toolTitle }
+
+/**
+ * The id `ChatMapper.blockId` will compute for the `n`-th text block of a
+ * message — the one thing `chat.ts` needs to paint a partial row that upserts
+ * into its own settled row instead of duplicating it. Exported rather than
+ * spelled out there, because two copies of this rule drifting apart is exactly
+ * the bug it exists to fix.
+ */
+export function textBlockId(msgId: string, ordinal: number): string {
+  return ordinal === 0 ? `${msgId}#text` : `${msgId}#text#${ordinal}`
+}
+
+/**
+ * Split a transcript read at its last newline, and report the byte length of
+ * what came before it.
+ *
+ * A read of a file Claude Code is still appending to routinely lands mid-line.
+ * `parseNdjson` drops that fragment as malformed, which is right — but advancing
+ * the stored byte offset past it is not: the rest of that line arrives on the
+ * next read with no beginning, is dropped in turn, and the conversation loses a
+ * whole message permanently. Consuming only whole lines makes the boundary
+ * re-read itself instead, which is free (bytes, not a docker exec) and exact.
+ */
+export function completeLines(text: string): { complete: string; bytes: number } {
+  const cut = text.lastIndexOf('\n')
+  if (cut < 0) return { complete: '', bytes: 0 }
+  const complete = text.slice(0, cut + 1)
+  return { complete, bytes: Buffer.byteLength(complete, 'utf8') }
+}
+
+/**
+ * Take **one turn's** worth of complete transcript lines out of a read, and
+ * report the bytes they occupy.
+ *
+ * A settle stamps every row it maps with the turn it was asked to settle, so it
+ * must not read past the end of that turn — and it can, because a queued
+ * follow-up (the composer invites one: "type to queue a follow-up") is written
+ * into the file the moment the CLI starts on it, which is the same moment the
+ * previous turn's `result` sends us off to read. Without a boundary the settle
+ * maps the follow-up's own prompt as part of the turn above it, and the log
+ * shows that message twice: once stamped with the old turn by the settle, once
+ * stamped with the new one by the optimistic paint.
+ *
+ * The boundary is Claude Code's own `system/turn_duration` line rather than a
+ * guess at what a user message looks like — an interrupt marker, a slash
+ * command's echo and its `<local-command-stdout>` reply are all plain user text
+ * lines *inside* a turn, so any structural rule would have to enumerate them and
+ * would break on the next one the CLI adds. When the marker is absent (an older
+ * CLI, a turn that was cut) this consumes the whole read, which is exactly the
+ * behaviour it replaces.
+ */
+export function takeTurn(text: string): { lines: Json[]; bytes: number } {
+  const raw = text.split('\n')
+  const lines: Json[] = []
+  let bytes = 0
+  // `text` always ends with a newline (see completeLines), so the final element
+  // is the empty string after it and is not a line.
+  for (let i = 0; i < raw.length - 1; i++) {
+    bytes += Buffer.byteLength(raw[i], 'utf8') + 1
+    const t = raw[i].trim()
+    if (!t) continue
+    let o: Json | null = null
+    try {
+      o = obj(JSON.parse(t))
+    } catch {
+      o = null
+    }
+    if (!o) continue
+    lines.push(o)
+    if (str(o.type) === 'system' && str(o.subtype) === 'turn_duration') break
+  }
+  return { lines, bytes }
+}
 
 /** Parse an NDJSON blob into objects, counting the lines that would not parse. */
 export function parseNdjson(text: string): { lines: Json[]; malformed: number } {

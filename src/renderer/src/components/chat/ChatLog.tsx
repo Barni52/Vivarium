@@ -1,57 +1,127 @@
 import React from 'react'
 import type { ChatEntry, ChatToolStatus } from '@shared/types'
-import { ACCENT, CHIP, MONO } from '../../theme'
+import { CHAT, CHAT_GUTTER as GUTTER, MONO } from '../../theme'
 import { Elapsed } from '../Elapsed'
 import { Md, clock } from './Markdown'
 
-// The transcript is a **gutter log, not a bubble stream**: full bleed, a fixed
-// left column carrying hh:mm + who is speaking, content running to the window
-// edge. Every row shares a left edge — that is what makes a long turn scannable,
-// and it is also the argument that keeps subagent frames *out* of here (§9.2)
-// and keeps the todo strip and the turn clock where they are.
+// The transcript, built to `docs/redisign/Chat Terminal.html`.
+//
+// **A two-column grid inside a reading column**, not a full-bleed gutter log. The
+// left column is 96px of `hh:mm  role`, right-aligned; the right column is the
+// message. Every row shares that boundary, which is what makes a long turn
+// scannable — and the whole grid is centred in an 880px measure, because this is
+// a window you *read* in and a paragraph that runs to a 2560px edge is not read,
+// it is scanned.
+//
+// **The three families are told apart by treatment, not by the role word.** That
+// was the bug: one grey mono line each, differing only in a word most of which
+// are five characters long.
+//
+//   you     — a lifted band across the full row width, coral role word, bright
+//             prose. It is what the eye finds when scrolling back.
+//   claude  — no band, cool cyan role word, prose one step below white. The page.
+//   the rest — bordered mono cards on `CHAT.card`. Tool calls, command output,
+//             plans, clocks and stops all live in that one family, so a burst of
+//             twelve of them reads as one block of machinery.
 
-const GUTTER = 96
-/** Prose measure. Everything is a notch larger than a terminal: this is a window you read in. */
-const MEASURE = 940
+/** Row padding and the gutter→content gap, from the mockup. */
+const ROW_PAD = '16px 18px'
+const COL_GAP = 20
 
 const mono: React.CSSProperties = {
   fontFamily: MONO,
-  fontSize: 12.5,
+  fontSize: 11.5,
   lineHeight: 1.55
 }
 
+/**
+ * One log row: the gutter, then the message.
+ *
+ * `band` is what a `you` row wears. It is a white lift rather than a tint of the
+ * accent, so it reads the same whatever hue `CHAT.you` is set to and never
+ * fights the coral role word sitting inside it.
+ */
 function Line({
   at,
   role,
   color,
+  band = false,
   children
 }: {
   at: number
   role: string
   color?: string
+  /** the lifted background that marks a turn you started */
+  band?: boolean
   children: React.ReactNode
 }): React.ReactElement {
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', padding: '2px 16px' }}>
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: `${GUTTER}px 1fr`,
+        gap: COL_GAP,
+        padding: ROW_PAD,
+        background: band ? CHAT.band : undefined
+      }}
+    >
       <div
         style={{
-          width: GUTTER,
-          flex: 'none',
           display: 'flex',
-          gap: 8,
+          gap: 9,
           justifyContent: 'flex-end',
-          paddingRight: 14,
-          paddingTop: 3,
+          alignItems: 'baseline',
+          paddingTop: 2,
           fontFamily: MONO,
-          fontSize: 11.5,
-          color: 'var(--text-3)',
+          fontSize: 11,
           userSelect: 'none'
         }}
       >
-        <span style={{ opacity: 0.6 }}>{clock(at)}</span>
-        <span style={{ color: color ?? 'var(--text-3)' }}>{role}</span>
+        <span style={{ color: CHAT.dim4 }}>{clock(at)}</span>
+        <span style={{ color: color ?? CHAT.dim2, fontWeight: 500 }}>{role}</span>
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
+      <div style={{ minWidth: 0 }}>{children}</div>
+    </div>
+  )
+}
+
+/**
+ * The machinery card: a bordered mono box on the panel fill.
+ *
+ * Everything that is not a person talking renders in one of these — the mockup
+ * draws it once, for `model set to haiku-4 (…)`, and the argument generalises:
+ * a tool call, a command's output and a turn clock are all the app reporting on
+ * itself, and giving each its own chrome is how the log stopped being readable.
+ */
+function Card({
+  children,
+  tone,
+  onClick,
+  title
+}: {
+  children: React.ReactNode
+  /** left marker colour; omitted for the ordinary case */
+  tone?: string
+  onClick?: () => void
+  title?: string
+}): React.ReactElement {
+  return (
+    <div
+      onClick={onClick}
+      title={title}
+      style={{
+        ...mono,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '8px 12px',
+        background: CHAT.card,
+        border: `1px solid ${tone ?? CHAT.borderCard}`,
+        color: CHAT.dim,
+        cursor: onClick ? 'pointer' : undefined
+      }}
+    >
+      {children}
     </div>
   )
 }
@@ -81,78 +151,70 @@ export function LogRow({
     case 'text':
       if (entry.role === 'you') {
         return (
-          <div
-            style={{
-              borderLeft: `2px solid ${ACCENT.chat}`,
-              background: 'var(--field)',
-              margin: '12px 0'
-            }}
-          >
-            <Line at={entry.at} role="you" color={ACCENT.chat}>
-              {entry.md && (
-                <div
-                  style={{
-                    fontSize: 14,
-                    lineHeight: 1.62,
-                    color: 'var(--text)',
-                    padding: '5px 0',
-                    whiteSpace: 'pre-wrap'
-                  }}
-                >
-                  {entry.md}
-                </div>
-              )}
-              {entry.chips && entry.chips.length > 0 && (
-                <div
-                  style={{
-                    display: 'flex',
-                    gap: 14,
-                    flexWrap: 'wrap',
-                    padding: '0 0 7px',
-                    fontFamily: MONO,
-                    fontSize: 12
-                  }}
-                >
-                  {entry.chips.map((c, i) => (
-                    <span key={`${c.name}-${i}`} style={{ color: 'var(--text-3)' }} title={c.detail}>
-                      {c.kind === 'image' ? '▣' : c.kind === 'path' ? '≡' : '⌘'} {c.name}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </Line>
-          </div>
+          <Line at={entry.at} role="you" color={CHAT.you} band>
+            {entry.md && (
+              <div
+                style={{
+                  fontSize: 14.5,
+                  lineHeight: 1.68,
+                  color: CHAT.text,
+                  whiteSpace: 'pre-wrap'
+                }}
+              >
+                {entry.md}
+              </div>
+            )}
+            {entry.chips && entry.chips.length > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 14,
+                  flexWrap: 'wrap',
+                  marginTop: entry.md ? 10 : 0,
+                  fontFamily: MONO,
+                  fontSize: 10.5,
+                  color: CHAT.dim3
+                }}
+              >
+                {entry.chips.map((c, i) => (
+                  <span key={`${c.name}-${i}`} title={c.detail}>
+                    {c.kind === 'image' ? '▣' : c.kind === 'path' ? '≡' : '⌘'} {c.name}
+                  </span>
+                ))}
+              </div>
+            )}
+          </Line>
         )
       }
       return (
-        <Line at={entry.at} role="claude">
-          <div style={{ maxWidth: MEASURE, paddingBottom: 5 }}>
-            <Md src={entry.md} size={14} />
-          </div>
+        <Line at={entry.at} role="claude" color={CHAT.claude}>
+          <Md src={entry.md} />
         </Line>
       )
 
     case 'thinking':
-      return <Collapsible at={entry.at} role="think" md={entry.md} />
+      return <Thinking at={entry.at} md={entry.md} />
 
     case 'tool':
       return <ToolCard entry={entry} handlers={handlers} />
 
     case 'cmd':
-      // Open and truncated like an edit body — a context table is exactly what
-      // you asked to see. `Unknown command: /x` lands here too: it is a reply,
-      // not an error.
+      // A Skill's body (`/name`) is markdown the model wrote; a *local* command's
+      // stdout has no title and is terminal output — `/context` draws an ASCII
+      // meter, and reflowing that into a paragraph is how it used to render.
       return (
-        <Line at={entry.at} role="cmd" color={CHIP.model}>
-          <div style={{ maxWidth: MEASURE, padding: '2px 0 6px' }}>
-            {entry.title && (
-              <div style={{ ...mono, color: 'var(--text)' }}>{entry.title}</div>
-            )}
-            <Md src={entry.md} size={13.5} />
-            {entry.truncated && (
-              <div style={{ ...mono, color: 'var(--text-3)', opacity: 0.7 }}>…</div>
-            )}
-          </div>
+        <Line at={entry.at} role="cmd" color={CHAT.dim2}>
+          {entry.title ? (
+            <>
+              <Card>{entry.title}</Card>
+              <Md src={entry.md} />
+            </>
+          ) : (
+            <Card>
+              <span style={{ whiteSpace: 'pre-wrap' }}>{entry.md}</span>
+            </Card>
+          )}
+          {entry.truncated && <div style={{ ...mono, color: CHAT.dim3, marginTop: 4 }}>…</div>}
         </Line>
       )
 
@@ -160,38 +222,36 @@ export function LogRow({
       // Once answered the chosen option keeps a tick while the rest go grey: the
       // options not taken are the record of what the decision was between.
       return (
-        <Line at={entry.at} role="ask" color={CHIP.plan}>
-          <div style={{ padding: '5px 0 9px', maxWidth: MEASURE }}>
-            {entry.questions.map((q, qi) => (
-              <div key={qi} style={{ marginBottom: 9 }}>
-                <div style={{ fontSize: 13.5, color: 'var(--text)', marginBottom: 7 }}>
-                  {q.question}
-                </div>
-                <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-                  {q.options.map((o) => {
-                    const picked = entry.answers.includes(o.label)
-                    return (
-                      <span
-                        key={o.label}
-                        title={o.description}
-                        style={{
-                          fontFamily: MONO,
-                          fontSize: 12,
-                          padding: '4px 10px',
-                          border: `1px solid ${picked ? ACCENT.chat : 'var(--border)'}`,
-                          color: picked ? 'var(--text)' : 'var(--text-3)',
-                          background: picked ? 'rgba(192,139,184,.09)' : 'transparent'
-                        }}
-                      >
-                        {picked ? '✓ ' : ''}
-                        {o.label}
-                      </span>
-                    )
-                  })}
-                </div>
+        <Line at={entry.at} role="ask" color={CHAT.hold}>
+          {entry.questions.map((q, qi) => (
+            <div key={qi} style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 14, lineHeight: 1.6, color: CHAT.prose, marginBottom: 8 }}>
+                {q.question}
               </div>
-            ))}
-          </div>
+              <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+                {q.options.map((o) => {
+                  const picked = entry.answers.includes(o.label)
+                  return (
+                    <span
+                      key={o.label}
+                      title={o.description}
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 11.5,
+                        padding: '5px 11px',
+                        border: `1px solid ${picked ? CHAT.hold : CHAT.border}`,
+                        color: picked ? CHAT.text : CHAT.dim3,
+                        background: picked ? CHAT.card : 'transparent'
+                      }}
+                    >
+                      {picked ? '✓ ' : ''}
+                      {o.label}
+                    </span>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
         </Line>
       )
 
@@ -200,20 +260,19 @@ export function LogRow({
       // complete record; the *buttons* are pinned above the composer, so a
       // decision cannot scroll away behind twenty tool calls.
       return (
-        <Line at={entry.at} role="plan" color={CHIP.plan}>
+        <Line at={entry.at} role="plan" color={CHAT.hold}>
           <div
             style={{
-              maxWidth: MEASURE,
-              border: '1px solid var(--border)',
-              borderLeft: `2px solid ${CHIP.plan}`,
-              padding: '3px 15px 11px',
-              margin: '7px 0',
-              opacity: entry.state === 'cancelled' ? 0.75 : 1
+              background: CHAT.card,
+              border: `1px solid ${CHAT.borderCard}`,
+              borderLeft: `2px solid ${CHAT.hold}`,
+              padding: '4px 15px 12px',
+              opacity: entry.state === 'cancelled' ? 0.7 : 1
             }}
           >
-            <Md src={entry.md} size={14} />
+            <Md src={entry.md} />
             {entry.state !== 'pending' && (
-              <div style={{ ...mono, color: 'var(--text-3)' }}>{entry.state}</div>
+              <div style={{ ...mono, color: CHAT.dim3, marginTop: 6 }}>{entry.state}</div>
             )}
           </div>
         </Line>
@@ -223,11 +282,11 @@ export function LogRow({
       return <TaskRow entry={entry} handlers={handlers} depth={depth} />
 
     case 'todo':
-      // Always one line — the second exception to open-by-default. It changed
-      // nothing on disk; the *fold* is the strip above the composer.
+      // Always one line — it changed nothing on disk; the *fold* (current state)
+      // is the strip above the composer.
       return (
-        <Line at={entry.at} role="todo">
-          <div style={{ ...mono, color: 'var(--text-3)', padding: '2px 0' }}>{entry.text}</div>
+        <Line at={entry.at} role="todo" color={CHAT.dim2}>
+          <div style={{ ...mono, color: CHAT.dim3, paddingTop: 3 }}>{entry.text}</div>
         </Line>
       )
 
@@ -236,18 +295,15 @@ export function LogRow({
       // *attend to this*; an interrupt is something the user just did, so it
       // earns a role word and nothing more.
       return (
-        <Line at={entry.at} role="stop" color={entry.tone === 'alert' ? 'var(--danger)' : undefined}>
-          <div
-            style={{
-              ...mono,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-              color: entry.tone === 'alert' ? 'var(--danger)' : 'var(--text-3)',
-              padding: '6px 0'
-            }}
-          >
-            {entry.text}
+        <Line
+          at={entry.at}
+          role="stop"
+          color={entry.tone === 'alert' ? CHAT.danger : CHAT.dim2}
+        >
+          <Card tone={entry.tone === 'alert' ? CHAT.danger : undefined}>
+            <span style={{ color: entry.tone === 'alert' ? CHAT.danger : CHAT.dim }}>
+              {entry.text}
+            </span>
             {entry.retry && (
               // Never automatic: a respawn costs a process and a 14.6 MB-class
               // transcript read, and a crash loop that retried itself would be
@@ -257,46 +313,47 @@ export function LogRow({
                 onClick={handlers.onRetry}
                 style={{
                   ...mono,
-                  border: '1px solid var(--border)',
+                  marginLeft: 'auto',
+                  border: `1px solid ${CHAT.border}`,
                   background: 'transparent',
-                  color: 'var(--text-2)',
+                  color: CHAT.dim2,
                   padding: '2px 10px',
                   cursor: 'pointer'
                 }}
               >
-                Retry
+                retry
               </button>
             )}
-          </div>
+          </Card>
         </Line>
       )
 
     case 'divider':
       return (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px 12px' }}>
-          <span style={{ flex: 'none', width: GUTTER - 14 }} />
-          <span style={{ ...mono, color: 'var(--text-3)', flex: 'none' }}>{entry.text}</span>
-          <span style={{ flex: 1, height: 1, background: 'var(--border-2)' }} />
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: `${GUTTER}px 1fr`,
+            gap: COL_GAP,
+            padding: '10px 18px'
+          }}
+        >
+          <span />
+          <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ ...mono, color: CHAT.dim3, flex: 'none' }}>{entry.text}</span>
+            <span style={{ flex: 1, height: 1, background: CHAT.borderSoft }} />
+          </span>
         </div>
       )
 
     case 'turn':
       // The turn clock, in the log where the eye already is — live while the turn
-      // runs, frozen in place at `result`. Not a header chip: #5 enumerated the
-      // header's three items without it, and a separate activity lane was the
-      // thing variant B lost on.
+      // runs, frozen in place at `result`. Not a header chip: the header is three
+      // readings and no fourth, and a separate activity lane was the thing an
+      // earlier variant lost on.
       return (
-        <Line at={entry.at} role="run" color={ACCENT.chat}>
-          <div
-            style={{
-              ...mono,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 9,
-              color: 'var(--text-3)',
-              padding: '3px 0'
-            }}
-          >
+        <Line at={entry.at} role="run" color={CHAT.dim2}>
+          <Card>
             {entry.durationMs === undefined ? (
               <>
                 <Dots />
@@ -304,23 +361,23 @@ export function LogRow({
                 <Elapsed since={entry.startedAt} />
                 {/* Discoverability for interrupt, on screen exactly when it is
                     usable and nowhere else. */}
-                <span style={{ opacity: 0.65 }}>· esc interrupts</span>
+                <span style={{ color: CHAT.dim3 }}>· esc interrupts</span>
               </>
             ) : (
               <span>
                 done · <Elapsed since={0} until={entry.durationMs} />
               </span>
             )}
-          </div>
+          </Card>
         </Line>
       )
   }
 }
 
 /** Three-dot working indicator, reusing the app's existing vthink keyframes. */
-export function Dots({ color = ACCENT.chat }: { color?: string }): React.ReactElement {
+export function Dots({ color = CHAT.you }: { color?: string }): React.ReactElement {
   return (
-    <span style={{ display: 'inline-flex', gap: 3, alignItems: 'center' }}>
+    <span style={{ display: 'inline-flex', gap: 3, alignItems: 'center', flex: 'none' }}>
       {[0, 1, 2].map((n) => (
         <span
           key={n}
@@ -337,53 +394,53 @@ export function Dots({ color = ACCENT.chat }: { color?: string }): React.ReactEl
   )
 }
 
-/** A `think` row: collapsed to its first line, because that is usually enough. */
-function Collapsible({ at, role, md }: { at: number; role: string; md: string }): React.ReactElement {
+/**
+ * Thinking sits on the `claude` row in the mockup — one italic line with a
+ * `show` on the right, above the prose it led to. It keeps its own row here
+ * because main emits it as its own entry, but it wears the same clothes.
+ */
+function Thinking({ at, md }: { at: number; md: string }): React.ReactElement {
   const [open, setOpen] = React.useState(false)
   const first = md.trim().split('\n')[0] ?? ''
   return (
-    <Line at={at} role={role}>
-      <div style={{ padding: '2px 0', maxWidth: MEASURE }}>
-        <button
-          onClick={() => setOpen(!open)}
+    <Line at={at} role="claude" color={CHAT.claude}>
+      <div
+        onClick={() => setOpen(!open)}
+        style={{ display: 'flex', alignItems: 'baseline', gap: 9, cursor: 'pointer', userSelect: 'none' }}
+      >
+        <div
           style={{
-            display: 'flex',
-            gap: 10,
-            border: 0,
-            background: 'transparent',
-            padding: 0,
-            cursor: 'pointer',
-            textAlign: 'left',
-            color: 'var(--text-3)',
-            fontSize: 13,
+            flex: 1,
+            minWidth: 0,
+            fontSize: 12.5,
             fontStyle: 'italic',
-            maxWidth: '100%'
+            color: '#5F6874',
+            lineHeight: 1.6,
+            whiteSpace: open ? 'pre-wrap' : 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis'
           }}
         >
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {first}
-          </span>
-          <span style={{ ...mono, fontSize: 11, opacity: 0.7, flex: 'none' }}>
-            {open ? '▾ hide' : '▸ show'}
-          </span>
-        </button>
-        {open && <Md src={md} size={13} />}
+          {open ? md : first}
+        </div>
+        <div style={{ flex: 'none', fontFamily: MONO, fontSize: 10.5, color: CHAT.dim3 }}>
+          {open ? 'hide' : 'show'}
+        </div>
       </div>
     </Line>
   )
 }
 
 function statusColor(status: ChatToolStatus): string {
-  if (status === 'error') return 'var(--danger)'
-  return 'var(--text-3)'
+  if (status === 'error') return CHAT.danger
+  return CHAT.dim2
 }
 
 /**
  * **Open by default and truncated — inverted from the obvious default.** An edit
  * shows its diff and a command shows the tail of its output; a read and a search
- * collapse to their gutter line. A read changed nothing; a diff is what you
- * scrolled back for. Collapse-everything was rejected for making the common case
- * a click.
+ * collapse to their card. A read changed nothing; a diff is what you scrolled
+ * back for. Collapse-everything was rejected for making the common case a click.
  */
 function ToolCard({
   entry,
@@ -401,108 +458,93 @@ function ToolCard({
   const [open, setOpen] = React.useState(!quiet)
   const full = handlers.bodies[entry.id]
   const text = full ?? entry.body.text
+  const expandable = entry.body.kind !== 'none' && !!entry.body.text
 
   const toggle = (): void => {
+    if (!expandable) return
     if (!open && entry.body.truncated) handlers.onExpand(entry.id)
     setOpen(!open)
   }
 
   return (
-    <Line at={entry.at} role={entry.role}>
-      <div style={{ padding: '2px 0' }}>
-        <button
-          onClick={toggle}
+    <Line at={entry.at} role={entry.role} color={CHAT.dim2}>
+      <Card onClick={expandable ? toggle : undefined}>
+        <span
           style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 11,
-            border: 0,
-            background: 'transparent',
-            padding: 0,
-            cursor: 'pointer',
-            textAlign: 'left',
-            maxWidth: '100%'
+            color: CHAT.text,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
           }}
         >
-          <span
-            style={{
-              ...mono,
-              color: 'var(--text)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap'
-            }}
-          >
-            {entry.title}
+          {entry.title}
+        </span>
+        {entry.status === 'running' ? (
+          <>
+            <Dots />
+            {/* A tool running past ~2s shows a number, so a fast Read never
+                flickers one. */}
+            <SlowClock since={entry.at} />
+          </>
+        ) : (
+          <span style={{ color: statusColor(entry.status), flex: 'none' }}>{entry.result}</span>
+        )}
+        {expandable && (
+          <span style={{ marginLeft: 'auto', flex: 'none', fontSize: 10.5, color: CHAT.dim3 }}>
+            {open ? 'hide' : 'show'}
           </span>
-          {entry.status === 'running' ? (
-            <>
-              <Dots />
-              {/* A tool running past ~2s shows a number, so a fast Read never
-                  flickers one. */}
-              <SlowClock since={entry.at} />
-            </>
-          ) : (
-            <span style={{ ...mono, color: statusColor(entry.status), flex: 'none' }}>
-              {entry.result}
-            </span>
-          )}
-          {entry.body.kind !== 'none' && entry.body.text && (
-            <span style={{ ...mono, fontSize: 11, color: 'var(--text-3)', opacity: 0.7, flex: 'none' }}>
-              {open ? '▾ hide' : '▸ show'}
-            </span>
-          )}
-        </button>
-
-        {open && entry.body.kind === 'diff' && (
-          <div
-            style={{
-              ...mono,
-              margin: '5px 0 9px',
-              border: '1px solid var(--border-2)',
-              maxWidth: MEASURE,
-              overflowX: 'auto'
-            }}
-          >
-            {text.split('\n').map((l, i) => (
-              <div
-                key={i}
-                style={{
-                  whiteSpace: 'pre',
-                  background:
-                    l.startsWith('+')
-                      ? 'rgba(89,168,164,.13)'
-                      : l.startsWith('-')
-                        ? 'rgba(250,77,86,.11)'
-                        : 'transparent',
-                  color: l.startsWith('+') || l.startsWith('-') ? 'var(--text)' : 'var(--text-3)',
-                  padding: '0 9px'
-                }}
-              >
-                {l || ' '}
-              </div>
-            ))}
-            {entry.body.truncated && !full && (
-              <div style={{ padding: '2px 9px', color: 'var(--text-3)' }}>…</div>
-            )}
-          </div>
         )}
+      </Card>
 
-        {open && entry.body.kind === 'text' && (
-          <div
-            style={{
-              ...mono,
-              margin: '5px 0 9px',
-              color: 'var(--text-3)',
-              whiteSpace: 'pre-wrap',
-              maxWidth: MEASURE,
-              overflowX: 'auto'
-            }}
-          >
-            {text}
-          </div>
-        )}
-      </div>
+      {open && entry.body.kind === 'diff' && (
+        <div
+          style={{
+            ...mono,
+            marginTop: 6,
+            border: `1px solid ${CHAT.borderCard}`,
+            background: CHAT.card,
+            overflowX: 'auto'
+          }}
+        >
+          {text.split('\n').map((l, i) => (
+            <div
+              key={i}
+              style={{
+                whiteSpace: 'pre',
+                background: l.startsWith('+')
+                  ? 'rgba(111,191,139,.10)'
+                  : l.startsWith('-')
+                    ? 'rgba(224,108,108,.10)'
+                    : 'transparent',
+                color: l.startsWith('+') || l.startsWith('-') ? CHAT.prose : CHAT.dim3,
+                padding: '0 10px'
+              }}
+            >
+              {l || ' '}
+            </div>
+          ))}
+          {entry.body.truncated && !full && (
+            <div style={{ padding: '2px 10px', color: CHAT.dim3 }}>…</div>
+          )}
+        </div>
+      )}
+
+      {open && entry.body.kind === 'text' && (
+        <div
+          style={{
+            ...mono,
+            marginTop: 6,
+            padding: '9px 12px',
+            border: `1px solid ${CHAT.borderCard}`,
+            background: CHAT.card,
+            color: CHAT.dim,
+            whiteSpace: 'pre-wrap',
+            overflowX: 'auto'
+          }}
+        >
+          {text}
+        </div>
+      )}
     </Line>
   )
 }
@@ -516,7 +558,7 @@ function SlowClock({ since }: { since: number }): React.ReactElement | null {
     return () => clearTimeout(t)
   }, [show])
   if (!show) return null
-  return <Elapsed since={since} style={{ ...mono, color: 'var(--text-3)' }} />
+  return <Elapsed since={since} style={{ ...mono, color: CHAT.dim3 }} />
 }
 
 /**
@@ -553,47 +595,40 @@ function TaskRow({
 
   return (
     <>
-      <Line at={entry.at} role="task" color={CHIP.model}>
-        <div style={{ padding: '2px 0' }}>
-          <div style={{ ...mono, color: 'var(--text)' }}>
-            {entry.agentType} · {entry.description}
-          </div>
-          <div style={{ ...mono, color: 'var(--text-3)', display: 'flex', gap: 9 }}>
-            {entry.running ? (
-              <>
-                <Dots />
-                <Elapsed since={entry.at} />
-              </>
-            ) : (
-              <span>{stats.join(' · ')}</span>
-            )}
-            <button
-              onClick={toggle}
-              style={{
-                ...mono,
-                fontSize: 11,
-                border: 0,
-                background: 'transparent',
-                color: 'var(--text-3)',
-                opacity: 0.75,
-                padding: 0,
-                cursor: 'pointer'
-              }}
-            >
-              {open ? '▾ hide' : `▸ show${sub.length ? ` ${sub.length} steps` : ''}`}
-            </button>
-          </div>
-        </div>
+      <Line at={entry.at} role="task" color={CHAT.dim2}>
+        <Card onClick={toggle}>
+          <span style={{ color: CHAT.text, flex: 'none' }}>{entry.agentType}</span>
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            {entry.description}
+          </span>
+          {entry.running ? (
+            <>
+              <Dots />
+              <Elapsed since={entry.at} style={{ flex: 'none' }} />
+            </>
+          ) : (
+            <span style={{ flex: 'none', color: CHAT.dim2 }}>{stats.join(' · ')}</span>
+          )}
+          <span style={{ flex: 'none', fontSize: 10.5, color: CHAT.dim3 }}>
+            {open ? 'hide' : `show${sub.length ? ` ${sub.length}` : ''}`}
+          </span>
+        </Card>
       </Line>
       {open && (
-        <div style={{ borderLeft: '1px solid var(--border-2)', marginLeft: GUTTER + 22 }}>
+        <div style={{ borderLeft: `1px solid ${CHAT.borderSoft}`, marginLeft: GUTTER + 18 }}>
           {sub.map((e) => (
             <LogRow key={e.id} entry={e} handlers={handlers} depth={depth + 1} />
           ))}
           {sub.length === 0 && (
-            <div style={{ ...mono, color: 'var(--text-3)', padding: '4px 16px' }}>
-              no steps recorded
-            </div>
+            <div style={{ ...mono, color: CHAT.dim3, padding: '8px 18px' }}>no steps recorded</div>
           )}
         </div>
       )}

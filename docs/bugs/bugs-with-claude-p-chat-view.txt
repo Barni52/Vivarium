@@ -1,0 +1,5 @@
+1: This is how changing model looks like: <local-command-stdout>Set model to claude-fable-5[1m] (claude-fable-5)</local-command-stdout>
+2: when I send the message the response doesnt arrive correctly, and the last response from the model gets cut off
+3: the model selector doesnt show the latest models (no opus 5 e.g.)
+4: escape to end model turn does not work at all, the top bar looks really bad, polish it
+5: the distinction between user turn, tool call, and ai response are very hard to tell apart, it looked much better when designing, please fix

@@ -2,27 +2,34 @@ import React from 'react'
 import type {
   ChatAnswer,
   ChatBlockingCard,
+  ChatContextUsage,
   ChatEntry,
   ChatMode,
+  ChatModelOption,
   ChatTodo,
   MountNode,
   Project,
   Session
 } from '@shared/types'
 import { useStore } from '../../state/store'
-import { ACCENT, CHIP, MONO, ctxColor } from '../../theme'
-import { ChatBubble } from '../Icons'
+import { CHAT, CHAT_MEASURE as MEASURE, MONO, ctxColor } from '../../theme'
 import { LogRow, type LogHandlers } from './ChatLog'
 import { chipForNode, flattenTree, routeFile, type PendingChip } from './attach'
 
-// Variant D: **C's log body inside A's chrome** — a gutter log you can scan,
-// under a proper session header, over a composer that is only a box.
+// The chat window, built to `docs/redisign/Chat Terminal.html`: a 52px header of
+// readings, a log centred in an 880px reading column, and a composer that is a
+// raised panel with a status line inside it.
 //
-// The composer has no attach button, no `⏎ send` hint and no Send or Interrupt
-// button, because every affordance has a home that costs no chrome: Enter sends,
-// Esc interrupts (taught on the live working row, on screen exactly when it is
-// usable), Ctrl+V and drag-drop attach, and two typeaheads live inside the box —
-// `@` anywhere over the mounted tree, `/` at position 0 only.
+// **The composer is no longer "only a box".** The earlier version had no send
+// button and no `⏎ send` hint on the argument that every affordance already had a
+// free home — Enter sends, Esc interrupts, Ctrl+V attaches. That argument is
+// sound about *capability* and wrong about *discoverability*: none of it is on
+// screen, so none of it is findable, and the mode and model you are about to send
+// under were only readable by looking back up at the header. The footer row
+// carries all of it — `plan · haiku-4` on the left, `⏎ send · ⇧⏎ newline` and a
+// send button on the right — inside the box, which costs one line and no chrome
+// anywhere else. Attaching stays gesture-only (Ctrl+V, drag-drop, `@`), and Esc
+// is still taught on the live working row where it is the only thing that helps.
 
 export function ChatView({
   project,
@@ -57,7 +64,7 @@ export function ChatView({
   const [focus, setFocus] = React.useState(false)
   const [dragOver, setDragOver] = React.useState(false)
   const [menu, setMenu] = React.useState<null | { kind: 'slash' | 'at'; query: string }>(null)
-  const [models, setModels] = React.useState<string[] | null>(null)
+  const [models, setModels] = React.useState<ChatModelOption[] | null>(null)
   const [modelMenu, setModelMenu] = React.useState(false)
 
   const inputRef = React.useRef<HTMLTextAreaElement>(null)
@@ -95,10 +102,24 @@ export function ChatView({
     if (el && pinned.current) el.scrollTop = el.scrollHeight
   }, [chat?.entries.length, visible])
 
+  // The composer grows with the draft to a ceiling, then scrolls. A textarea
+  // cannot do this itself — `rows` is a fixed count and `height:auto` measures to
+  // one line — so the height is set from scrollHeight, and reset to `auto` first
+  // or it can only ever grow. Layout effect, not effect: measuring after paint
+  // shows one frame of the wrong height on every keystroke.
+  React.useLayoutEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(180, Math.max(26, el.scrollHeight))}px`
+  }, [draft, visible])
+
   const entries = chat?.entries ?? []
   const blocking = chat?.blocking ?? null
   const todos = chat?.todos ?? []
   const mode: ChatMode = chat?.mode ?? session.mode ?? 'bypassPermissions'
+  const working = isWorking(entries)
+  const canSend = draft.trim().length > 0 || chips.some((c) => c.ok)
 
   const handlers: LogHandlers = {
     onExpand: (id) => void loadBody(session.id, id),
@@ -126,11 +147,21 @@ export function ChatView({
     // that disappears while you are reading it.
     const ready = chips.flatMap((c) => (c.ok ? [c.attachment] : []))
     if (!text && ready.length === 0) return
-    void sendChat(session.id, text, ready)
+    const sentDraft = draft
+    const sentChips = chips
     setDraft('')
     setChips([])
     setMenu(null)
     pinned.current = true
+    void sendChat(session.id, text, ready).then((ok) => {
+      // The process was gone — nothing was written and no row will ever appear
+      // for it. Clearing the box optimistically is right (the send all but always
+      // works, and a box that empties on Enter is the whole feel of a composer),
+      // but *keeping* it cleared here would silently eat the message.
+      if (ok) return
+      setDraft((d) => (d ? d : sentDraft))
+      setChips((c) => (c.length ? c : sentChips))
+    })
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -141,17 +172,33 @@ export function ChatView({
     }
   }
 
-  // The Esc handler lives on the chat container, not on the composer input, so it
-  // fires with focus on a tool card's expand button too — and never while a
-  // dialog is open, since a dialog takes focus out of this subtree. Esc keeps the
-  // single meaning it has everywhere else: stop this turn. With nothing running
-  // it is a no-op, and it must never clear the draft — a stray Esc destroying a
-  // half-written prompt is the only genuinely unrecoverable outcome in this area.
-  const onContainerKeyDown = (e: React.KeyboardEvent): void => {
-    if (e.key !== 'Escape') return
-    e.stopPropagation()
-    void interruptChat(session.id)
-  }
+  // Esc keeps the single meaning it has everywhere else in the app: stop this
+  // turn. With nothing running it is a no-op, and it must never clear the draft —
+  // a stray Esc destroying a half-written prompt is the only genuinely
+  // unrecoverable outcome in this area.
+  //
+  // It listens on the **window**, not on the chat container, and that is the fix
+  // rather than a preference: React delivers keydown by bubbling from the focused
+  // element, and this view spends most of its life with focus on `document.body`
+  // — every click on the log, on a tool card's body, on the scrollbar, and the
+  // whole time after a send lands and blurs nothing. Those events never enter the
+  // container's subtree at all, so the handler that lived there fired only while
+  // the caret was in the composer, which reads as "esc does nothing".
+  //
+  // Guarded twice over: only the visible view (one chat is mounted per opened
+  // session, all but one hidden), and never while a dialog or a context menu is
+  // up, where Esc means dismiss and the owner of that surface handles it.
+  React.useEffect(() => {
+    if (!visible) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      const s = useStore.getState()
+      if (s.dialog || s.contextMenu) return
+      void interruptChat(session.id)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [visible, interruptChat, session.id])
 
   const onDraft = (v: string, caret: number): void => {
     setDraft(v)
@@ -197,7 +244,6 @@ export function ChatView({
 
   return (
     <div
-      onKeyDown={onContainerKeyDown}
       onDragOver={(e) => {
         e.preventDefault()
         setDragOver(true)
@@ -213,13 +259,14 @@ export function ChatView({
         inset: 0,
         display: 'flex',
         flexDirection: 'column',
-        background: 'var(--terminal-bg)',
+        background: CHAT.bg,
+        color: CHAT.text,
         // Hidden rather than unmounted, like a terminal — but for a weaker
         // reason: nothing in a chat is unrecoverable, so terminals *must* stay
         // mounted while a chat merely *may*. What it buys is scroll position,
         // which cards are expanded, and the draft.
         visibility: visible ? 'visible' : 'hidden',
-        outline: dragOver ? `1px dashed ${ACCENT.chat}` : 'none'
+        outline: dragOver ? `1px dashed ${CHAT.you}` : 'none'
       }}
     >
       <Header
@@ -227,14 +274,11 @@ export function ChatView({
         project={project}
         mode={mode}
         model={chat?.model ?? null}
-        contextPct={chat?.context?.percentage ?? null}
-        contextTitle={
-          chat?.context
-            ? `${tok(chat.context.totalTokens)} / ${tok(chat.context.maxTokens)} · ${chat.context.percentage}%${chat.context.approximate ? ' (approximate)' : ''}`
-            : 'Context usage unavailable'
-        }
+        context={chat?.context ?? null}
+        live={!!chat?.open}
         onMode={(m) => void setChatMode(session.id, m)}
         onModelClick={() => void openModelMenu()}
+        onCloseModelMenu={() => setModelMenu(false)}
         modelMenu={modelMenu}
         models={models}
         onPickModel={(m) => {
@@ -254,11 +298,11 @@ export function ChatView({
             display: 'flex',
             alignItems: 'center',
             gap: 12,
-            padding: '8px 16px',
-            background: 'var(--panel)',
-            borderBottom: '1px solid var(--border)',
+            padding: '8px 20px',
+            background: CHAT.card,
+            borderBottom: `1px solid ${CHAT.borderSoft}`,
             fontSize: 12.5,
-            color: 'var(--text-2)'
+            color: CHAT.dim
           }}
         >
           <span>Could not read this conversation’s history — {chat.historyError}</span>
@@ -266,132 +310,230 @@ export function ChatView({
             onClick={() => void openChat(project.id, session.id, true)}
             style={{
               fontFamily: MONO,
-              fontSize: 12,
-              border: '1px solid var(--border)',
+              fontSize: 11.5,
+              border: `1px solid ${CHAT.border}`,
               background: 'transparent',
-              color: 'var(--text-2)',
+              color: CHAT.dim2,
               padding: '2px 10px',
               cursor: 'pointer'
             }}
           >
-            Retry
+            retry
           </button>
         </div>
       )}
 
       <div
         ref={logRef}
+        className="vchat-scroll"
         onScroll={(e) => {
           const el = e.currentTarget
           pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
         }}
-        style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '12px 0 16px' }}
+        style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}
       >
-        {chat && chat.total > entries.length && (
-          <button
-            onClick={() => void loadEarlier(session.id)}
-            style={{
-              display: 'block',
-              margin: '4px auto 12px',
-              fontFamily: MONO,
-              fontSize: 11.5,
-              border: '1px solid var(--border)',
-              background: 'transparent',
-              color: 'var(--text-3)',
-              padding: '3px 12px',
-              cursor: 'pointer'
-            }}
-          >
-            load earlier ({chat.total - entries.length})
-          </button>
-        )}
-        {entries.map((e) => (
-          <LogRow key={e.id} entry={e} handlers={handlers} />
-        ))}
-        {entries.length === 0 && chat?.open && (
-          <div
-            style={{
-              padding: '48px 16px',
-              textAlign: 'center',
-              fontSize: 13,
-              color: 'var(--text-3)'
-            }}
-          >
-            Nothing said yet — ask something below.
-          </div>
-        )}
+        {/* The reading column. Everything below the header lives in it — the log,
+            the pinned bands and the composer — so a message, the plan you are
+            approving and the box you answer in all share one left and right edge. */}
+        <div style={{ maxWidth: MEASURE, margin: '0 auto', padding: '26px 24px 40px' }}>
+          {chat && chat.total > entries.length && (
+            <button
+              onClick={() => void loadEarlier(session.id)}
+              style={{
+                display: 'block',
+                margin: '0 auto 18px',
+                fontFamily: MONO,
+                fontSize: 10.5,
+                border: `1px solid ${CHAT.border}`,
+                background: 'transparent',
+                color: CHAT.dim3,
+                padding: '4px 12px',
+                cursor: 'pointer'
+              }}
+            >
+              load earlier ({chat.total - entries.length})
+            </button>
+          )}
+          {entries.map((e) => (
+            <LogRow key={e.id} entry={e} handlers={handlers} />
+          ))}
+          {entries.length === 0 && chat?.open && (
+            <div
+              style={{
+                padding: '48px 18px',
+                fontSize: 13.5,
+                lineHeight: 1.7,
+                color: CHAT.dim3
+              }}
+            >
+              Nothing said yet — ask something below.
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* The pinned region: three bands, widest scope to narrowest, each absent
-          entirely when empty. Nothing is ever hidden by something else — letting
-          a pending card displace the todo strip was rejected, because it does not
-          make the buttons more visible (they are adjacent either way) and it
-          costs a disappearance the user did not cause. */}
-      {todos.length > 0 && <TodoStrip todos={todos} />}
-      {blocking && (
-        <BlockingBar
-          card={blocking}
-          onAnswer={(answer) => void answerChat(session.id, blocking.requestId, answer)}
-        />
-      )}
-      {chips.length > 0 && (
-        <ChipStrip chips={chips} onRemove={(id) => setChips((c) => c.filter((x) => x.id !== id))} />
-      )}
+      {/* The composer region floats over the end of the log rather than sitting
+          below it: the gradient is what makes the last row fade out under the box
+          instead of stopping at a hard rule. */}
+      <div
+        style={{
+          flex: 'none',
+          padding: '0 24px 22px',
+          background: `linear-gradient(to top, ${CHAT.bg} 70%, ${CHAT.bg}00)`
+        }}
+      >
+        <div style={{ maxWidth: MEASURE, margin: '0 auto', position: 'relative' }}>
+          {/* The pinned bands, widest scope to narrowest, each absent entirely
+              when empty. Nothing is ever hidden by something else — letting a
+              pending card displace the todo strip was rejected, because it does
+              not make the buttons more visible (they are adjacent either way) and
+              it costs a disappearance the user did not cause. */}
+          {todos.length > 0 && <TodoStrip todos={todos} />}
+          {blocking && (
+            <BlockingBar
+              card={blocking}
+              onAnswer={(answer) => void answerChat(session.id, blocking.requestId, answer)}
+            />
+          )}
+          {chips.length > 0 && (
+            <ChipStrip
+              chips={chips}
+              onRemove={(id) => setChips((c) => c.filter((x) => x.id !== id))}
+            />
+          )}
+          {menu && (
+            <Typeahead
+              kind={menu.kind}
+              query={menu.query}
+              commands={chat?.commands ?? []}
+              tree={tree}
+              onCommand={pickCommand}
+              onNode={pickNode}
+            />
+          )}
 
-      <div style={{ flex: 'none', borderTop: '1px solid var(--border)', background: 'var(--bg)' }}>
-        {menu && (
-          <Typeahead
-            kind={menu.kind}
-            query={menu.query}
-            commands={chat?.commands ?? []}
-            tree={tree}
-            onCommand={pickCommand}
-            onNode={pickNode}
-          />
-        )}
-        <div style={{ padding: '12px 16px 14px' }}>
-          <textarea
-            ref={inputRef}
-            rows={2}
-            value={draft}
-            onChange={(e) => onDraft(e.target.value, e.target.selectionStart)}
-            onKeyDown={onKeyDown}
-            onFocus={() => setFocus(true)}
-            onBlur={() => setFocus(false)}
-            onPaste={(e) => {
-              const items = Array.from(e.clipboardData.files)
-              if (items.length) {
-                e.preventDefault()
-                void addFiles(items)
-              }
-            }}
-            placeholder={placeholderFor(chat?.open ?? false, !!blocking, isWorking(entries))}
+          <div
             style={{
-              display: 'block',
-              width: '100%',
-              border: '1px solid var(--border)',
-              // The one piece of feedback left: the box says it has the keyboard.
-              borderColor: focus ? 'var(--text-3)' : 'var(--border)',
-              background: 'var(--field)',
-              color: 'var(--text)',
-              fontSize: 14,
-              lineHeight: 1.6,
-              padding: '11px 13px',
-              resize: 'none',
-              outline: 'none',
-              // The find-bar precedent: a control focused for as long as it exists
-              // has no business lighting the global focus ring.
-              boxShadow: 'none'
+              padding: '14px 16px 12px',
+              background: CHAT.composer,
+              border: `1px solid ${focus ? CHAT.border : CHAT.borderComposer}`,
+              boxShadow: '0 8px 30px rgba(0,0,0,.35)',
+              transition: 'border-color .16s'
             }}
-          />
+          >
+            <textarea
+              ref={inputRef}
+              rows={1}
+              value={draft}
+              onChange={(e) => onDraft(e.target.value, e.target.selectionStart)}
+              onKeyDown={onKeyDown}
+              onFocus={() => setFocus(true)}
+              onBlur={() => setFocus(false)}
+              onPaste={(e) => {
+                const items = Array.from(e.clipboardData.files)
+                if (items.length) {
+                  e.preventDefault()
+                  void addFiles(items)
+                }
+              }}
+              placeholder={placeholderFor(chat?.open ?? false, !!blocking, working)}
+              style={{
+                display: 'block',
+                width: '100%',
+                minHeight: 26,
+                // Height is driven by the layout effect above; the cap is here so
+                // a 200-line paste scrolls inside the box instead of eating the log.
+                maxHeight: 180,
+                overflowY: 'auto',
+                border: 0,
+                background: 'transparent',
+                color: CHAT.text,
+                fontSize: 14.5,
+                lineHeight: 1.55,
+                padding: 0,
+                resize: 'none',
+                outline: 'none',
+                // The find-bar precedent: a control focused for as long as it
+                // exists has no business lighting the global focus ring.
+                boxShadow: 'none'
+              }}
+            />
+
+            {/* The status line. What you are about to send under, and how to send
+                it — both readings the header used to be the only home for. */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 7,
+                  fontFamily: MONO,
+                  fontSize: 10.5,
+                  color: CHAT.dim3
+                }}
+              >
+                <span
+                  style={{
+                    padding: '2px 7px',
+                    border: `1px solid ${mode === 'plan' ? `${CHAT.mode}55` : `${CHAT.you}55`}`,
+                    color: mode === 'plan' ? CHAT.mode : CHAT.you
+                  }}
+                >
+                  {mode === 'plan' ? 'plan' : 'bypass'}
+                </span>
+                <span>·</span>
+                <span>{shortModel(chat?.model ?? null)}</span>
+              </div>
+              <div
+                style={{
+                  marginLeft: 'auto',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 14
+                }}
+              >
+                <span style={{ fontFamily: MONO, fontSize: 10.5, color: CHAT.dim4 }}>
+                  {working ? 'esc interrupt · ⏎ queue' : '⏎ send · ⇧⏎ newline'}
+                </span>
+                {/* Mirrors Enter, and the only reason it exists is that Enter is
+                    invisible. Interrupt deliberately did *not* take this slot: a
+                    button that changes what it does under your cursor mid-turn is
+                    how you cancel a turn you meant to send. */}
+                <button
+                  onClick={send}
+                  disabled={!canSend}
+                  style={{
+                    padding: '7px 16px',
+                    border: 0,
+                    fontFamily: MONO,
+                    fontSize: 11.5,
+                    fontWeight: 500,
+                    transition: '.14s',
+                    background: canSend ? CHAT.you : '#1A2029',
+                    color: canSend ? CHAT.bg : CHAT.dim2,
+                    cursor: canSend ? 'pointer' : 'default'
+                  }}
+                >
+                  send
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   )
 }
 
+/**
+ * `41200` → `41.2k`, `126000` → `126k`. One decimal below 100k, none above: the
+ * header reading is a *rate* you watch climb, and rounding 41 200 to `41k` hides
+ * every change until the next thousand lands.
+ */
 function tok(n: number): string {
-  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n)
+  if (n < 1000) return String(n)
+  const k = n / 1000
+  return k < 100 ? `${Math.round(k * 10) / 10}k` : `${Math.round(k)}k`
 }
 
 /** A turn is in flight while its clock row has no frozen duration yet. */
@@ -413,20 +555,30 @@ function placeholderFor(open: boolean, blocking: boolean, working: boolean): str
 
 // ---- chrome ---------------------------------------------------------------
 /**
- * Exactly three items on the right, and it gains no fourth: the mode chip and the
- * model chip are things you *press*, and the context meter is the only pure
- * reading left — which is what makes the other two read as controls at all. The
- * turn clock went into the log for this reason, and cost stayed out entirely.
+ * Four readings and two controls, all on one 52px line: the session name and its
+ * project on the left, then the context meter, the mode toggle and the model
+ * chip on the right.
+ *
+ * The context reading leads with the numbers (`41.2k / 200k`) and the bar is the
+ * afterthought beside them — the reverse of what shipped, which was a bare 8px
+ * bar with no scale, floating against nothing. It is still not clickable: a click
+ * sending /context was genuinely cheap, but it would make a header click *write
+ * to the transcript*, which nothing else in the header does.
+ *
+ * The model chip carries a liveness dot, and that dot is the only green in the
+ * chat. It means the CLI process is up — the same fact the app's running
+ * indicator means elsewhere, so the colour is not overloaded, it is reused.
  */
 function Header({
   session,
   project,
   mode,
   model,
-  contextPct,
-  contextTitle,
+  context,
+  live,
   onMode,
   onModelClick,
+  onCloseModelMenu,
   modelMenu,
   models,
   onPickModel
@@ -435,159 +587,228 @@ function Header({
   project: Project
   mode: ChatMode
   model: string | null
-  contextPct: number | null
-  contextTitle: string
+  context: ChatContextUsage | null
+  /** the chat's process is running — what the dot on the model chip reports */
+  live: boolean
   onMode: (m: ChatMode) => void
   onModelClick: () => void
+  onCloseModelMenu: () => void
   modelMenu: boolean
-  models: string[] | null
+  models: ChatModelOption[] | null
   onPickModel: (m: string) => void
 }): React.ReactElement {
+  const pct = context?.percentage ?? null
+  const contextTitle = context
+    ? `${tok(context.totalTokens)} / ${tok(context.maxTokens)} tokens · ${context.percentage}% of the context window${context.approximate ? ' (approximate — derived from the turn’s usage)' : ''}`
+    : 'Context usage unavailable'
+
   return (
     <div
       style={{
         flex: 'none',
-        height: 40,
+        height: 52,
         display: 'flex',
         alignItems: 'center',
-        gap: 10,
-        padding: '0 16px',
-        borderBottom: '1px solid var(--border)',
-        position: 'relative'
+        gap: 14,
+        padding: '0 20px',
+        borderBottom: `1px solid ${CHAT.borderSoft}`,
+        background: CHAT.header
       }}
     >
-      <span style={{ display: 'flex', color: ACCENT.chat }}>
-        <ChatBubble size={15} />
-      </span>
-      <span style={{ fontSize: 13.5, fontWeight: 500 }}>{session.name}</span>
-      <span style={{ fontSize: 12.5, color: 'var(--text-3)' }}>{project.name}</span>
-      <div style={{ flex: 1 }} />
-
-      {/* Two modes, live — set_permission_mode is accepted mid-conversation and
-          even mid-turn. Plain "plan" / "bypass": no warning chrome and no
-          explanatory tooltip. Plan mode being advisory here is a known accepted
-          property of this tool (terminal agents already run
-          --dangerously-skip-permissions), not something the UI argues with the
-          user about every time they look at it. */}
-      <div style={{ display: 'flex', border: '1px solid var(--border)', height: 26 }}>
-        {(['plan', 'bypassPermissions'] as const).map((m) => {
-          const active = mode === m
-          const hue = m === 'plan' ? CHIP.plan : CHIP.bypass
-          return (
-            <button
-              key={m}
-              onClick={() => onMode(m)}
-              style={{
-                border: 0,
-                background: active ? `${hue}22` : 'transparent',
-                color: active ? hue : 'var(--text-3)',
-                fontSize: 12,
-                fontFamily: MONO,
-                fontWeight: active ? 500 : 400,
-                height: 24,
-                padding: '0 11px',
-                cursor: 'pointer'
-              }}
-            >
-              {m === 'plan' ? 'plan' : 'bypass'}
-            </button>
-          )
-        })}
-      </div>
-
-      <span style={{ width: 1, height: 16, background: 'var(--border)' }} />
-
-      <button
-        onClick={onModelClick}
-        style={{
-          fontSize: 12,
-          fontFamily: MONO,
-          color: CHIP.model,
-          background: 'transparent',
-          border: '1px solid var(--border)',
-          height: 24,
-          display: 'flex',
-          alignItems: 'center',
-          padding: '0 9px',
-          cursor: 'pointer'
-        }}
-      >
-        {shortModel(model)}
-      </button>
-
-      {modelMenu && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 38,
-            right: 100,
-            zIndex: 20,
-            background: 'var(--panel)',
-            border: '1px solid var(--border)',
-            boxShadow: '0 18px 44px -16px rgba(0,0,0,.7)',
-            minWidth: 200,
-            maxHeight: 280,
-            overflowY: 'auto'
-          }}
-        >
-          {models === null && (
-            <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--text-3)' }}>loading…</div>
-          )}
-          {models?.length === 0 && (
-            <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--text-3)' }}>
-              no models reported
-            </div>
-          )}
-          {models?.map((m) => (
-            <button
-              key={m}
-              onClick={() => onPickModel(m)}
-              style={{
-                display: 'block',
-                width: '100%',
-                textAlign: 'left',
-                border: 0,
-                background: 'transparent',
-                color: m === model ? 'var(--text)' : 'var(--text-2)',
-                fontFamily: MONO,
-                fontSize: 12,
-                padding: '7px 12px',
-                cursor: 'pointer'
-              }}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* The bare bar. No inline percentage (that idiom belongs to the title-bar
-          chips and costs ~30px here) and not clickable — a click sending
-          /context was genuinely cheap, but it would make a header click *write to
-          the transcript*, which nothing else in the header does. Red at 85% is
-          the entire warning: a compaction is the tool working, not a failure. */}
-      <span title={contextTitle} style={{ display: 'flex', alignItems: 'center', height: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0 }}>
         <span
           style={{
-            width: 72,
-            height: 8,
-            background: 'var(--field-2)',
-            border: '1px solid var(--border-2)',
-            display: 'block'
+            fontFamily: MONO,
+            fontSize: 13,
+            color: CHAT.text,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis'
           }}
         >
-          {contextPct !== null && (
+          {session.name}
+        </span>
+        <span
+          style={{
+            fontFamily: MONO,
+            fontSize: 11,
+            color: CHAT.dim3,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis'
+          }}
+        >
+          {project.name}
+        </span>
+      </div>
+
+      <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
+        <div
+          title={contextTitle}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 9,
+            fontFamily: MONO,
+            fontSize: 10.5,
+            color: CHAT.dim2
+          }}
+        >
+          <span>
+            {context ? `${tok(context.totalTokens)} / ${tok(context.maxTokens)}` : '— / —'}
+          </span>
+          <span style={{ width: 56, height: 3, background: CHAT.borderSoft, display: 'block' }}>
+            {pct !== null && (
+              <span
+                style={{
+                  display: 'block',
+                  height: 3,
+                  width: `${Math.min(100, pct)}%`,
+                  background: ctxColor(pct),
+                  transition: 'width .4s'
+                }}
+              />
+            )}
+          </span>
+        </div>
+
+        {/* Two modes, live — set_permission_mode is accepted mid-conversation and
+            even mid-turn. Plain "plan" / "bypass": no warning chrome and no
+            explanatory tooltip. Plan mode being advisory here is a known accepted
+            property of this tool (terminal agents already run
+            --dangerously-skip-permissions), not something the UI argues with the
+            user about every time they look at it. */}
+        <div style={{ display: 'flex', border: `1px solid ${CHAT.border}` }}>
+          {(['plan', 'bypassPermissions'] as const).map((m) => {
+            const active = mode === m
+            return (
+              <button
+                key={m}
+                title={m === 'plan' ? 'Plan first, then approve' : 'Run without asking'}
+                onClick={() => onMode(m)}
+                style={{
+                  padding: '6px 13px',
+                  border: 0,
+                  cursor: 'pointer',
+                  fontFamily: MONO,
+                  fontSize: 11.5,
+                  transition: '.14s',
+                  background: active ? CHAT.mode : 'transparent',
+                  color: active ? CHAT.bg : '#6B7480',
+                  fontWeight: active ? 500 : 400
+                }}
+              >
+                {m === 'plan' ? 'plan' : 'bypass'}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Anchored to the button it belongs to, not to the header's right edge. */}
+        <div style={{ position: 'relative' }}>
+          <button
+            onClick={onModelClick}
+            title={model ? `Model: ${model}` : 'The CLI has not reported a model yet'}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '6px 10px',
+              background: '#131820',
+              border: `1px solid ${CHAT.border}`,
+              color: CHAT.model,
+              fontFamily: MONO,
+              fontSize: 11.5,
+              cursor: 'pointer',
+              transition: 'border-color .14s'
+            }}
+          >
             <span
+              title={live ? 'The CLI process is running' : 'No process — the chat is not open'}
               style={{
-                display: 'block',
-                width: `${Math.min(100, contextPct)}%`,
-                height: '100%',
-                background: ctxColor(contextPct)
+                width: 5,
+                height: 5,
+                borderRadius: '50%',
+                background: live ? CHAT.live : CHAT.dim4
               }}
             />
+            <span>{shortModel(model)}</span>
+            <span style={{ color: CHAT.dim3, fontSize: 9 }}>{modelMenu ? '▲' : '▼'}</span>
+          </button>
+
+          {modelMenu && (
+            <>
+              {/* Click-anywhere-else closes it. A menu you can only dismiss by
+                  re-pressing its own button is half of "looks broken". */}
+              <div onMouseDown={onCloseModelMenu} style={{ position: 'fixed', inset: 0, zIndex: 19 }} />
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 34,
+                  right: 0,
+                  zIndex: 20,
+                  background: CHAT.card,
+                  border: `1px solid ${CHAT.border}`,
+                  boxShadow: '0 18px 44px -16px rgba(0,0,0,.7)',
+                  minWidth: 232,
+                  maxHeight: 300,
+                  overflowY: 'auto',
+                  animation: 'vpop .12s ease-out'
+                }}
+              >
+                {models === null && (
+                  <div style={{ padding: '9px 12px', fontSize: 11.5, fontFamily: MONO, color: CHAT.dim3 }}>
+                    loading…
+                  </div>
+                )}
+                {models?.map((m) => {
+                  // The chip shows whatever the CLI last reported, which is a
+                  // resolved id; the list offers aliases. Matching on either keeps
+                  // the tick honest instead of never lighting up.
+                  const on = model !== null && (m.value === model || m.detail === model)
+                  return (
+                    <button
+                      key={m.value}
+                      onClick={() => onPickModel(m.value)}
+                      title={m.detail ?? m.value}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'baseline',
+                        gap: 9,
+                        width: '100%',
+                        textAlign: 'left',
+                        border: 0,
+                        borderLeft: `2px solid ${on ? CHAT.model : 'transparent'}`,
+                        background: on ? 'rgba(255,255,255,.03)' : 'transparent',
+                        color: on ? CHAT.text : CHAT.prose,
+                        fontSize: 12.5,
+                        padding: '8px 12px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <span style={{ flex: 'none' }}>{m.label}</span>
+                      {m.detail && (
+                        <span
+                          style={{
+                            fontFamily: MONO,
+                            fontSize: 10,
+                            color: CHAT.dim3,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          {m.detail}
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            </>
           )}
-        </span>
-      </span>
+        </div>
+      </div>
     </div>
   )
 }
@@ -614,15 +835,17 @@ function TodoStrip({ todos }: { todos: ChatTodo[] }): React.ReactElement {
         display: 'flex',
         gap: 16,
         flexWrap: 'wrap',
-        padding: '7px 16px',
-        borderTop: '1px solid var(--border-2)',
+        padding: '8px 14px',
+        marginBottom: 10,
+        background: CHAT.card,
+        border: `1px solid ${CHAT.borderCard}`,
         fontFamily: MONO,
-        fontSize: 11.5,
-        color: 'var(--text-3)'
+        fontSize: 10.5,
+        color: CHAT.dim3
       }}
     >
       {todos.map((t) => (
-        <span key={t.id} style={{ color: t.status === 'in_progress' ? 'var(--text)' : undefined }}>
+        <span key={t.id} style={{ color: t.status === 'in_progress' ? CHAT.text : undefined }}>
           {t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '●' : '○'}{' '}
           {t.status === 'in_progress' ? (t.activeForm ?? t.subject) : t.subject}
         </span>
@@ -657,11 +880,11 @@ function BlockingBar({
     const questions = card.questions ?? []
     const ready = questions.every((q) => (picks[q.question] ?? []).length > 0)
     return (
-      <Bar hue={CHIP.plan}>
+      <Bar hue={CHAT.hold}>
         <div style={{ flex: 1, minWidth: 0 }}>
           {questions.map((q) => (
             <div key={q.question} style={{ marginBottom: 6 }}>
-              <div style={{ fontSize: 13, color: 'var(--text)', marginBottom: 5 }}>{q.question}</div>
+              <div style={{ fontSize: 13, color: CHAT.text, marginBottom: 6 }}>{q.question}</div>
               <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
                 {q.options.map((o) => {
                   const on = (picks[q.question] ?? []).includes(o.label)
@@ -672,11 +895,11 @@ function BlockingBar({
                       onClick={() => toggle(q.question, o.label, q.multiSelect)}
                       style={{
                         fontFamily: MONO,
-                        fontSize: 12,
-                        padding: '4px 10px',
-                        border: `1px solid ${on ? ACCENT.chat : 'var(--border)'}`,
-                        background: on ? 'rgba(192,139,184,.12)' : 'transparent',
-                        color: on ? 'var(--text)' : 'var(--text-2)',
+                        fontSize: 11.5,
+                        padding: '5px 11px',
+                        border: `1px solid ${on ? CHAT.hold : CHAT.border}`,
+                        background: on ? 'rgba(194,161,94,.12)' : 'transparent',
+                        color: on ? CHAT.text : CHAT.dim,
                         cursor: 'pointer'
                       }}
                     >
@@ -714,8 +937,8 @@ function BlockingBar({
 
   if (card.kind === 'plan') {
     return (
-      <Bar hue={CHIP.plan}>
-        <span style={{ fontSize: 13.5, color: 'var(--text)' }}>Plan awaiting approval</span>
+      <Bar hue={CHAT.hold}>
+        <span style={{ fontSize: 13.5, color: CHAT.text }}>Plan awaiting approval</span>
         <input
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
@@ -724,9 +947,9 @@ function BlockingBar({
             flex: 1,
             minWidth: 80,
             height: 30,
-            background: 'var(--field)',
-            border: '1px solid var(--border)',
-            color: 'var(--text)',
+            background: CHAT.bg,
+            border: `1px solid ${CHAT.border}`,
+            color: CHAT.text,
             fontSize: 12.5,
             padding: '0 10px',
             outline: 'none'
@@ -751,8 +974,8 @@ function BlockingBar({
   }
 
   return (
-    <Bar hue={CHIP.plan}>
-      <span style={{ fontSize: 13.5, color: 'var(--text)' }}>{card.title}</span>
+    <Bar hue={CHAT.hold}>
+      <span style={{ fontSize: 13.5, color: CHAT.text }}>{card.title}</span>
       <div style={{ flex: 1 }} />
       <button onClick={() => onAnswer({ behavior: 'allow' })} style={primaryButton(false)}>
         Allow
@@ -772,8 +995,10 @@ function Bar({ hue, children }: { hue: string; children: React.ReactNode }): Rea
         display: 'flex',
         alignItems: 'center',
         gap: 13,
-        padding: '9px 16px',
-        background: 'var(--panel)',
+        padding: '11px 14px',
+        marginBottom: 10,
+        background: CHAT.card,
+        border: `1px solid ${CHAT.borderCard}`,
         borderTop: `2px solid ${hue}`
       }}
     >
@@ -788,8 +1013,8 @@ function primaryButton(disabled: boolean): React.CSSProperties {
     height: 32,
     padding: '0 17px',
     border: 0,
-    background: disabled ? 'var(--field-2)' : 'var(--accent)',
-    color: disabled ? 'var(--text-3)' : '#fff',
+    background: disabled ? '#1A2029' : CHAT.you,
+    color: disabled ? CHAT.dim2 : CHAT.bg,
     fontSize: 13,
     fontWeight: 500,
     cursor: disabled ? 'default' : 'pointer'
@@ -826,9 +1051,11 @@ function ChipStrip({
         flex: 'none',
         display: 'flex',
         flexDirection: 'column',
-        gap: 2,
-        padding: '6px 16px',
-        borderTop: '1px solid var(--border-2)'
+        gap: 3,
+        padding: '8px 14px',
+        marginBottom: 10,
+        background: CHAT.card,
+        border: `1px solid ${CHAT.borderCard}`
       }}
     >
       {chips.map((c) => (
@@ -839,12 +1066,12 @@ function ChipStrip({
             alignItems: 'baseline',
             gap: 9,
             fontFamily: MONO,
-            fontSize: 12,
-            color: c.ok ? 'var(--text-2)' : 'var(--danger)'
+            fontSize: 11,
+            color: c.ok ? CHAT.dim : CHAT.danger
           }}
         >
           <span style={{ flex: 'none' }}>{c.ok ? (c.attachment.kind === 'image' ? '▣' : '≡') : '⚠'}</span>
-          <span style={{ color: 'var(--text)' }}>{c.ok ? c.attachment.name : c.name}</span>
+          <span style={{ color: CHAT.text }}>{c.ok ? c.attachment.name : c.name}</span>
           <span style={{ flex: 1, minWidth: 0, opacity: 0.8, overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {c.ok ? c.detail : c.reason}
           </span>
@@ -854,7 +1081,7 @@ function ChipStrip({
               flex: 'none',
               border: 0,
               background: 'transparent',
-              color: 'var(--text-3)',
+              color: CHAT.dim3,
               cursor: 'pointer',
               padding: '0 4px'
             }}
@@ -906,8 +1133,9 @@ function Typeahead({
       style={{
         maxHeight: 240,
         overflowY: 'auto',
-        borderBottom: '1px solid var(--border-2)',
-        background: 'var(--panel)'
+        marginBottom: 10,
+        background: CHAT.card,
+        border: `1px solid ${CHAT.borderCard}`
       }}
     >
       {rows.map((r) => {
@@ -928,17 +1156,15 @@ function Typeahead({
               textAlign: 'left',
               border: 0,
               background: 'transparent',
-              color: 'var(--text-2)',
+              color: CHAT.dim,
               fontFamily: MONO,
-              fontSize: 12,
-              padding: '5px 16px',
+              fontSize: 11.5,
+              padding: '6px 14px',
               cursor: 'pointer'
             }}
           >
-            <span style={{ color: 'var(--text)' }}>{node ? node.name : String(r)}</span>
-            {node && (
-              <span style={{ color: 'var(--text-3)', opacity: 0.8 }}>{node.containerPath}</span>
-            )}
+            <span style={{ color: CHAT.text }}>{node ? node.name : String(r)}</span>
+            {node && <span style={{ color: CHAT.dim3 }}>{node.containerPath}</span>}
           </button>
         )
       })}

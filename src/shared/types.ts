@@ -529,6 +529,23 @@ export interface ChatErrorInfo {
   message: string
 }
 
+/**
+ * One row of the model picker.
+ *
+ * Three fields rather than one string, because `list_models` reports three
+ * different things and the picker used to show the wrong one: `value` is the
+ * alias the CLI accepts back (`opus`, `default`, or a pinned id) and is the only
+ * thing that may be sent, while `displayName` is the only field that says
+ * *which* model it is — a menu of bare aliases cannot tell you whether `opus`
+ * means Opus 4.1 or Opus 5, which is precisely the reading the chip exists for.
+ * `detail` carries the resolved id when it adds something the label doesn't.
+ */
+export interface ChatModelOption {
+  value: string
+  label: string
+  detail?: string
+}
+
 /** Everything a freshly-opened chat needs to paint itself. */
 export interface ChatState {
   /** the tail the renderer mounts; earlier entries come from `chat:earlier` */
