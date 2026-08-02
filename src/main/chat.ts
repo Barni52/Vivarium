@@ -622,15 +622,33 @@ export class ChatService {
       this.emit({ kind: 'task', sessionId: l.session.id, toolUseId, entries: rows })
       mapper.subagents.set(toolUseId, [])
     }
-    if (touched.length) {
+    // The same one-row-per-turn rule from the other side: the two producers are
+    // not ordered against each other (the synthetic user message and `result`
+    // both arrive on this stream), so whichever is second is the one dropped.
+    const rows = touched.filter(
+      (e) => !(e.kind === 'stop' && e.text === 'interrupted' && this.hasInterruptRow(l, e.turn))
+    )
+    if (rows.length) {
       for (const [id, body] of mapper.bodies) l.bodies.set(id, body)
-      this.upsert(l, touched)
+      this.upsert(l, rows)
       const todos = [...mapper.todos.values()]
       if (todos.length) {
         for (const t of todos) l.todos.set(t.id, t)
         this.emit({ kind: 'todo', sessionId: l.session.id, todos: [...l.todos.values()] })
       }
     }
+  }
+
+  /**
+   * Has this turn already recorded its interrupt?
+   *
+   * One Esc ends one turn once, so one row says so — whichever of the two
+   * producers got there first (see `result`). Scoped to the turn on purpose: a
+   * conversation with five interrupted turns still shows five rows, which is why
+   * the two cannot simply share a fixed id.
+   */
+  private hasInterruptRow(l: Live, turn: number): boolean {
+    return l.entries.some((e) => e.turn === turn && e.kind === 'stop' && e.text === 'interrupted')
   }
 
   private mapperFor(l: Live): ChatMapper {
@@ -734,17 +752,27 @@ export class ChatService {
     l.streaming = null
 
     if (aborted) {
-      this.appendEntries(l, [
-        {
-          id: `stop:${turn}`,
-          role: 'stop',
-          at: Date.now(),
-          turn,
-          kind: 'stop',
-          text: 'interrupted',
-          tone: 'muted'
-        }
-      ])
+      // Only if the stream has not already said so. The interrupt row has **two
+      // producers**: Claude Code writes a synthetic `[Request interrupted by
+      // user]` user message, which the mapper turns into exactly this row, and
+      // then `result` arrives and this branch made a second one — two
+      // `interrupted` rows for one Esc, with different ids, so nothing collapsed
+      // them. Neither producer can be dropped: the mapper's is what a reopened
+      // conversation renders (it is in the transcript), and this one is the only
+      // row an older CLI that emits no such message would produce at all.
+      if (!this.hasInterruptRow(l, turn)) {
+        this.appendEntries(l, [
+          {
+            id: `stop:${turn}`,
+            role: 'stop',
+            at: Date.now(),
+            turn,
+            kind: 'stop',
+            text: 'interrupted',
+            tone: 'muted'
+          }
+        ])
+      }
       // An interrupted turn has nothing to freeze to: turn_duration is a
       // transcript line type and a killed turn writes no assistant line at all.
       // Manufacturing a number was rejected on both routes — one subtracts across

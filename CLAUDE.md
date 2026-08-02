@@ -326,6 +326,14 @@ in the renderer: the same guarantee bought back at a higher price.
   accepted prose-parsing rule in the whole design is recovering an answered `AskUserQuestion`'s
   ticked chip, and it has a graceful fallback; keeping it to one is why the cancelled rule is
   positional.
+  **The `interrupted` row itself has two producers and they are not ordered against each other.**
+  Claude Code writes a synthetic `[Request interrupted by user]` user message, which the mapper
+  turns into that row, and `result` carries `terminal_reason` and produces one too — both arrive on
+  the same stream, and one Esc used to print two rows. Neither can be dropped: the mapper's is what
+  a *reopened* conversation renders (it is the one in the transcript), and `result`'s is the only
+  row a CLI that emits no such message would produce at all. So whichever lands second is
+  suppressed, per turn — never by a shared fixed id, or a conversation with five interrupted turns
+  would collapse to one row.
 - **An attention flag is cleared by viewing its session — and focusing the window is viewing.**
   `notifyAgentAttention` declines to flag only when the window is focused *and* that session is
   selected, so anything landing while the app is in the background flags the session you are
