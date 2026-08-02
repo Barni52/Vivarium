@@ -2,6 +2,7 @@ import type {
   ChatChip,
   ChatEntry,
   ChatQuestion,
+  ChatQuestionAnswer,
   ChatQuestionOption,
   ChatRole,
   ChatTodo,
@@ -265,17 +266,96 @@ export function truncateBody(body: ChatToolBody): ChatToolBody {
   return { kind: body.kind, text: kept.join('\n'), truncated: true }
 }
 
-/** `Your questions have been answered: "<q>"="<label>", …` — the one prose rule. */
-function parseAnswers(text: string): string[] {
-  const out: string[] = []
-  // The mapper owns this string-matching and falls back to rendering the options
-  // un-ticked when the format changes under us. It is the *only* prose-parsing
-  // rule in the design, deliberately — a cancelled tool is detected structurally
-  // (see markCancelled) precisely so this stays one and does not become a pattern.
-  const re = /"[^"]*"="([^"]*)"/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(text))) out.push(m[1])
+/**
+ * What the user chose, out of the tool_result — **structured first**.
+ *
+ * Claude Code files the whole answer under the transcript line's own
+ * `toolUseResult` as `{questions, answers, annotations}`, keyed by question
+ * text, so the settled row needs no string-matching at all: `answers` is exact
+ * and `annotations[q].notes` is the free text the prose does not reliably carry.
+ * The prose rule below is the *fallback* for the live stream, where a
+ * `tool_result` block can arrive with no structured sibling.
+ *
+ * `values` is a list because a multi-select answer is one joined string on the
+ * wire (`"A, B"`), and splitting it is only safe when every part is a real
+ * option label — a single-select answer may legitimately contain a comma, and a
+ * free-text "Other" answer usually does.
+ */
+function parseAnswers(
+  questions: ChatQuestion[],
+  structured: Json | null,
+  text: string
+): ChatQuestionAnswer[] {
+  const answers = obj(structured?.answers)
+  const annotations = obj(structured?.annotations)
+  const raw = new Map<string, string>()
+  const notes = new Map<string, string>()
+
+  if (answers) {
+    for (const q of questions) {
+      const v = answers[q.question]
+      // An array survives as an array when the host sent one: the CLI's zod
+      // preprocess joins it, but `call()` reads the raw input.
+      if (Array.isArray(v)) raw.set(q.question, v.map((x) => str(x)).join(', '))
+      else if (typeof v === 'string' && v) raw.set(q.question, v)
+    }
+  }
+  if (annotations) {
+    for (const q of questions) {
+      const a = obj(annotations[q.question])
+      const n = str(a?.notes)
+      if (n) notes.set(q.question, n)
+    }
+  }
+
+  if (raw.size === 0) {
+    // Fallback: `Your questions have been answered: "<q>"="<answer>", …`.
+    // Anchored on the question texts we already hold rather than on a bare
+    // `"…"="…"` sweep, so a preview or a note quoting a `"x"="y"` of its own
+    // cannot inject a phantom answer. This is the *only* prose-parsing rule in
+    // the design — a cancelled tool is detected structurally (see markCancelled)
+    // precisely so it stays one and does not become a pattern — and it degrades
+    // to rendering the options un-ticked.
+    for (const q of questions) {
+      const head = `"${q.question}"="`
+      const i = text.indexOf(head)
+      if (i < 0) continue
+      const end = text.indexOf('"', i + head.length)
+      if (end < 0) continue
+      const v = text.slice(i + head.length, end)
+      if (v) raw.set(q.question, v)
+    }
+  }
+
+  const out: ChatQuestionAnswer[] = []
+  for (const q of questions) {
+    const v = raw.get(q.question)
+    const note = notes.get(q.question)
+    if (!v && !note) continue
+    // `(notes only)` is the CLI's sentinel for "notes, no option picked". This
+    // window cannot produce one — its Other row *is* an answer — but a
+    // conversation started in the TUI and reopened here can hold one, and
+    // rendering it as a chip would show the sentinel as though it were typed.
+    const picked = v && v !== NO_OPTION ? splitValues(v, q) : []
+    out.push({ question: q.question, values: picked, notes: note })
+  }
   return out
+}
+
+/** The CLI's own "notes, no option picked" sentinel, written into `answers`. */
+const NO_OPTION = '(notes only)'
+
+/**
+ * `"A, B"` is two ticks; `"Use tabs, not spaces"` is one. Split only when every
+ * part is a label the question actually offered — the same test the CLI applies
+ * to its own result before deciding the answer was well-formed.
+ */
+function splitValues(value: string, q: ChatQuestion): string[] {
+  if (q.options.some((o) => o.label === value)) return [value]
+  if (!q.multiSelect) return [value]
+  const parts = value.split(',').map((p) => p.trim())
+  if (parts.length > 1 && parts.every((p) => q.options.some((o) => o.label === p))) return parts
+  return [value]
 }
 
 /** `AskUserQuestion`'s input, shared by the mapper and the live blocking card. */
@@ -287,7 +367,12 @@ export function parseQuestions(input: Json): ChatQuestion[] {
     const options: ChatQuestionOption[] = []
     for (const opt of arr(o.options)) {
       const oo = obj(opt)
-      if (oo) options.push({ label: str(oo.label), description: str(oo.description) || undefined })
+      if (oo)
+        options.push({
+          label: str(oo.label),
+          description: str(oo.description) || undefined,
+          preview: str(oo.preview) || undefined
+        })
     }
     out.push({
       question: str(o.question),
@@ -767,7 +852,10 @@ export class ChatMapper {
 
     if (entry.kind === 'ask') {
       entry.pending = false
-      entry.answers = parseAnswers(text)
+      // Keyed against the questions off the tool_use we already mapped — the
+      // result echoes its own copy, but the answers map is keyed by question
+      // *text* either way, and this one is already parsed.
+      entry.answers = parseAnswers(entry.questions, structured, text)
       return entry
     }
 

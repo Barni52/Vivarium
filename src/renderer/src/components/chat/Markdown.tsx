@@ -74,6 +74,7 @@ function Code({ children }: { children: string }): React.ReactElement {
         fontSize: '.86em',
         background: CHAT.card,
         border: `1px solid ${CHAT.borderCard}`,
+        borderRadius: CHAT.radius,
         padding: '1px 5px',
         color: CHAT.text,
         // A long identifier in a code span must not push the reading column
@@ -135,9 +136,9 @@ function emphasisAt(src: string, i: number): { node: React.ReactNode; end: numbe
     run === 1 ? (
       <i style={{ color: 'inherit' }}>{kids}</i>
     ) : run === 2 ? (
-      <b style={{ color: CHAT.text, fontWeight: 600 }}>{kids}</b>
+      <b style={{ color: CHAT.text, fontWeight: 500 }}>{kids}</b>
     ) : (
-      <b style={{ color: CHAT.text, fontWeight: 600 }}>
+      <b style={{ color: CHAT.text, fontWeight: 500 }}>
         <i>{kids}</i>
       </b>
     )
@@ -367,7 +368,7 @@ function blocks(lines: string[], ctx: Ctx, keyBase = 'b'): React.ReactNode[] {
             // as everything else here, one step up in size, and the deeper
             // levels are simply bold. Six sizes in a chat log is a magazine.
             fontSize: ctx.size + (level <= 2 ? 1.5 : level === 3 ? 0.5 : 0),
-            fontWeight: 600,
+            fontWeight: 500,
             color: CHAT.text,
             lineHeight: 1.45,
             letterSpacing: level <= 2 ? '-.01em' : undefined
@@ -438,7 +439,7 @@ function blocks(lines: string[], ctx: Ctx, keyBase = 'b'): React.ReactNode[] {
     // way — it is a thematic break far more often than a heading in this log.
     if (i < lines.length && SETEXT.test(lines[i]) && para.length) {
       push(
-        <div style={{ fontSize: ctx.size + 1.5, fontWeight: 600, color: CHAT.text, lineHeight: 1.45 }}>
+        <div style={{ fontSize: ctx.size + 1.5, fontWeight: 500, color: CHAT.text, lineHeight: 1.45 }}>
           {inlineNodes(para.join(' '))}
         </div>
       )
@@ -493,7 +494,13 @@ function Paragraph({ lines, ctx }: { lines: string[]; ctx: Ctx }): React.ReactEl
 
 function CodeBlock({ lang, body }: { lang: string; body: string }): React.ReactElement {
   return (
-    <div style={{ border: `1px solid ${CHAT.borderCard}`, background: CHAT.card }}>
+    <div
+      style={{
+        border: `1px solid ${CHAT.borderCard}`,
+        background: CHAT.card,
+        borderRadius: CHAT.radiusCard
+      }}
+    >
       {lang && (
         <div
           style={{
@@ -554,7 +561,13 @@ function Table({
     </td>
   )
   return (
-    <div style={{ overflowX: 'auto', border: `1px solid ${CHAT.borderCard}` }}>
+    <div
+      style={{
+        overflowX: 'auto',
+        border: `1px solid ${CHAT.borderCard}`,
+        borderRadius: CHAT.radiusCard
+      }}
+    >
       <table style={{ borderCollapse: 'collapse', fontSize: ctx.size - 1.5, lineHeight: 1.55, minWidth: '100%' }}>
         <thead>
           <tr style={{ background: CHAT.card }}>{header.map((h, n) => cell(h, n, true))}</tr>
@@ -688,6 +701,54 @@ function List({
       })}
     </div>
   )
+}
+
+/**
+ * An `AskUserQuestion` option's preview — rendered **verbatim, never through the
+ * block parser**.
+ *
+ * The schema calls it markdown and this deliberately does not treat it as such,
+ * because of what models actually put in one: box-drawing mockups, a component
+ * in three languages, a colour table — all **unfenced**, all load-bearing on
+ * their own line breaks and column alignment. Markdown says consecutive lines
+ * are one paragraph, so `Md` folded a 28-line dashboard mockup into a single
+ * reflowed sentence, and it re-broke at a different place every time the window
+ * changed width. A preview is a thing you *look at* to compare two options; it
+ * is the one body of text in this window that is not prose.
+ *
+ * So: `white-space: pre` and no wrap, scrolling sideways inside its own box
+ * (never the log, which must not scroll sideways as a whole). The one piece of
+ * markdown honoured is a fence wrapped around the *entire* preview, which is
+ * stripped — models write both shapes and the markers are noise either way.
+ */
+export function Preview({ src }: { src: string }): React.ReactElement {
+  return (
+    <pre
+      style={{
+        margin: 0,
+        fontFamily: MONO,
+        fontSize: 12,
+        lineHeight: 1.5,
+        color: CHAT.prose,
+        whiteSpace: 'pre'
+      }}
+    >
+      {unfence(src)}
+    </pre>
+  )
+}
+
+/** Drop a fence wrapping the whole preview; leave anything else alone. */
+function unfence(src: string): string {
+  const text = src.replace(/\r\n?/g, '\n').trim()
+  if (!text.startsWith('```')) return text
+  const lines = text.split('\n')
+  if (lines.length < 3 || !lines[lines.length - 1].trim().startsWith('```')) return text
+  const inner = lines.slice(1, -1)
+  // Two fenced blocks in one preview is a document, not a mockup — leave the
+  // markers in rather than silently welding the two together.
+  if (inner.some((l) => l.trimStart().startsWith('```'))) return text
+  return inner.join('\n')
 }
 
 export function Md({

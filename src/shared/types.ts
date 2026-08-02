@@ -399,6 +399,14 @@ export interface ChatChip {
 export interface ChatQuestionOption {
   label: string
   description?: string
+  /**
+   * Optional block of content shown while the option is focused — a mockup, a
+   * snippet, a config sample. Markdown in a monospace box, which is what the
+   * CLI's own dialog renders and what the tool's schema tells the model to
+   * write. Previews are single-select only (the tool description says so), and
+   * the chosen one travels back in `annotations[question].preview`.
+   */
+  preview?: string
 }
 
 export interface ChatQuestion {
@@ -406,6 +414,24 @@ export interface ChatQuestion {
   header?: string
   multiSelect: boolean
   options: ChatQuestionOption[]
+}
+
+/**
+ * What the user chose for one question, recovered on reopen.
+ *
+ * Kept per question rather than as one flat list of labels because a
+ * multi-select answer is written into the transcript as a *joined string*
+ * (`"q"="A, B"`), and a free-text "Other" answer is a label that matches no
+ * option at all — both of which a flat `string[]` silently mis-renders: the
+ * first ticks nothing, the second disappears.
+ */
+export interface ChatQuestionAnswer {
+  /** the question text, which is the key the CLI files the answer under */
+  question: string
+  /** the ticked labels, plus at most one free-text answer that matches none */
+  values: string[]
+  /** free-text notes the user attached to the question */
+  notes?: string
 }
 
 interface ChatEntryBase {
@@ -433,8 +459,8 @@ export type ChatEntry =
   | (ChatEntryBase & {
       kind: 'ask'
       questions: ChatQuestion[]
-      /** chosen labels, recovered from the tool_result on reopen (may be empty) */
-      answers: string[]
+      /** what was chosen, recovered from the tool_result on reopen (may be empty) */
+      answers: ChatQuestionAnswer[]
       pending?: boolean
     })
   | (ChatEntryBase & {
@@ -504,8 +530,23 @@ export interface ChatBlockingCard {
 export type ChatAnswer =
   | { behavior: 'plan-approve' }
   | { behavior: 'plan-deny'; message: string }
-  /** keyed by question *text* — an `allow` with no answers map yields "The user did not answer the questions." */
-  | { behavior: 'question'; answers: Record<string, string | string[]> }
+  /**
+   * Everything the question card can produce, in one variant.
+   *
+   * `answers` is keyed by question *text* — an `allow` with no answers map
+   * yields "The user did not answer the questions." Values are **strings**, not
+   * arrays, including for multi-select: the CLI's own dialog joins with `", "`
+   * before submitting, and its result builder splits on exactly that to decide
+   * whether every pick was a real option. `notes` is keyed the same way and
+   * becomes `annotations[q].notes`. `clarify` is "Chat about this" — a *deny*
+   * carrying the questions back as prose, not an answer at all.
+   */
+  | {
+      behavior: 'question'
+      answers: Record<string, string>
+      notes?: Record<string, string>
+      clarify?: boolean
+    }
   | { behavior: 'allow' }
   | { behavior: 'deny'; message?: string }
   | { behavior: 'cancelled' }

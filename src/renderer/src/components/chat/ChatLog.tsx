@@ -2,7 +2,7 @@ import React from 'react'
 import type { ChatEntry, ChatToolStatus } from '@shared/types'
 import { CHAT, CHAT_GUTTER as GUTTER, MONO } from '../../theme'
 import { Elapsed } from '../Elapsed'
-import { Md, clock } from './Markdown'
+import { Md, Preview, clock } from './Markdown'
 
 // The transcript, built to `docs/redisign/Chat Terminal.html`.
 //
@@ -62,7 +62,10 @@ function Line({
         gridTemplateColumns: `${GUTTER}px 1fr`,
         gap: COL_GAP,
         padding: ROW_PAD,
-        background: band ? CHAT.band : undefined
+        background: band ? CHAT.band : undefined,
+        // Only the banded row has an edge to round; every other row is a
+        // transparent block on the page and a radius on it would draw nothing.
+        borderRadius: band ? CHAT.radiusCard : undefined
       }}
     >
       <div
@@ -117,6 +120,7 @@ function Card({
         padding: '8px 12px',
         background: CHAT.card,
         border: `1px solid ${tone ?? CHAT.borderCard}`,
+        borderRadius: CHAT.radiusCard,
         color: CHAT.dim,
         cursor: onClick ? 'pointer' : undefined
       }}
@@ -231,37 +235,122 @@ export const LogRow = React.memo(function LogRow({
     case 'ask':
       // Once answered the chosen option keeps a tick while the rest go grey: the
       // options not taken are the record of what the decision was between.
+      //
+      // Three things the chips alone leave out, and all three are decisions the
+      // record has to keep: whether the question took one answer or several
+      // (`choose any` vs a single tick reads as a *failed* multi-select
+      // otherwise), an **Other** answer, which is a value matching no option and
+      // so ticks nothing at all, and the notes typed against it. The chosen
+      // option's **preview** is here too, because it is what the model was
+      // shown — it travels back in `annotations[question].preview`.
       return (
         <Line at={entry.at} role="ask" color={CHAT.hold}>
-          {entry.questions.map((q, qi) => (
-            <div key={qi} style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 14, lineHeight: 1.6, color: CHAT.prose, marginBottom: 8 }}>
-                {q.question}
-              </div>
-              <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-                {q.options.map((o) => {
-                  const picked = entry.answers.includes(o.label)
-                  return (
+          {entry.questions.map((q, qi) => {
+            const answer = entry.answers.find((a) => a.question === q.question)
+            const values = answer?.values ?? []
+            const typed = values.filter((v) => !q.options.some((o) => o.label === v))
+            const preview = q.options.find((o) => values.includes(o.label))?.preview
+            return (
+              <div key={qi} style={{ marginBottom: 10 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'baseline',
+                    gap: 9,
+                    marginBottom: 8,
+                    flexWrap: 'wrap'
+                  }}
+                >
+                  {q.header && (
                     <span
-                      key={o.label}
-                      title={o.description}
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 10,
+                        letterSpacing: '.04em',
+                        textTransform: 'uppercase',
+                        padding: '2px 6px',
+                        border: `1px solid ${CHAT.border}`,
+                        borderRadius: CHAT.radius,
+                        color: CHAT.hold,
+                        flex: 'none'
+                      }}
+                    >
+                      {q.header}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 14, lineHeight: 1.6, color: CHAT.prose }}>
+                    {q.question}
+                  </span>
+                  <span style={{ ...mono, fontSize: 10.5, color: CHAT.dim4 }}>
+                    {q.multiSelect ? 'choose any' : 'choose one'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+                  {q.options.map((o) => {
+                    const picked = values.includes(o.label)
+                    return (
+                      <span
+                        key={o.label}
+                        title={o.description}
+                        style={{
+                          fontFamily: MONO,
+                          fontSize: 11.5,
+                          padding: '5px 11px',
+                          border: `1px solid ${picked ? CHAT.hold : CHAT.border}`,
+                          borderRadius: CHAT.radius,
+                          color: picked ? CHAT.text : CHAT.dim3,
+                          background: picked ? CHAT.card : 'transparent'
+                        }}
+                      >
+                        {picked ? '✓ ' : ''}
+                        {o.label}
+                      </span>
+                    )
+                  })}
+                  {typed.map((t) => (
+                    <span
+                      key={t}
+                      title="answered in the user's own words"
                       style={{
                         fontFamily: MONO,
                         fontSize: 11.5,
                         padding: '5px 11px',
-                        border: `1px solid ${picked ? CHAT.hold : CHAT.border}`,
-                        color: picked ? CHAT.text : CHAT.dim3,
-                        background: picked ? CHAT.card : 'transparent'
+                        border: `1px dashed ${CHAT.hold}`,
+                        borderRadius: CHAT.radius,
+                        color: CHAT.text,
+                        background: CHAT.card
                       }}
                     >
-                      {picked ? '✓ ' : ''}
-                      {o.label}
+                      ✓ {t}
                     </span>
-                  )
-                })}
+                  ))}
+                </div>
+                {answer?.notes && (
+                  <div style={{ ...mono, color: CHAT.dim3, marginTop: 6 }}>
+                    notes: {answer.notes}
+                  </div>
+                )}
+                {preview && (
+                  // Capped here, unlike in the pinned card: this is history, and
+                  // a 28-line mockup would otherwise own the log every time you
+                  // scrolled past the decision it belongs to.
+                  <div
+                    style={{
+                      marginTop: 8,
+                      maxHeight: 300,
+                      overflow: 'auto',
+                      padding: '6px 12px',
+                      background: CHAT.card,
+                      border: `1px solid ${CHAT.borderCard}`,
+                      borderRadius: CHAT.radiusCard
+                    }}
+                  >
+                    <Preview src={preview} />
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            )
+          })}
         </Line>
       )
 
@@ -276,6 +365,7 @@ export const LogRow = React.memo(function LogRow({
               background: CHAT.card,
               border: `1px solid ${CHAT.borderCard}`,
               borderLeft: `2px solid ${CHAT.hold}`,
+              borderRadius: CHAT.radiusCard,
               padding: '4px 15px 12px',
               opacity: entry.state === 'cancelled' ? 0.7 : 1
             }}
@@ -427,7 +517,18 @@ function ClaudeText({
     // The turn ended (or this was never the live row): everything is on screen.
     // A typewriter still running after the answer is finished is worse than no
     // smoothing at all.
-    if (!streaming) return
+    //
+    // `shown` is caught up rather than just left alone, because it outlives the
+    // turn. The reveal is a *rate*, so it is always a little behind when the
+    // answer lands — freezing it there left the row holding a count from the
+    // middle of a paragraph it has since painted whole, and anything that
+    // flagged the row `streaming` again read that count as "start from here" and
+    // re-typed the rest. Nothing may re-type itself; this is what makes that
+    // true after the first render as well as at it.
+    if (!streaming) {
+      if (shown < target.length) setShown(target.length)
+      return
+    }
     if (shown >= target.length) return
     const t = setInterval(() => {
       setShown((n) => {
@@ -487,7 +588,10 @@ function Thinking({ at, md }: { at: number; md: string }): React.ReactElement {
             minWidth: 0,
             fontSize: 12.5,
             fontStyle: 'italic',
-            color: '#5F6874',
+            // A token, not a hex: this was the one colour in the log mixed by
+            // eye against the old page, so it was also the only one that did
+            // not move when the page did.
+            color: CHAT.dim3,
             lineHeight: 1.6,
             whiteSpace: open ? 'pre-wrap' : 'nowrap',
             overflow: 'hidden',
@@ -510,10 +614,34 @@ function statusColor(status: ChatToolStatus): string {
 }
 
 /**
+ * How tall a body may be and still open itself.
+ *
+ * The rule below is "show me what changed, don't bury the conversation", and
+ * past about fifteen lines a card stops doing the first and starts doing the
+ * second: one 300-line diff pushes the answer that explains it off the top of
+ * the window, and scrolling back through a turn becomes scrolling through its
+ * machinery. Fifteen is roughly a card that still reads as an inset in a page
+ * rather than as a page of its own.
+ */
+const AUTO_OPEN_LINES = 15
+
+/** Lines in a body, without splitting the whole string to count them. */
+function lineCount(text: string): number {
+  if (!text) return 0
+  let n = 1
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) n++
+  return n
+}
+
+/**
  * **Open by default and truncated — inverted from the obvious default.** An edit
  * shows its diff and a command shows the tail of its output; a read and a search
  * collapse to their card. A read changed nothing; a diff is what you scrolled
  * back for. Collapse-everything was rejected for making the common case a click.
+ *
+ * The exception is size (AUTO_OPEN_LINES), and it is the same argument rather
+ * than a retreat from it: a body only shows what changed while it is small
+ * enough to be read in place.
  */
 function ToolCard({
   entry,
@@ -522,21 +650,39 @@ function ToolCard({
   entry: Extract<ChatEntry, { kind: 'tool' }>
   handlers: LogHandlers
 }): React.ReactElement {
+  const full = handlers.bodies[entry.id]
+  const text = full ?? entry.body.text
+  const expandable = entry.body.kind !== 'none' && !!entry.body.text
+  const lines = lineCount(entry.body.text)
   const quiet =
     entry.role === 'read' ||
     entry.body.kind === 'none' ||
     // A cancelled card collapses: its synthetic result carries only the refusal
     // sentence, so an open card would be a card showing nothing.
-    entry.status === 'cancelled'
-  const [open, setOpen] = React.useState(!quiet)
-  const full = handlers.bodies[entry.id]
-  const text = full ?? entry.body.text
-  const expandable = entry.body.kind !== 'none' && !!entry.body.text
+    entry.status === 'cancelled' ||
+    // `truncated` means main already clipped it, so it is longer than whatever
+    // this counts — a body that long is never opened for you.
+    entry.body.truncated ||
+    lines > AUTO_OPEN_LINES
+
+  /**
+   * `null` until you touch it, and that is what makes the size rule work at all.
+   *
+   * A tool card mounts while the call is still *running*, with no body and no
+   * length to judge — `useState(!quiet)` read that empty body once and kept the
+   * answer, so every card that finished after it appeared opened itself however
+   * long the output turned out to be. Deriving the default instead lets the
+   * result decide when it lands, while a click still wins for good: the entry is
+   * replaced wholesale at the turn's settle, and a flag on the entry would have
+   * been thrown away with it.
+   */
+  const [choice, setChoice] = React.useState<boolean | null>(null)
+  const open = choice ?? !quiet
 
   const toggle = (): void => {
     if (!expandable) return
     if (!open && entry.body.truncated) handlers.onExpand(entry.id)
-    setOpen(!open)
+    setChoice(!open)
   }
 
   return (
@@ -564,7 +710,14 @@ function ToolCard({
         )}
         {expandable && (
           <span style={{ marginLeft: 'auto', flex: 'none', fontSize: 10.5, color: CHAT.dim3 }}>
-            {open ? 'hide' : 'show'}
+            {/* A card that closed itself says how much it is holding, or the
+                size rule reads as the app having lost the output. `+` where main
+                clipped the body: this counts what arrived, not what exists. */}
+            {open
+              ? 'hide'
+              : lines > AUTO_OPEN_LINES
+                ? `show ${lines}${entry.body.truncated ? '+' : ''} lines`
+                : 'show'}
           </span>
         )}
       </Card>
@@ -576,6 +729,10 @@ function ToolCard({
             marginTop: 6,
             border: `1px solid ${CHAT.borderCard}`,
             background: CHAT.card,
+            borderRadius: CHAT.radiusCard,
+            // The rounded corner has to clip the tinted rows, or a `+` line at
+            // the top of a diff paints its green back into the square corner.
+            overflow: 'hidden',
             overflowX: 'auto'
           }}
         >
@@ -610,6 +767,7 @@ function ToolCard({
             padding: '9px 12px',
             border: `1px solid ${CHAT.borderCard}`,
             background: CHAT.card,
+            borderRadius: CHAT.radiusCard,
             color: CHAT.dim,
             whiteSpace: 'pre-wrap',
             overflowX: 'auto'

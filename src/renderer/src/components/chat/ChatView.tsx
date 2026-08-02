@@ -6,6 +6,7 @@ import type {
   ChatEntry,
   ChatMode,
   ChatModelOption,
+  ChatQuestion,
   ChatTodo,
   MountNode,
   Project,
@@ -16,6 +17,7 @@ import { useStore } from '../../state/store'
 import { CHAT, CHAT_MEASURE as MEASURE, MONO, ctxColor } from '../../theme'
 import { Copy, Refresh, ZoomIn, ZoomOut } from '../Icons'
 import { LogRow, type LogHandlers } from './ChatLog'
+import { Preview } from './Markdown'
 import { chipForNode, flattenTree, routeFile, type PendingChip } from './attach'
 
 // The chat window, built to `docs/redisign/Chat Terminal.html`: a 52px header of
@@ -32,6 +34,26 @@ import { chipForNode, flattenTree, routeFile, type PendingChip } from './attach'
 // send button on the right — inside the box, which costs one line and no chrome
 // anywhere else. Attaching stays gesture-only (Ctrl+V, drag-drop, `@`), and Esc
 // is still taught on the live working row where it is the only thing that helps.
+
+/**
+ * The reading column's `max-width`, in the zoomed coordinate system the column
+ * is laid out in.
+ *
+ * `zoom` scales an element's own box, so a plain `maxWidth: MEASURE` is MEASURE
+ * *zoomed* pixels — at 0.7 the column drew 616 real pixels wide and pulled both
+ * of its edges in from the window, so zooming out made the text smaller **and**
+ * the page narrower and left a band of dead background down each side. Dividing
+ * it back out pins the column to MEASURE real pixels instead: the page holds
+ * still and only the type in it changes size, which is what a zoom is for.
+ *
+ * Only below 1×, hence the `min`. Zooming *in* is the case where growing with
+ * the type is right — the column keeps roughly the same measure in characters
+ * and simply fills more of the window, up to the window — and that direction was
+ * never what looked broken.
+ */
+function columnMax(zoom: number): number {
+  return MEASURE / Math.min(zoom, 1)
+}
 
 export function ChatView({
   project,
@@ -181,11 +203,33 @@ export function ChatView({
   // steady rate rather than painted the instant its bytes arrive (see
   // REVEAL_CATCHUP in ChatLog). Everything else, including the paragraphs above
   // it in the same turn, is finished text and paints whole.
+  //
+  // **Scoped to the running turn, and that is the whole point.** A turn is
+  // `working` from the moment the message is sent, which is seconds before the
+  // model writes its first word — so "the last claude row in the log" is the
+  // *previous* answer for that whole window. Flagging it re-opened it to the
+  // reveal, which restarted from wherever the reveal had been frozen at the end
+  // of its own turn: the finished paragraph vanished and typed itself out again
+  // every time you sent a follow-up. Matching on the turn means a turn that has
+  // not produced a word yet has no streaming row at all, which is the truth.
   const streamingId = React.useMemo(() => {
     if (!working) return null
+    // The clock row is appended at send, so it exists before any prose does and
+    // carries the running turn's number. Found by scanning rather than by taking
+    // the last one: a settle for the *previous* turn re-appends that turn's rows
+    // (clock included) at the end of the list, and it can land after this one.
+    let turn: number | null = null
     for (let i = entries.length - 1; i >= 0; i--) {
       const e = entries[i]
-      if (e.kind === 'text' && e.role === 'claude') return e.id
+      if (e.kind === 'turn' && e.durationMs === undefined) {
+        turn = e.turn
+        break
+      }
+    }
+    if (turn === null) return null
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i]
+      if (e.kind === 'text' && e.role === 'claude' && e.turn === turn) return e.id
     }
     return null
   }, [working, entries])
@@ -414,6 +458,10 @@ export function ChatView({
 
   return (
     <div
+      // The scope for every chat rule in GLOBAL_CSS — the control radius and the
+      // scrollbar. It is a class rather than a wrapper selector so the rules die
+      // with this subtree and can never reach the slate chrome around it.
+      className="vchat"
       onDragOver={(e) => {
         e.preventDefault()
         setDragOver(true)
@@ -431,6 +479,15 @@ export function ChatView({
         flexDirection: 'column',
         background: CHAT.bg,
         color: CHAT.text,
+        // **The whole window is mono, and it is set once, here.** `body` is IBM
+        // Plex Sans and everything inherits from it, so one declaration on the
+        // root turns the log, the markdown, the composer and every control mono
+        // at once — including the textarea, which `input,button,textarea{font-
+        // family:inherit}` in GLOBAL_CSS already wires to its parent. The
+        // explicit `fontFamily: MONO` further down are now saying again what
+        // this says; they are left alone rather than swept, because each of them
+        // is also what stops a *future* wrapper from quietly restyling a chip.
+        fontFamily: MONO,
         // Hidden rather than unmounted, like a terminal — but for a weaker
         // reason: nothing in a chat is unrecoverable, so terminals *must* stay
         // mounted while a chat merely *may*. What it buys is scroll position,
@@ -539,10 +596,16 @@ export function ChatView({
             view root because a zoomed `position:absolute; inset:0` box scales
             its own edges, and the column is a plain auto-width block — it fills
             the scroller at any factor, exactly the way browser zoom behaves. The
-            composer's column carries the same factor, so the two stay aligned. */}
+            composer's column carries the same factor *and the same max*, so the
+            two stay aligned at every step (see columnMax). */}
         <div
           ref={contentRef}
-          style={{ zoom, maxWidth: MEASURE, margin: '0 auto', padding: '26px 24px 40px' }}
+          style={{
+            zoom,
+            maxWidth: columnMax(zoom),
+            margin: '0 auto',
+            padding: '26px 24px 40px'
+          }}
         >
           {chat && chat.total > entries.length && (
             <button
@@ -590,7 +653,7 @@ export function ChatView({
           background: `linear-gradient(to top, ${CHAT.bg} 70%, ${CHAT.bg}00)`
         }}
       >
-        <div style={{ zoom, maxWidth: MEASURE, margin: '0 auto', position: 'relative' }}>
+        <div style={{ zoom, maxWidth: columnMax(zoom), margin: '0 auto', position: 'relative' }}>
           {/* The pinned bands, widest scope to narrowest, each absent entirely
               when empty. Nothing is ever hidden by something else — letting a
               pending card displace the todo strip was rejected, because it does
@@ -598,7 +661,13 @@ export function ChatView({
               it costs a disappearance the user did not cause. */}
           {todos.length > 0 && <TodoStrip todos={todos} />}
           {blocking && (
+            // Keyed on the request, so a card *replaced* rather than answered
+            // starts empty. Answering unmounts the bar and takes its state with
+            // it, but two `can_use_tool` requests arriving back to back never
+            // pass through null — and half-ticked options carried into the next
+            // question are an answer nobody gave.
             <BlockingBar
+              key={blocking.requestId}
               card={blocking}
               onAnswer={(answer) => void answerChat(session.id, blocking.requestId, answer)}
             />
@@ -618,6 +687,7 @@ export function ChatView({
               padding: '14px 16px 12px',
               background: CHAT.composer,
               border: `1px solid ${focus ? CHAT.border : CHAT.borderComposer}`,
+              borderRadius: CHAT.radiusCard,
               boxShadow: '0 8px 30px rgba(0,0,0,.35)',
               transition: 'border-color .16s'
             }}
@@ -719,10 +789,15 @@ export function ChatView({
                   color: CHAT.dim3
                 }}
               >
+                {/* Drawn exactly like the header's active chip — same hue on the
+                    border and the word, same radius, no fill. The two readings
+                    of the mode are far apart on screen, so looking the same is
+                    what makes them read as one fact rather than two controls. */}
                 <span
                   style={{
                     padding: '2px 7px',
-                    border: `1px solid ${mode === 'plan' ? `${CHAT.mode}55` : `${CHAT.you}55`}`,
+                    border: `1px solid ${mode === 'plan' ? CHAT.mode : CHAT.you}`,
+                    borderRadius: CHAT.radius,
                     color: mode === 'plan' ? CHAT.mode : CHAT.you
                   }}
                 >
@@ -756,8 +831,8 @@ export function ChatView({
                     fontSize: 11.5,
                     fontWeight: 500,
                     transition: '.14s',
-                    background: canSend ? CHAT.you : '#1A2029',
-                    color: canSend ? CHAT.bg : CHAT.dim2,
+                    background: canSend ? CHAT.you : CHAT.well,
+                    color: canSend ? CHAT.onAccent : CHAT.dim2,
                     cursor: canSend ? 'pointer' : 'default'
                   }}
                 >
@@ -806,11 +881,14 @@ function placeholderFor(open: boolean, blocking: boolean, working: boolean): str
  * project on the left, then the context meter, the mode toggle and the model
  * chip on the right.
  *
- * The context reading leads with the numbers (`41.2k / 200k`) and the bar is the
- * afterthought beside them — the reverse of what shipped, which was a bare 8px
- * bar with no scale, floating against nothing. It is still not clickable: a click
- * sending /context was genuinely cheap, but it would make a header click *write
- * to the transcript*, which nothing else in the header does.
+ * The context reading is three sights of one number — `41.2k / 200k`, a bar, and
+ * the percentage the bar's tint is keyed to — because the header is glanced at
+ * rather than read: the numbers answer "how much room is left" exactly, the bar
+ * answers it in a shape, and the percentage is the one both of the others are
+ * approximating. The bar alone is what shipped first and it was unreadable, at
+ * 3px against a 1px rule with no scale beside it. It is still not clickable: a
+ * click sending /context was genuinely cheap, but it would make a header click
+ * *write to the transcript*, which nothing else in the header does.
  *
  * The model chip carries a liveness dot, and that dot is the only green in the
  * chat. It means the CLI process is up — the same fact the app's running
@@ -853,12 +931,20 @@ function Header({
     <div
       style={{
         flex: 'none',
-        height: 52,
+        // 34, which is `TerminalHost`'s header to the pixel. The two headers
+        // occupy the same strip of the window and you switch between them with
+        // one click in the sidebar — at 52 the whole page jumped 18px on every
+        // switch, and the chat's row was the one that looked wrong, because
+        // there is nothing in it a terminal's row does not also carry.
+        height: 34,
         display: 'flex',
         alignItems: 'center',
-        gap: 14,
-        padding: '0 20px',
-        borderBottom: `1px solid ${CHAT.borderSoft}`,
+        gap: 12,
+        padding: '0 16px',
+        // --border's weight, not a hairline: the terminal header takes the same
+        // rule for the same reason — the header and the page under it are one
+        // surface, and a fainter line simply disappears against them.
+        borderBottom: `1px solid ${CHAT.border}`,
         background: CHAT.header
       }}
     >
@@ -866,7 +952,7 @@ function Header({
         <span
           style={{
             fontFamily: MONO,
-            fontSize: 13,
+            fontSize: 12.5,
             color: CHAT.text,
             whiteSpace: 'nowrap',
             overflow: 'hidden',
@@ -895,27 +981,52 @@ function Header({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 9,
+            gap: 7,
             fontFamily: MONO,
-            fontSize: 10.5,
+            fontSize: 11,
             color: CHAT.dim2
           }}
         >
-          <span>
+          <span style={{ color: CHAT.dim }}>
             {context ? `${tok(context.totalTokens)} / ${tok(context.maxTokens)}` : '— / —'}
           </span>
-          <span style={{ width: 56, height: 3, background: CHAT.borderSoft, display: 'block' }}>
+          {/* A 10px well with its own edge, not a 3px hairline drawn on top of
+              hairlines. At 3px against `borderSoft` the empty half of the bar
+              carried exactly the weight of the rules it sat between, so the one
+              reading in this header meant to be taken at a glance had to be found
+              first and then squinted at; and any fill under about 4% had no pixel
+              left to draw in, which is precisely the reading where a meter is
+              doing its job. The fill keeps a minimum sliver for the same reason —
+              "a little" must never render as "none". */}
+          <span
+            style={{
+              width: 68,
+              height: 8,
+              display: 'block',
+              background: CHAT.well,
+              border: `1px solid ${CHAT.border}`,
+              borderRadius: 4,
+              overflow: 'hidden'
+            }}
+          >
             {pct !== null && (
               <span
                 style={{
                   display: 'block',
-                  height: 3,
-                  width: `${Math.min(100, pct)}%`,
+                  height: '100%',
+                  width: `${Math.max(pct > 0 ? 6 : 0, Math.min(100, pct))}%`,
                   background: ctxColor(pct),
+                  borderRadius: 4,
                   transition: 'width .4s'
                 }}
               />
             )}
+          </span>
+          {/* The percentage in words as well as in length. The bar answers "how
+              full" at a glance and this answers "how full exactly" without a
+              hover, which is the reading the escalating tint is keyed to. */}
+          <span style={{ color: pct === null ? CHAT.dim3 : ctxColor(pct) }}>
+            {pct === null ? '—' : `${Math.round(Math.min(100, pct))}%`}
           </span>
         </div>
 
@@ -925,7 +1036,17 @@ function Header({
             property of this tool (terminal agents already run
             --dangerously-skip-permissions), not something the UI argues with the
             user about every time they look at it. */}
-        <div style={{ display: 'flex', border: `1px solid ${CHAT.border}` }}>
+        {/* Two separate outlined chips, not a segmented control.
+            The hue is carried by the *border and the label*, and nothing is
+            filled: a filled chip on this page is a much heavier mark than the
+            reading deserves, and it also forced dark ink onto a saturated hue,
+            which is the one text colour in the window that could not be read at
+            11.5px. Outlining means the two states differ by hue, weight and edge
+            at once, and the composer's status chip — outlined already — is drawn
+            the same way, so the two places that report the mode now *look* the
+            same and not merely agree. Losing the shared box costs nothing: they
+            are adjacent, so the gap reads as a pair. */}
+        <div style={{ display: 'flex', gap: 6 }}>
           {(['plan', 'bypassPermissions'] as const).map((m) => {
             const active = mode === m
             // A hue per mode, not one hue for "whichever is on". The toggle used
@@ -941,14 +1062,14 @@ function Header({
                 title={m === 'plan' ? 'Plan first, then approve' : 'Run without asking'}
                 onClick={() => onMode(m)}
                 style={{
-                  padding: '6px 13px',
-                  border: 0,
+                  padding: '3px 10px',
+                  border: `1px solid ${active ? hue : CHAT.border}`,
                   cursor: 'pointer',
                   fontFamily: MONO,
-                  fontSize: 11.5,
+                  fontSize: 11,
                   transition: '.14s',
-                  background: active ? hue : 'transparent',
-                  color: active ? CHAT.bg : '#6B7480',
+                  background: 'transparent',
+                  color: active ? hue : CHAT.dim2,
                   fontWeight: active ? 500 : 400
                 }}
               >
@@ -966,13 +1087,15 @@ function Header({
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: 8,
-              padding: '6px 10px',
-              background: '#131820',
+              gap: 7,
+              // Sized to the 34px header: every control in this row clears it
+              // with a little air, so nothing has to be clipped or centred by eye.
+              padding: '3px 9px',
+              background: CHAT.well,
               border: `1px solid ${CHAT.border}`,
               color: CHAT.model,
               fontFamily: MONO,
-              fontSize: 11.5,
+              fontSize: 11,
               cursor: 'pointer',
               transition: 'border-color .14s'
             }}
@@ -1003,6 +1126,7 @@ function Header({
                   zIndex: 20,
                   background: CHAT.card,
                   border: `1px solid ${CHAT.border}`,
+                  borderRadius: CHAT.radiusCard,
                   boxShadow: '0 18px 44px -16px rgba(0,0,0,.7)',
                   minWidth: 232,
                   maxHeight: 300,
@@ -1033,7 +1157,7 @@ function Header({
                         textAlign: 'left',
                         border: 0,
                         borderLeft: `2px solid ${on ? CHAT.model : 'transparent'}`,
-                        background: on ? 'rgba(255,255,255,.03)' : 'transparent',
+                        background: on ? CHAT.hover : 'transparent',
                         color: on ? CHAT.text : CHAT.prose,
                         fontSize: 12.5,
                         padding: '8px 12px',
@@ -1092,6 +1216,7 @@ function TodoStrip({ todos }: { todos: ChatTodo[] }): React.ReactElement {
         marginBottom: 10,
         background: CHAT.card,
         border: `1px solid ${CHAT.borderCard}`,
+        borderRadius: CHAT.radiusCard,
         fontFamily: MONO,
         fontSize: 10.5,
         color: CHAT.dim3
@@ -1120,72 +1245,9 @@ function BlockingBar({
   onAnswer: (a: ChatAnswer) => void
 }): React.ReactElement {
   const [notes, setNotes] = React.useState('')
-  const [picks, setPicks] = React.useState<Record<string, string[]>>({})
-
-  const toggle = (q: string, label: string, multi: boolean): void =>
-    setPicks((p) => {
-      const cur = p[q] ?? []
-      if (!multi) return { ...p, [q]: [label] }
-      return { ...p, [q]: cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label] }
-    })
 
   if (card.kind === 'question') {
-    const questions = card.questions ?? []
-    const ready = questions.every((q) => (picks[q.question] ?? []).length > 0)
-    return (
-      <Bar hue={CHAT.hold}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          {questions.map((q) => (
-            <div key={q.question} style={{ marginBottom: 6 }}>
-              <div style={{ fontSize: 13, color: CHAT.text, marginBottom: 6 }}>{q.question}</div>
-              <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-                {q.options.map((o) => {
-                  const on = (picks[q.question] ?? []).includes(o.label)
-                  return (
-                    <button
-                      key={o.label}
-                      title={o.description}
-                      onClick={() => toggle(q.question, o.label, q.multiSelect)}
-                      style={{
-                        fontFamily: MONO,
-                        fontSize: 11.5,
-                        padding: '5px 11px',
-                        border: `1px solid ${on ? CHAT.hold : CHAT.border}`,
-                        background: on ? 'rgba(194,161,94,.12)' : 'transparent',
-                        color: on ? CHAT.text : CHAT.dim,
-                        cursor: 'pointer'
-                      }}
-                    >
-                      {o.label}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-        <button
-          disabled={!ready}
-          onClick={() =>
-            // The answers map is keyed by question *text*: an `allow` without one
-            // yields "The user did not answer the questions." with no error
-            // raised anywhere, which would silently break the card.
-            onAnswer({
-              behavior: 'question',
-              answers: Object.fromEntries(
-                questions.map((q) => {
-                  const picked = picks[q.question] ?? []
-                  return [q.question, q.multiSelect ? picked : picked[0]]
-                })
-              )
-            })
-          }
-          style={primaryButton(!ready)}
-        >
-          Answer
-        </button>
-      </Bar>
-    )
+    return <QuestionCard questions={card.questions ?? []} onAnswer={onAnswer} />
   }
 
   if (card.kind === 'plan') {
@@ -1200,7 +1262,7 @@ function BlockingBar({
             flex: 1,
             minWidth: 80,
             height: 30,
-            background: CHAT.bg,
+            background: CHAT.well,
             border: `1px solid ${CHAT.border}`,
             color: CHAT.text,
             fontSize: 12.5,
@@ -1240,19 +1302,400 @@ function BlockingBar({
   )
 }
 
-function Bar({ hue, children }: { hue: string; children: React.ReactNode }): React.ReactElement {
+/**
+ * `AskUserQuestion`'s card — the whole tool, not a row of labels.
+ *
+ * The first version drew the labels as chips and nothing else, which dropped
+ * four of the tool's five affordances on the floor: the option **descriptions**
+ * (tooltip-only, so unreadable), the **previews** the model wrote for you to
+ * compare, whether the question takes **one answer or several**, the **Other**
+ * free-text escape the CLI adds to every question automatically, and **Chat
+ * about this**, which is the only way out of a question you would rather talk
+ * about than answer. All five are the reason the tool exists; a chip row is the
+ * one part of it a plain sentence could have done instead.
+ *
+ * Layout follows the CLI's own dialog: a vertical option list, and — for a
+ * single-select question whose options carry previews — the focused option's
+ * preview beside it, with a notes field under it. `focus` is the option the
+ * preview is showing and is deliberately *not* the selection: you move through
+ * the list to compare, and picking is a separate act.
+ */
+function QuestionCard({
+  questions,
+  onAnswer
+}: {
+  questions: ChatQuestion[]
+  onAnswer: (a: ChatAnswer) => void
+}): React.ReactElement {
+  /** ticked option labels, per question */
+  const [picks, setPicks] = React.useState<Record<string, string[]>>({})
+  /** the "Other" free text, per question, and whether it is armed */
+  const [other, setOther] = React.useState<Record<string, string>>({})
+  const [otherOn, setOtherOn] = React.useState<Record<string, boolean>>({})
+  /** notes, offered only where the CLI offers them: preview questions */
+  const [notes, setNotes] = React.useState<Record<string, string>>({})
+  /** which option's preview is on screen — cursor, not selection */
+  const [focus, setFocus] = React.useState<Record<string, string>>({})
+
+  const pick = (q: ChatQuestion, label: string): void => {
+    setFocus((f) => ({ ...f, [q.question]: label }))
+    setPicks((p) => {
+      const cur = p[q.question] ?? []
+      if (!q.multiSelect) return { ...p, [q.question]: [label] }
+      return {
+        ...p,
+        [q.question]: cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label]
+      }
+    })
+    // Single-select is exclusive with Other in both directions, or picking an
+    // option would silently send a second answer nobody can see.
+    if (!q.multiSelect) setOtherOn((o) => ({ ...o, [q.question]: false }))
+  }
+
+  const armOther = (q: ChatQuestion): void => {
+    setOtherOn((o) => ({ ...o, [q.question]: !o[q.question] }))
+    if (!q.multiSelect) setPicks((p) => ({ ...p, [q.question]: [] }))
+  }
+
+  /** What this question will send: ticked labels plus a non-empty Other. */
+  const valuesFor = (q: ChatQuestion): string[] => {
+    const v = [...(picks[q.question] ?? [])]
+    const t = (other[q.question] ?? '').trim()
+    if (otherOn[q.question] && t) v.push(t)
+    return v
+  }
+
+  const answersFor = (): Record<string, string> => {
+    const out: Record<string, string> = {}
+    for (const q of questions) {
+      const v = valuesFor(q)
+      // Joined with `", "` rather than sent as an array: that is what the CLI's
+      // own dialog submits, and its result builder splits on exactly that
+      // string to decide whether every pick was a real option.
+      if (v.length > 0) out[q.question] = v.join(', ')
+    }
+    return out
+  }
+
+  const notesFor = (): Record<string, string> | undefined => {
+    const out: Record<string, string> = {}
+    for (const q of questions) {
+      const n = (notes[q.question] ?? '').trim()
+      if (n) out[q.question] = n
+    }
+    return Object.keys(out).length > 0 ? out : undefined
+  }
+
+  const ready = questions.every((q) => valuesFor(q).length > 0)
+
+  return (
+    <Bar hue={CHAT.hold} column>
+      {/* The card can outgrow the space above the composer — four questions with
+          previews is a legal call — so it scrolls itself rather than pushing the
+          composer off screen. The right padding keeps the `choose one` hint out
+          from under that scrollbar. */}
+      <div
+        style={{ maxHeight: '46vh', overflowY: 'auto', paddingRight: 8, display: 'grid', gap: 16 }}
+      >
+        {questions.map((q) => {
+          const withPreview = !q.multiSelect && q.options.some((o) => o.preview)
+          const shown = focus[q.question] ?? q.options[0]?.label
+          const chosen = picks[q.question] ?? []
+          const list = (
+            <div
+              style={{
+                display: 'grid',
+                gap: 4,
+                alignContent: 'start',
+                // Without a preview column beside it the list would run the full
+                // 880px measure, so a two-word label wore an 800px highlight.
+                maxWidth: withPreview ? undefined : 620
+              }}
+            >
+              {q.options.map((o) => (
+                <OptionRow
+                  key={o.label}
+                  label={o.label}
+                  description={o.description}
+                  multi={q.multiSelect}
+                  on={chosen.includes(o.label)}
+                  focused={withPreview && shown === o.label}
+                  onFocus={() => setFocus((f) => ({ ...f, [q.question]: o.label }))}
+                  onClick={() => pick(q, o.label)}
+                />
+              ))}
+              {/* Always present, because the CLI always adds it: "There should be
+                  no 'Other' option, that will be provided automatically" is in
+                  the schema the model is handed. Its text *is* the answer — the
+                  dialog files it under the question like any label. */}
+              <OptionRow
+                label="Other"
+                description="answer in your own words"
+                multi={q.multiSelect}
+                on={!!otherOn[q.question]}
+                focused={false}
+                onClick={() => armOther(q)}
+              />
+              {otherOn[q.question] && (
+                <input
+                  autoFocus
+                  value={other[q.question] ?? ''}
+                  onChange={(e) => setOther((o) => ({ ...o, [q.question]: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && ready) {
+                      e.preventDefault()
+                      onAnswer({ behavior: 'question', answers: answersFor(), notes: notesFor() })
+                    }
+                  }}
+                  placeholder="Type something…"
+                  style={{
+                    marginLeft: 22,
+                    height: 28,
+                    background: CHAT.well,
+                    border: `1px solid ${CHAT.border}`,
+                    color: CHAT.text,
+                    fontSize: 12.5,
+                    padding: '0 9px',
+                    outline: 'none'
+                  }}
+                />
+              )}
+            </div>
+          )
+
+          return (
+            <div key={q.question}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: 9,
+                  marginBottom: 8,
+                  flexWrap: 'wrap'
+                }}
+              >
+                {q.header && (
+                  <span
+                    style={{
+                      fontFamily: MONO,
+                      fontSize: 10,
+                      letterSpacing: '.04em',
+                      textTransform: 'uppercase',
+                      padding: '2px 6px',
+                      border: `1px solid ${CHAT.border}`,
+                      color: CHAT.hold,
+                      flex: 'none'
+                    }}
+                  >
+                    {q.header}
+                  </span>
+                )}
+                <span style={{ fontSize: 13.5, color: CHAT.text, flex: 1, minWidth: 0 }}>
+                  {q.question}
+                </span>
+                {/* Whether more than one answer is allowed is not derivable from
+                    the options, and getting it wrong is a silently wrong answer
+                    rather than a visible error. */}
+                <span style={{ fontFamily: MONO, fontSize: 10.5, color: CHAT.dim3, flex: 'none' }}>
+                  {q.multiSelect ? 'choose any' : 'choose one'}
+                </span>
+              </div>
+
+              {withPreview ? (
+                <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 14 }}>
+                  {list}
+                  <div style={{ minWidth: 0, display: 'grid', gap: 8, alignContent: 'start' }}>
+                    {/* Markdown in a **monospace** box. The window root already
+                        declares mono; this says it again on purpose, because
+                        the CLI's own preview pane is Ink — a terminal grid
+                        whatever the model wrote — and the tool's schema promises
+                        the model that grid. A wrapper that ever restyles this
+                        window must not quietly reflow an ASCII mockup. */}
+                    {/* **Every option's preview is laid out, in one grid cell,
+                        and all but the focused one are hidden.** The box is
+                        therefore as tall and as wide as the *tallest* preview
+                        from the moment it appears, and moving down the list
+                        cannot change its size by a pixel.
+
+                        Rendering only the focused one is what the obvious
+                        version does, and it made the whole window flicker: a
+                        five-line preview after a twenty-line one shrinks the
+                        card, the log's ResizeObserver reads that as the scroller
+                        having changed height and re-pins the tail — so merely
+                        *hovering* the options jumped the conversation. Reserving
+                        the space up front is the fix, and it needs no pixel
+                        arithmetic against the font metrics to get right.
+
+                        Sideways it scrolls; vertically it grows and the card's
+                        own scroller takes it, since a second scroller nested in
+                        that one would swallow the wheel halfway down a mockup. */}
+                    <div
+                      style={{
+                        display: 'grid',
+                        overflowX: 'auto',
+                        padding: '8px 12px',
+                        background: CHAT.well,
+                        border: `1px solid ${CHAT.borderCard}`,
+                        borderRadius: CHAT.radiusCard
+                      }}
+                    >
+                      {q.options.map((o) => (
+                        <div
+                          key={o.label}
+                          style={{
+                            gridArea: '1 / 1',
+                            visibility: shown === o.label ? 'visible' : 'hidden'
+                          }}
+                        >
+                          {o.preview ? (
+                            <Preview src={o.preview} />
+                          ) : (
+                            <span style={{ fontFamily: MONO, fontSize: 11.5, color: CHAT.dim3 }}>
+                              no preview for this option
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    <input
+                      value={notes[q.question] ?? ''}
+                      onChange={(e) => setNotes((n) => ({ ...n, [q.question]: e.target.value }))}
+                      placeholder="Notes on this option (optional)…"
+                      style={{
+                        height: 28,
+                        background: CHAT.well,
+                        border: `1px solid ${CHAT.border}`,
+                        color: CHAT.text,
+                        fontSize: 12.5,
+                        padding: '0 9px',
+                        outline: 'none'
+                      }}
+                    />
+                  </div>
+                </div>
+              ) : (
+                list
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
+        <div style={{ flex: 1 }} />
+        {/* Not a cancel. It denies the tool with the questions attached and a
+            note that the user wants to talk first, so the composer message you
+            type next lands in a turn that is already listening. */}
+        <button
+          onClick={() =>
+            onAnswer({
+              behavior: 'question',
+              answers: answersFor(),
+              notes: notesFor(),
+              clarify: true
+            })
+          }
+          style={secondaryButton}
+        >
+          Chat about this
+        </button>
+        <button
+          disabled={!ready}
+          onClick={() =>
+            // The answers map is keyed by question *text*: an `allow` without one
+            // yields "The user did not answer the questions." with no error
+            // raised anywhere, which would silently break the card.
+            onAnswer({ behavior: 'question', answers: answersFor(), notes: notesFor() })
+          }
+          style={primaryButton(!ready)}
+        >
+          Answer
+        </button>
+      </div>
+    </Bar>
+  )
+}
+
+/**
+ * One selectable option. The marker carries the *arity* — a box for a
+ * multi-select, a radio for a single — so "choose any" is legible from the
+ * control as well as from the words beside the question.
+ */
+function OptionRow({
+  label,
+  description,
+  multi,
+  on,
+  focused,
+  onFocus,
+  onClick
+}: {
+  label: string
+  description?: string
+  multi: boolean
+  on: boolean
+  focused: boolean
+  onFocus?: () => void
+  onClick: () => void
+}): React.ReactElement {
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={onFocus}
+      onFocus={onFocus}
+      style={{
+        display: 'flex',
+        alignItems: 'baseline',
+        gap: 8,
+        width: '100%',
+        textAlign: 'left',
+        padding: '5px 8px',
+        border: `1px solid ${on ? CHAT.hold : focused ? CHAT.border : 'transparent'}`,
+        borderRadius: CHAT.radius,
+        background: on ? 'rgba(194,161,94,.16)' : focused ? CHAT.hover : 'transparent',
+        color: on ? CHAT.text : CHAT.dim,
+        cursor: 'pointer'
+      }}
+    >
+      <span
+        style={{ fontFamily: MONO, fontSize: 11.5, color: on ? CHAT.hold : CHAT.dim3, flex: 'none' }}
+      >
+        {multi ? (on ? '[x]' : '[ ]') : on ? '(•)' : '( )'}
+      </span>
+      <span style={{ minWidth: 0 }}>
+        <span style={{ fontSize: 12.5, color: on ? CHAT.text : CHAT.prose }}>{label}</span>
+        {description && (
+          <span style={{ fontSize: 11.5, color: CHAT.dim3, marginLeft: 8 }}>{description}</span>
+        )}
+      </span>
+    </button>
+  )
+}
+
+function Bar({
+  hue,
+  column = false,
+  children
+}: {
+  hue: string
+  /** stacked rather than a single row — what a question card needs */
+  column?: boolean
+  children: React.ReactNode
+}): React.ReactElement {
   return (
     <div
       style={{
         flex: 'none',
         display: 'flex',
-        alignItems: 'center',
-        gap: 13,
+        flexDirection: column ? 'column' : 'row',
+        alignItems: column ? 'stretch' : 'center',
+        gap: column ? 0 : 13,
         padding: '11px 14px',
         marginBottom: 10,
         background: CHAT.card,
         border: `1px solid ${CHAT.borderCard}`,
-        borderTop: `2px solid ${hue}`
+        borderTop: `2px solid ${hue}`,
+        borderRadius: CHAT.radiusCard
       }}
     >
       {children}
@@ -1266,21 +1709,25 @@ function primaryButton(disabled: boolean): React.CSSProperties {
     height: 32,
     padding: '0 17px',
     border: 0,
-    background: disabled ? '#1A2029' : CHAT.you,
-    color: disabled ? CHAT.dim2 : CHAT.bg,
+    background: disabled ? CHAT.well : CHAT.you,
+    color: disabled ? CHAT.dim2 : CHAT.onAccent,
     fontSize: 13,
     fontWeight: 500,
     cursor: disabled ? 'default' : 'pointer'
   }
 }
 
+// Drawn from CHAT, not from the app's slate custom properties: this palette is
+// deliberately its own so it cannot leak *out*, and `var(--border)` on a control
+// inside the chat window is the same mistake pointing inwards — a near-black
+// panel wearing the sidebar's hairline.
 const secondaryButton: React.CSSProperties = {
   flex: 'none',
   height: 32,
   padding: '0 17px',
-  border: '1px solid var(--border)',
+  border: `1px solid ${CHAT.border}`,
   background: 'transparent',
-  color: 'var(--text-2)',
+  color: CHAT.dim,
   fontSize: 13,
   cursor: 'pointer'
 }
@@ -1308,7 +1755,8 @@ function ChipStrip({
         padding: '8px 14px',
         marginBottom: 10,
         background: CHAT.card,
-        border: `1px solid ${CHAT.borderCard}`
+        border: `1px solid ${CHAT.borderCard}`,
+        borderRadius: CHAT.radiusCard
       }}
     >
       {chips.map((c) => (
@@ -1422,7 +1870,9 @@ function Typeahead({
       style={{
         marginBottom: 10,
         background: CHAT.card,
-        border: `1px solid ${CHAT.borderCard}`
+        border: `1px solid ${CHAT.borderCard}`,
+        borderRadius: CHAT.radiusCard,
+        overflow: 'hidden'
       }}
     >
       <div style={{ maxHeight: 240, overflowY: 'auto' }}>
@@ -1444,7 +1894,7 @@ function Typeahead({
                 textAlign: 'left',
                 border: 0,
                 borderLeft: `2px solid ${on ? CHAT.you : 'transparent'}`,
-                background: on ? 'rgba(255,255,255,.04)' : 'transparent',
+                background: on ? CHAT.hover : 'transparent',
                 color: CHAT.dim,
                 fontFamily: MONO,
                 fontSize: 11.5,

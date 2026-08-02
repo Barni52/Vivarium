@@ -50,10 +50,20 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
   picker, sidebar, terminal header and empty state all read from it, and `TypeIcon` gives each type
   its own silhouette so they never depend on color alone (four of them now: the star, the speech
   bubble, the window frame, the cube). `theme.ts` also owns `CHAT` — **the chat window's own
-  palette and metrics, deliberately not the app's slate one.** The chat is built to
-  `docs/redisign/Chat Terminal.html` and runs near-black and cooler than everything around it, the
-  way the terminal pane already does; it is a plain object rather than CSS custom properties
-  precisely so it cannot leak into the sidebar, the title bar or the terminals. Its two role hues
+  palette and metrics, held as plain strings rather than CSS custom properties precisely so they
+  cannot leak into the sidebar, the title bar or the terminals.** It was near-black, read off
+  `docs/redisign/Chat Terminal.html`; it is now **the agent tab's greys** — page on
+  `--terminal-bg`, chrome on `--panel`, hairlines on `--border`, prose on `--terminal-text`, and a
+  34px header, the same as `TerminalHost`'s to the pixel. Switching between an agent and a chat in
+  one project should not feel like switching applications, and both the colour and the 18px the
+  header used to jump said otherwise. Those four values are *copied*, not referenced, which is the
+  price of not leaking — if that grey ever moves, `CHAT` is the second place to move it. Two tokens
+  exist because the page is no longer the darkest thing on screen: `well` (a recess inside a panel)
+  and `onAccent` (ink on a filled accent), both of which used to be `bg` itself. `radius` /
+  `radiusCard` are the corners; the control radius is applied once, as a `.vchat`-scoped rule in
+  `GLOBAL_CSS`, so it reaches buttons nobody has written yet. The whole window is **JetBrains
+  Mono**, set once on the chat root and inherited — including the composer, since
+  `input,button,textarea{font-family:inherit}` is already global. Its two role hues
   (`you` coral, `claude` cyan) are load-bearing — telling a user turn, an assistant turn and a tool
   call apart is what the redesign is *for*, and the one grey mono line each that preceded it is
   what made the log unreadable. `CHAT.live` is a green and that is allowed where a mode chip's
@@ -285,10 +295,16 @@ in the renderer: the same guarantee bought back at a higher price.
   under the turn above it shows that message twice. The boundary is that marker rather than a guess
   at what a user line looks like: an interrupt marker, a command echo and its
   `<local-command-stdout>` reply are all plain user text lines *inside* a turn. (3) *A settle reads
-  from the turn's own start offset*, which makes settling twice idempotent — that is what lets a
-  late flush be recovered by simply doing it again, once, on the evidence that the settled turn
-  holds less prose than the stream already painted. An **aborted** turn is not settled but its
-  bytes are still stepped over (`skipTurn`), or the next turn would map them again.
+  from the turn's own start offset*, which makes settling twice idempotent — and idempotence is what
+  lets a settle holding **less prose than the stream already painted be withheld rather than applied
+  and repaired**: the CLI's last write is routinely still in flight when `result` arrives over the
+  pipe, and a lost race used to blank the finished paragraph for the whole `RESETTLE_MS` before the
+  re-read put it back. So the streamed rows stay on screen and the replacement waits for a file that
+  has caught up (`SETTLE_ATTEMPTS` reads, then it accepts what it has). The prose comparison is
+  **trimmed on both sides**: `ChatMapper` trims each text block and the stream keeps the deltas as
+  they arrived, so counted raw a *complete* transcript scores below the stream on most turns and
+  every turn looks like a lost race. An **aborted** turn is not settled but its bytes are still
+  stepped over (`skipTurn`), or the next turn would map them again.
 - **`isSidechain` is never filtered on in the chat mapper.** A transcript written by `claude -p`
   marks **every** line `isSidechain: true`, main conversation included — the exact inverse of a
   TUI-written transcript, where every line is `false` (verified on 2.1.211). Dropping those lines
@@ -357,9 +373,10 @@ in the renderer: the same guarantee bought back at a higher price.
   — a clean deny-then-interrupt reports `is_error: true`. On reopen, where there is no
   `terminal_reason`, a cancelled tool is detected **structurally** (the error results with nothing
   after them in the turn but the interrupt marker), never by matching the refusal wording. The one
-  accepted prose-parsing rule in the whole design is recovering an answered `AskUserQuestion`'s
-  ticked chip, and it has a graceful fallback; keeping it to one is why the cancelled rule is
-  positional.
+  prose-parsing rule left in the design is the *fallback* for recovering an answered
+  `AskUserQuestion`, and even that is now anchored on the question texts the mapper already holds
+  rather than sweeping the sentence for `"…"="…"` pairs — so a preview or a note quoting one cannot
+  inject a phantom answer. Keeping it to one is why the cancelled rule is positional.
   **The `interrupted` row itself has two producers and they are not ordered against each other.**
   Claude Code writes a synthetic `[Request interrupted by user]` user message, which the mapper
   turns into that row, and `result` carries `terminal_reason` and produces one too — both arrive on
@@ -368,6 +385,31 @@ in the renderer: the same guarantee bought back at a higher price.
   row a CLI that emits no such message would produce at all. So whichever lands second is
   suppressed, per turn — never by a shared fixed id, or a conversation with five interrupted turns
   would collapse to one row.
+- **The `AskUserQuestion` card is the whole tool, not a row of labels.** The first version drew the
+  option labels as chips, which silently dropped every affordance that makes the tool worth calling:
+  the option **descriptions** (tooltip-only), the **previews** the model writes for you to compare,
+  whether the question takes one answer or several, the **Other** free-text escape, and **Chat about
+  this**. Four facts hold that surface up, and all four are read off the CLI's own dialog rather than
+  guessed:
+  - **"Other" is not a separate `response` field, it is an answer.** The dialog files the typed text
+    under the question like any label, so it comes back as `"q"="<what you typed>"` and the model
+    gets *The user answered: …* — the wording that tells it to read the answer rather than assume it
+    picked an option. `response` exists and is deliberately unused.
+  - **Multi-select answers travel joined with `", "`, as a string.** An array survives the wire (the
+    schema's preprocess joins it, but `call()` reads the raw input), which is exactly why it must not
+    be sent: the CLI stringifies it as `A,B` while its own dialog sends `A, B`, and the result
+    builder splits on the latter to decide the answer was well formed. The renderer splits back only
+    when every part is a real option label — a single-select answer may legitimately contain a comma.
+  - **"Chat about this" is a `deny`, not an empty `allow`.** An `allow` with no answers yields *"The
+    user did not answer the questions."* and the agent carries on with its own guess. The denial
+    carries the CLI's own clarify prose plus whatever was half-filled in, so the next composer
+    message lands in a turn that is already listening.
+  - **`updatedInput` is re-validated against the tool's schema**, so `answers` and `annotations` must
+    be shaped right — but unknown *keys* are tolerated (the CLI drops `unrecognized_keys` issues
+    before deciding the host sent something invalid), which is what makes a forward-compatible field
+    safe to add later.
+  The settled row does **not** re-derive any of this from prose: the transcript line's own
+  `toolUseResult` carries `{questions, answers, annotations}` keyed by question text, which is exact.
 - **The context meter is only ever as fresh as the last thing that asked for it**, so changing the
   model has to ask. `get_context_usage` is polled at open (the load-bearing half: nothing is
   emitted on the wire until the first user message, so a chat reopened onto 80k of history would
@@ -404,13 +446,26 @@ in the renderer: the same guarantee bought back at a higher price.
   watches the content **and the scroller** — a composer growing to three lines takes height away
   from the log without changing anything inside it — and `pinned` (within 40px of the bottom) is
   what keeps it from yanking a user who has scrolled up to read.
+  **The corollary binds everything in the pinned bands: a hover may not change their height.**
+  Todo strip, blocking card and chip strip all sit between the log and the composer, so any pixel
+  they gain or lose is a pixel the *scroller* loses or gains, and the observer answers by re-pinning
+  the tail. The question card's preview pane learned this the hard way — it swapped its content on
+  hover, so moving down a list of options jumped the whole conversation once per row. It now lays
+  every option's preview into one grid cell and hides all but the focused one (`visibility`, which
+  keeps layout), so the pane is the size of the tallest from the moment it appears. Reserve the
+  space; do not compute it against font metrics, and do not re-measure on hover.
 - **Chat zoom is CSS `zoom` on the two reading columns, never on the view root.** The chat is a
   whole layout — a 96px gutter, an 880px measure, cards, a composer — so scaling only the type
   would leave all of it behind at its 1× proportions. The root is `position:absolute; inset:0` and
   a zoomed box scales its own edges; the columns are plain auto-width blocks, which fill the
-  scroller at any factor exactly the way browser zoom behaves. The log's column and the composer's
-  carry the same factor so the two stay aligned. `chatZoom` is session-only store state, shared by
-  every chat like `terminalFontSize` is shared by every terminal — you zoom because of the monitor
+  scroller at any factor exactly the way browser zoom behaves. Their `max-width` is divided back
+  out below 1× (`columnMax`), because a `max-width` is in *zoomed* pixels: at 0.7 the measure drew
+  616 real pixels and zooming out pulled both edges of the page in from the window, so the type got
+  smaller *and* the reading column got narrower with a band of dead background down each side.
+  Above 1× it is left alone — growing with the type is what keeps the measure in characters roughly
+  constant, and that direction never looked broken. The log's column and the composer's carry the
+  same factor and the same max so the two stay aligned. `chatZoom` is session-only store state,
+  shared by every chat like `terminalFontSize` is shared by every terminal — you zoom because of the monitor
   you are sitting at. Ctrl +/-/0 and Ctrl+wheel, the chords `TerminalView` already binds, and the
   log's context menu is where they are written down (the terminal's menu is the precedent: a chord
   nothing on screen mentions may as well not exist).

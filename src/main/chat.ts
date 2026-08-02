@@ -57,10 +57,17 @@ function arr(v: unknown): unknown[] {
  * Total assistant prose in a set of rows. Tool cards and clocks are excluded on
  * purpose: they are reproduced identically by both sources, so only the prose
  * can tell a transcript that is one line behind from one that is complete.
+ *
+ * Trimmed per row, because the two sources disagree about edge whitespace and
+ * only about that: `ChatMapper` trims each text block and the stream accumulates
+ * the deltas exactly as they arrive, trailing newline included. Counted raw, a
+ * complete transcript therefore scores *below* the stream on most turns — which
+ * is the reading this number exists to distinguish from a file that is genuinely
+ * still being written.
  */
 function prose(entries: ChatEntry[]): number {
   let n = 0
-  for (const e of entries) if (e.kind === 'text' && e.role === 'claude') n += e.md.length
+  for (const e of entries) if (e.kind === 'text' && e.role === 'claude') n += e.md.trim().length
   return n
 }
 
@@ -83,18 +90,31 @@ const SILENCE_MS = 60_000
 const MOUNT_WINDOW = 300
 
 /**
- * How long after a turn's `result` to re-read the transcript, when the first
- * settle came back with less prose than the stream had already painted.
+ * How long after a turn's `result` to re-read the transcript, when the settle
+ * came back with less prose than the stream had already painted.
  *
  * `result` arrives over a pipe and the transcript is a file the CLI is writing
  * on its own schedule, so the two are not ordered against each other: the last
- * assistant line is occasionally still in flight when the settle reads. Since a
- * settle *replaces* the turn, losing that race deleted the final paragraph of
- * the answer from a log that had just finished painting it. One delayed re-read,
- * fired only on evidence that something is missing, costs a `docker exec` in the
- * rare case and nothing at all in the common one.
+ * assistant line is routinely still in flight when the settle reads — the longer
+ * the answer, the likelier it is, since `completeLines` drops a half-written line
+ * whole. The re-read is fired only on evidence that something is missing, so it
+ * costs a `docker exec` in that case and nothing at all in the common one, and
+ * **nothing is replaced until it comes back complete** (see settleTurn).
  */
 const RESETTLE_MS = 700
+
+/**
+ * How many reads a settle gets before it accepts a transcript holding less prose
+ * than the stream painted.
+ *
+ * Three (so ~1.4s of waiting) rather than one, because the wait is invisible —
+ * the streamed rows are on screen and complete throughout it — while giving up
+ * early is not: whatever the last read holds is what replaces them. A cap has to
+ * exist at all because the two readings can also differ for a reason no amount of
+ * re-reading will fix, and re-reading a settled file every 700 ms for the rest of
+ * the session is the one outcome worse than a stale row.
+ */
+const SETTLE_ATTEMPTS = 3
 
 /**
  * How long token deltas are gathered before the row they are filling is shipped
@@ -406,8 +426,13 @@ export class ChatService {
    * read stopped, so running it twice on one turn replaces the same rows instead
    * of appending a second copy — which is what lets a late flush be recovered by
    * simply doing it again.
+   *
+   * `attempt` counts the re-reads a short transcript has already cost (see
+   * RESETTLE_MS); it is not a retry of a *failed* read, which is never retried at
+   * all — a failed read leaves the streamed rows in place, which is what the user
+   * is already looking at.
    */
-  private async settleTurn(l: Live, turn: number, from: number, retry = true): Promise<void> {
+  private async settleTurn(l: Live, turn: number, from: number, attempt = 0): Promise<void> {
     const uuid = l.session.claudeSessionId
     if (!uuid) return
     const r = await this.docker.readTranscript(l.project, uuid, from)
@@ -430,6 +455,30 @@ export class ChatService {
     // that says "read again in a moment" instead of guessing at a delay.
     const painted = prose(l.entries.filter((e) => e.turn === turn))
     const landed = prose(mapper.entries)
+
+    // **A short settle is withheld, not applied and then repaired.** Applying it
+    // and re-reading afterwards is what this used to do, and on any answer long
+    // enough for the CLI's last write to still be in flight it *always* lost the
+    // race: the finished paragraph vanished the instant the turn ended and came
+    // back RESETTLE_MS later, a blank of up to a second on exactly the message
+    // the user was reading. Nothing about the earlier read was more true — it
+    // simply arrived first — so the streamed rows stay on screen untouched and
+    // the replacement waits for a file that has caught up. Withholding is free
+    // because a settle is idempotent: `accounted` is monotonic and the re-read
+    // starts from this same `from`, so the only thing lost by skipping this pass
+    // is the pass itself.
+    if (landed < painted && attempt + 1 < SETTLE_ATTEMPTS) {
+      setTimeout(() => {
+        // Not if a follow-up has since started: rows are replaced by appending
+        // them, so settling a turn that is no longer the last one would hoist it
+        // below the turn after it. It keeps its streamed rows for good instead —
+        // the one case where the log is not transcript-derived, and they are the
+        // *fuller* of the two readings, which is the trade this branch is making.
+        if (this.live.get(l.session.id) !== l || l.turn !== turn) return
+        void this.settleTurn(l, turn, from, attempt + 1)
+      }, RESETTLE_MS)
+      return
+    }
 
     // Fold the mapped todos into the running fold rather than replacing it: the
     // fold spans the whole conversation and the mount window is only the tail, so
@@ -459,18 +508,6 @@ export class ChatService {
       entries: this.wireEntries(settled)
     })
     this.emit({ kind: 'todo', sessionId: l.session.id, todos: [...l.todos.values()] })
-
-    // Once, and only on evidence. A turn that genuinely ended there would re-read
-    // forever on a standing rule, and the second pass reads from the same `from`
-    // so it replaces these rows rather than appending beside them.
-    if (retry && landed < painted) {
-      setTimeout(() => {
-        // Not if a follow-up has since started: the missing line is only worth
-        // chasing while this is still the turn at the bottom of the log.
-        if (this.live.get(l.session.id) !== l || l.turn !== turn) return
-        void this.settleTurn(l, turn, from, false)
-      }, RESETTLE_MS)
-    }
   }
 
   // ---- process ------------------------------------------------------------
@@ -1158,13 +1195,31 @@ export class ChatService {
       // code either way, and the TerminalView Esc/Enter heuristics have no
       // equivalent and must not be reproduced.
       this.respond(l, requestId, { behavior: 'deny', message: answer.message })
+    } else if (answer.behavior === 'question' && answer.clarify) {
+      // "Chat about this" is a **deny**, not an empty answer — an `allow` with no
+      // answers reads as "the user ignored me" and the agent carries on with its
+      // own guess. The prose is the CLI's own: it names the questions, carries
+      // whatever was half-filled in, and tells the model to start by asking what
+      // needs clarifying, so the user's next composer message lands in a turn
+      // that is already listening. It stays here rather than in the renderer
+      // because it is CLI vocabulary, which stops at the process boundary.
+      this.respond(l, requestId, { behavior: 'deny', message: clarifyMessage(input, answer) })
     } else if (answer.behavior === 'question') {
       // `allow` alone is NOT an answer: it yields the tool_result "The user did
       // not answer the questions." with no error raised anywhere. The choice
-      // travels in updatedInput as an `answers` map keyed by question *text*.
+      // travels in updatedInput as an `answers` map keyed by question *text*,
+      // beside an `annotations` map keyed the same way, carrying the chosen
+      // option's `preview` and any notes typed against it. Unknown keys in
+      // updatedInput are tolerated by the CLI (it drops `unrecognized_keys`
+      // issues before deciding the host sent something invalid), but everything
+      // here is in the tool's schema anyway.
       this.respond(l, requestId, {
         behavior: 'allow',
-        updatedInput: { ...input, answers: answer.answers }
+        updatedInput: {
+          ...input,
+          answers: answer.answers,
+          annotations: annotationsFor(input, answer)
+        }
       })
     } else if (answer.behavior === 'allow') {
       this.respond(l, requestId, { behavior: 'allow', updatedInput: input })
@@ -1429,4 +1484,57 @@ function chipOf(a: ChatAttachment): { kind: 'path' | 'image' | 'document' | 'tex
   return a.kind === 'path'
     ? { kind: 'path', name: a.name, detail: a.containerPath }
     : { kind: a.kind, name: a.name }
+}
+
+/**
+ * `annotations`, the second half of an `AskUserQuestion` answer.
+ *
+ * Keyed by question text like `answers` is, carrying two things the answer
+ * string cannot: the **preview** of the option that was chosen — the model
+ * wrote it, but it does not otherwise learn which one you were looking at when
+ * you picked — and any free-text **notes**. Both are optional and a question
+ * with neither is omitted entirely rather than sent as an empty object, which
+ * is what the CLI's own dialog does.
+ */
+function annotationsFor(
+  input: Json,
+  answer: { answers: Record<string, string>; notes?: Record<string, string> }
+): Json {
+  const out: Json = {}
+  for (const q of parseQuestions(input)) {
+    const chosen = answer.answers[q.question]
+    const preview = q.options.find((o) => o.label === chosen)?.preview
+    const notes = answer.notes?.[q.question]?.trim()
+    if (!preview && !notes) continue
+    out[q.question] = { ...(preview ? { preview } : {}), ...(notes ? { notes } : {}) }
+  }
+  return out
+}
+
+/**
+ * The "Chat about this" denial, word for word the CLI's own — including the
+ * indentation, which is what its template literal produces. Half-filled answers
+ * and notes ride along, because "let me clarify" after picking two of three
+ * questions should not throw those two away.
+ */
+function clarifyMessage(
+  input: Json,
+  answer: { answers: Record<string, string>; notes?: Record<string, string> }
+): string {
+  const asked = parseQuestions(input)
+    .map((q) => {
+      const a = answer.answers[q.question]
+      const n = answer.notes?.[q.question]?.trim()
+      const lines = [`- "${q.question}"`, a ? `  Answer: ${a}` : '  (No answer provided)']
+      if (n) lines.push(`  User notes: ${n}`)
+      return lines.join('\n')
+    })
+    .join('\n')
+  return `The user wants to clarify these questions.
+    This means they may have additional information, context or questions for you.
+    Take their response into account and then reformulate the questions if appropriate.
+    Start by asking them what they would like to clarify.
+
+    Questions asked:
+${asked}`
 }
