@@ -2,7 +2,11 @@
 // palette custom-props, keyframes, scrollbars. Injected once at startup.
 import type { SessionType } from '@shared/types'
 
-export const GLOBAL_CSS = `
+// The app's own chrome. `GLOBAL_CSS` — what actually gets injected — is this
+// plus the handful of chat rules at the bottom of the file, which are down there
+// so they can interpolate `CHAT` rather than restate its hex codes in a string
+// that would then drift from it silently.
+const APP_CSS = `
   *{box-sizing:border-box}
   html,body,#root{margin:0;padding:0;height:100%;background:#0f141b}
   :root{
@@ -40,11 +44,6 @@ export const GLOBAL_CSS = `
   @keyframes vover{from{opacity:0}to{opacity:1}}
   @keyframes vdlg{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
   @keyframes vpop{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
-  /* The chat log runs on its own near-black palette (CHAT in this file), and the
-     app-wide thumb above is mixed for --bg. Scoped to the one scroller rather
-     than themed globally: every other scrollbar in the app still sits on slate. */
-  .vchat-scroll::-webkit-scrollbar-thumb{background:#232A32;border:3px solid #0B0D10;background-clip:padding-box}
-  .vchat-scroll::-webkit-scrollbar-thumb:hover{background:#333C46}
 `
 
 /**
@@ -82,15 +81,30 @@ export const ACCENT: Record<string, string> = {
 }
 
 /**
- * The chat window's own palette and metrics — every value in it read off
- * `docs/redisign/Chat Terminal.html`, which is the design this window is built
- * to. It is deliberately **not** the app's slate palette: the chat is a reading
- * surface sitting inside a tool chrome, and it is darker and cooler than
- * everything around it on purpose, the way the terminal pane already is.
+ * The chat window's own palette and metrics. It is deliberately **not** the
+ * app's slate palette: the chat is a reading surface sitting inside a tool
+ * chrome, and it keeps its own temperature the way the terminal pane already
+ * does.
  *
- * One object rather than CSS custom properties, because these must not leak: the
- * sidebar, the title bar and the terminals keep `--bg`/`--panel`/`--text`, and a
- * chat colour reaching them would be a regression nobody notices until it ships.
+ * It used to be near-black, read off `docs/redisign/Chat Terminal.html`. It is
+ * now **the agent tab's greys**: the page is `--terminal-bg`, the chrome is
+ * `--panel`, the hairlines are `--border`, and the prose is `--terminal-text`.
+ * Switching between an agent and a chat in the same project should not feel like
+ * switching applications — the two are the same tool looking at the same work,
+ * and the near-black page made the chat look like a different one.
+ *
+ * That leaves it a *copy* of those four values rather than a reference to them,
+ * which is deliberate and is the same argument as before: these must not leak.
+ * The sidebar, the title bar and the terminals keep `--bg`/`--panel`/`--text` as
+ * custom properties; the chat holds plain strings, so nothing here can reach
+ * them and nothing there can drag the chat with it. What is copied is the
+ * *reading* — "the page is the terminal's grey" — and if that grey ever moves,
+ * this is the second place to move it.
+ *
+ * Two tokens exist because a page this dark has no spare room underneath it:
+ * `well` is the recess inside a panel (a chip's fill, the meter's track), and
+ * `onAccent` is the ink on a filled accent. Both used to be `bg` itself, which
+ * only worked while `bg` happened to be the darkest thing on screen.
  *
  * The two role hues are the whole point of the redesign and the answer to "the
  * distinction between user turn, tool call and ai response is very hard to tell
@@ -103,25 +117,45 @@ export const ACCENT: Record<string, string> = {
  * different things, not on it meaning one thing twice.
  */
 export const CHAT = {
-  /** page, header, and the two panel fills */
-  bg: '#0B0D10',
-  header: '#0D1014',
-  card: '#0F1418',
-  composer: '#101419',
-  /** hairlines, coarsest to finest */
-  border: '#222A33',
-  borderSoft: '#1B2027',
-  borderCard: '#1E252D',
-  borderComposer: '#212831',
+  /** the page — `--terminal-bg`, the grey an agent session runs on */
+  bg: '#1C2128',
+  /** the chrome: header and composer sit one step back, on `--panel` */
+  header: '#171D26',
+  composer: '#171D26',
+  /** machinery cards — the chrome's fill, so a tool card reads as chrome in the page */
+  card: '#171D26',
+  /** a recess *inside* a panel: a chip's fill, the meter's track. `--field`. */
+  well: '#141A22',
+  /** ink on a filled accent — the send button, a ticked option. `--bg`. */
+  onAccent: '#0F141B',
+  /** hairlines, coarsest to finest — `--border` down towards `--border-2` */
+  border: '#2A333F',
+  borderSoft: '#232B35',
+  borderCard: '#262E39',
+  borderComposer: '#242C36',
   /** the band behind a `you` row — a lift, not a tint, so it works at any hue */
-  band: 'rgba(255,255,255,.03)',
-  /** type, brightest to dimmest */
-  text: '#E4E7EB',
-  prose: '#C3CBD4',
-  dim: '#8A93A0',
-  dim2: '#5C6470',
-  dim3: '#4E5661',
-  dim4: '#3F4753',
+  band: 'rgba(255,255,255,.04)',
+  /** a row under the pointer, or a toggle that is on */
+  hover: 'rgba(255,255,255,.05)',
+  /**
+   * Corners. `radius` is for controls (buttons, chips, the mode toggle) and
+   * `radiusCard` for the panels they sit in — one step larger, because a card's
+   * corner reads tighter than a button's at the same number.
+   */
+  radius: 4,
+  radiusCard: 6,
+  /**
+   * Type, brightest to dimmest — `--text`, then the terminal's own
+   * `--terminal-text` for prose, then `--text-2`/`--text-3` and one step below.
+   * A chat paragraph and an agent's output are the same words about the same
+   * work, so they are set in the same grey.
+   */
+  text: '#EEF1F5',
+  prose: '#C7CFDA',
+  dim: '#9AA6B6',
+  dim2: '#7B8695',
+  dim3: '#6A7686',
+  dim4: '#5A6473',
   /** you: coral. Also the list bullet and the context bar's fill. */
   you: '#E9825B',
   /** claude: cool cyan, and the colour of a link */
@@ -138,6 +172,27 @@ export const CHAT = {
   /** context fill, escalating — accent while there is room, then amber, then red */
   ctx: ['#E9825B', '#C2A15E', '#C97B7B']
 }
+
+/**
+ * Everything injected at startup: the app's chrome, then the chat's.
+ *
+ * The chat rules live here rather than in `APP_CSS` for one reason — they are
+ * written in terms of `CHAT`, and a string above the palette could only restate
+ * its hex codes. Every one of them is **scoped to `.vchat`**, which is the class
+ * on the chat's root, so none of it can reach the sidebar, the title bar or the
+ * terminals; that scoping is the same guarantee the palette gets from being a
+ * plain object instead of custom properties.
+ *
+ * The radius rule is the reason this is worth doing at all: it rounds every
+ * control in the window, including the ones nobody has written yet, where a
+ * `borderRadius` threaded through ~25 inline styles rounds only today's.
+ */
+export const GLOBAL_CSS = `${APP_CSS}
+  .vchat button,.vchat input,.vchat textarea{border-radius:${CHAT.radius}px}
+  /* The chat runs its own palette, and the app-wide thumb is mixed for --bg. */
+  .vchat-scroll::-webkit-scrollbar-thumb{background:${CHAT.border};border:3px solid ${CHAT.bg};background-clip:padding-box}
+  .vchat-scroll::-webkit-scrollbar-thumb:hover{background:${CHAT.dim4}}
+`
 
 /** The reading column. Everything in the log is centred in it, header to composer. */
 export const CHAT_MEASURE = 880
