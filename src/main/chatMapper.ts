@@ -4,6 +4,7 @@ import type {
   ChatQuestion,
   ChatQuestionAnswer,
   ChatQuestionOption,
+  ChatRewindRange,
   ChatRole,
   ChatTodo,
   ChatToolBody,
@@ -1097,6 +1098,58 @@ export function takeTurn(text: string): { lines: Json[]; bytes: number } {
     if (str(o.type) === 'system' && str(o.subtype) === 'turn_duration') break
   }
   return { lines, bytes }
+}
+
+export interface TranscriptWalk {
+  /** the lines to map, in file order, with the abandoned stretches left out */
+  lines: Json[]
+  /** every kept `user` line, in file order, with the byte offset it starts at */
+  users: { uuid: string; offset: number }[]
+}
+
+/**
+ * Walk a whole-file transcript read, reporting where each line *starts*.
+ *
+ * Two callers need the same walk for opposite halves of it. `readHistory` wants
+ * the lines minus the stretches a revert abandoned; `rewind` wants the ordered
+ * user-line uuids to aim `rewind_conversation` at, plus the byte offset of the
+ * one it is about to abandon. Doing it once, here, is what keeps the two
+ * readings of "which messages does this conversation still have" from drifting —
+ * a revert must not offer a target it has already thrown away.
+ *
+ * `skip` is applied by the offset a line *begins* at rather than by matching
+ * content, because content repeats: the same prompt sent twice is two lines that
+ * are byte-identical, and only one of them was abandoned.
+ *
+ * Offsets are bytes — `Buffer.byteLength`, never a string index — for the same
+ * reason `takeTurn` counts them that way: one multibyte character anywhere above
+ * a line slides every offset below it.
+ */
+export function walkTranscript(text: string, skip: ChatRewindRange[] = []): TranscriptWalk {
+  const raw = text.split('\n')
+  const lines: Json[] = []
+  const users: { uuid: string; offset: number }[] = []
+  let offset = 0
+  for (let i = 0; i < raw.length; i++) {
+    const start = offset
+    offset += Buffer.byteLength(raw[i], 'utf8') + 1
+    const t = raw[i].trim()
+    if (!t) continue
+    if (skip.some((r) => start >= r.from && start < r.to)) continue
+    let o: Json | null = null
+    try {
+      o = obj(JSON.parse(t))
+    } catch {
+      o = null
+    }
+    if (!o) continue
+    lines.push(o)
+    if (str(o.type) === 'user') {
+      const uuid = str(o.uuid)
+      if (uuid) users.push({ uuid, offset: start })
+    }
+  }
+  return { lines, users }
 }
 
 /** Parse an NDJSON blob into objects, counting the lines that would not parse. */

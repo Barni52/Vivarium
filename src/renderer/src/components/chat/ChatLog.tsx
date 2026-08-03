@@ -1,17 +1,25 @@
 import React from 'react'
-import type { ChatEntry, ChatToolStatus } from '@shared/types'
-import { CHAT, CHAT_GUTTER as GUTTER, MONO } from '../../theme'
+import type { ChatEntry, ChatToolStatus, ChatTurnTokens } from '@shared/types'
+import { CHAT, CHAT_TEXT as TYPE, MONO } from '../../theme'
 import { Elapsed } from '../Elapsed'
 import { Md, Preview, clock } from './Markdown'
+import { langForPath, tokenize } from './highlight'
 
 // The transcript, built to `docs/redisign/Chat Terminal.html`.
 //
-// **A two-column grid inside a reading column**, not a full-bleed gutter log. The
-// left column is 96px of `hh:mm  role`, right-aligned; the right column is the
-// message. Every row shares that boundary, which is what makes a long turn
-// scannable — and the whole grid is centred in an 880px measure, because this is
-// a window you *read* in and a paragraph that runs to a 2560px edge is not read,
-// it is scanned.
+// **Stacked rows**: `hh:mm  role` on its own line, then the message at the full
+// width of the column. It was a two-column grid — an 84px gutter and the message
+// beside it — and the column cost every row of every message 98px of left margin
+// so that two words could sit in the first line of it. On a paragraph that wraps
+// four times, the other three lines paid for nothing at all. Stacking is also
+// what makes the row width the *window's* width, which is the same argument
+// CHAT_EDGE already made against the 880px reading measure this used to sit in:
+// the horizontal space belongs to the content, and how much of it there is is
+// the user's call, made by sizing the window.
+//
+// The cost is a line of height per row, and it is paid where it is cheapest: the
+// meta line is the smallest type in the window and it replaces the vertical
+// padding a row used to need to be told apart from its neighbour (ROW_PAD).
 //
 // **The three families are told apart by treatment, not by the role word.** That
 // was the bug: one grey mono line each, differing only in a word most of which
@@ -24,18 +32,43 @@ import { Md, Preview, clock } from './Markdown'
 //             plans, clocks and stops all live in that one family, so a burst of
 //             twelve of them reads as one block of machinery.
 
-/** Row padding and the gutter→content gap, from the mockup. */
-const ROW_PAD = '16px 18px'
-const COL_GAP = 20
+/**
+ * Row padding, and the meta line → content gap.
+ *
+ * Tighter than the mockup's `16px 18px` in both directions. Horizontally every
+ * one of these numbers is spent *twice* before a word of prose appears — the page
+ * padding, then the row's — and it used to be four times, because a gutter column
+ * and its gap came next.
+ *
+ * Vertically it is 6, padding on *both* sides of every row, so the space between
+ * two rows is 12. It was 9 (and 16 before that, which read as a document rather
+ * than a conversation) while the row was one line tall at the top; now every row
+ * opens with its own meta line, and *that* is what separates it from the row
+ * above — so the padding that used to do the job can come back out. The tool
+ * cards carry their own edges too.
+ */
+const ROW_PAD = '6px 10px'
+const META_GAP = 3
+
+/**
+ * How far a subagent's sub-log is inset from the row that spawned it.
+ *
+ * It used to be the gutter's width plus a bit — the rail sat under the boundary
+ * the two columns shared. With no column there is no boundary to hang it off, and
+ * the indent only has to say "these rows belong to the card above": 12 clears the
+ * row's own 10px padding by enough for the rail to read as a step in rather than
+ * as a second left edge.
+ */
+const SUB_INDENT = 12
 
 const mono: React.CSSProperties = {
   fontFamily: MONO,
-  fontSize: 11.5,
-  lineHeight: 1.55
+  fontSize: TYPE.mono,
+  lineHeight: 1.5
 }
 
 /**
- * One log row: the gutter, then the message.
+ * One log row: the meta line, then the message under it at full width.
  *
  * `band` is what a `you` row wears. It is a white lift rather than a tint of the
  * accent, so it reads the same whatever hue `CHAT.you` is set to and never
@@ -58,9 +91,6 @@ function Line({
   return (
     <div
       style={{
-        display: 'grid',
-        gridTemplateColumns: `${GUTTER}px 1fr`,
-        gap: COL_GAP,
         padding: ROW_PAD,
         background: band ? CHAT.band : undefined,
         // Only the banded row has an edge to round; every other row is a
@@ -71,12 +101,15 @@ function Line({
       <div
         style={{
           display: 'flex',
-          gap: 9,
-          justifyContent: 'flex-end',
+          gap: 7,
           alignItems: 'baseline',
-          paddingTop: 2,
+          marginBottom: META_GAP,
           fontFamily: MONO,
-          fontSize: 11,
+          fontSize: TYPE.gutter,
+          // Its own leading, not the block's: this line is a label on the row
+          // below it, and the 1.5 the mono scale carries put visible air between
+          // the two that read as a gap rather than as a pair.
+          lineHeight: 1.2,
           userSelect: 'none'
         }}
       >
@@ -112,6 +145,11 @@ function Card({
     <div
       onClick={onClick}
       title={title}
+      // What makes a card that can be opened light up under the pointer. A div
+      // rather than a button because it wraps block content (a diff, a body) a
+      // button may not contain, so it misses the `.vchat button:hover` rule and
+      // has to opt in by hand. Never set when there is nothing to click.
+      data-click={onClick ? '' : undefined}
       style={{
         ...mono,
         display: 'flex',
@@ -173,8 +211,8 @@ export const LogRow = React.memo(function LogRow({
             {entry.md && (
               <div
                 style={{
-                  fontSize: 14.5,
-                  lineHeight: 1.68,
+                  fontSize: TYPE.prose,
+                  lineHeight: TYPE.proseLine,
                   color: CHAT.text,
                   whiteSpace: 'pre-wrap'
                 }}
@@ -190,7 +228,7 @@ export const LogRow = React.memo(function LogRow({
                   flexWrap: 'wrap',
                   marginTop: entry.md ? 10 : 0,
                   fontFamily: MONO,
-                  fontSize: 10.5,
+                  fontSize: TYPE.gutter,
                   color: CHAT.dim3
                 }}
               >
@@ -278,10 +316,10 @@ export const LogRow = React.memo(function LogRow({
                       {q.header}
                     </span>
                   )}
-                  <span style={{ fontSize: 14, lineHeight: 1.6, color: CHAT.prose }}>
+                  <span style={{ fontSize: TYPE.prose, lineHeight: TYPE.proseLine, color: CHAT.prose }}>
                     {q.question}
                   </span>
-                  <span style={{ ...mono, fontSize: 10.5, color: CHAT.dim4 }}>
+                  <span style={{ ...mono, fontSize: TYPE.gutter, color: CHAT.dim4 }}>
                     {q.multiSelect ? 'choose any' : 'choose one'}
                   </span>
                 </div>
@@ -294,7 +332,7 @@ export const LogRow = React.memo(function LogRow({
                         title={o.description}
                         style={{
                           fontFamily: MONO,
-                          fontSize: 11.5,
+                          fontSize: TYPE.mono,
                           padding: '5px 11px',
                           border: `1px solid ${picked ? CHAT.hold : CHAT.border}`,
                           borderRadius: CHAT.radius,
@@ -313,7 +351,7 @@ export const LogRow = React.memo(function LogRow({
                       title="answered in the user's own words"
                       style={{
                         fontFamily: MONO,
-                        fontSize: 11.5,
+                        fontSize: TYPE.mono,
                         padding: '5px 11px',
                         border: `1px dashed ${CHAT.hold}`,
                         borderRadius: CHAT.radius,
@@ -429,20 +467,13 @@ export const LogRow = React.memo(function LogRow({
       )
 
     case 'divider':
+      // No meta line and no `Line`: a divider is not something anybody said, and
+      // it now starts where every row's text starts without a spacer column to
+      // hold it there.
       return (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: `${GUTTER}px 1fr`,
-            gap: COL_GAP,
-            padding: '10px 18px'
-          }}
-        >
-          <span />
-          <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <span style={{ ...mono, color: CHAT.dim3, flex: 'none' }}>{entry.text}</span>
-            <span style={{ flex: 1, height: 1, background: CHAT.borderSoft }} />
-          </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px' }}>
+          <span style={{ ...mono, color: CHAT.dim3, flex: 'none' }}>{entry.text}</span>
+          <span style={{ flex: 1, height: 1, background: CHAT.borderSoft }} />
         </div>
       )
 
@@ -459,13 +490,15 @@ export const LogRow = React.memo(function LogRow({
                 <Dots />
                 <span>working ·</span>
                 <Elapsed since={entry.startedAt} />
+                <Tokens tokens={entry.tokens} />
                 {/* Discoverability for interrupt, on screen exactly when it is
                     usable and nowhere else. */}
                 <span style={{ color: CHAT.dim3 }}>· esc interrupts</span>
               </>
             ) : (
               <span>
-                done · <Elapsed since={0} until={entry.durationMs} />
+                done · <Elapsed since={0} until={entry.durationMs} />{' '}
+                <Tokens tokens={entry.tokens} />
               </span>
             )}
           </Card>
@@ -580,13 +613,14 @@ function Thinking({ at, md }: { at: number; md: string }): React.ReactElement {
     <Line at={at} role="claude" color={CHAT.claude}>
       <div
         onClick={() => setOpen(!open)}
+        data-click
         style={{ display: 'flex', alignItems: 'baseline', gap: 9, cursor: 'pointer', userSelect: 'none' }}
       >
         <div
           style={{
             flex: 1,
             minWidth: 0,
-            fontSize: 12.5,
+            fontSize: TYPE.prose - 1,
             fontStyle: 'italic',
             // A token, not a hex: this was the one colour in the log mixed by
             // eye against the old page, so it was also the only one that did
@@ -600,7 +634,7 @@ function Thinking({ at, md }: { at: number; md: string }): React.ReactElement {
         >
           {open ? md : first}
         </div>
-        <div style={{ flex: 'none', fontFamily: MONO, fontSize: 10.5, color: CHAT.dim3 }}>
+        <div style={{ flex: 'none', fontFamily: MONO, fontSize: TYPE.gutter, color: CHAT.dim3 }}>
           {open ? 'hide' : 'show'}
         </div>
       </div>
@@ -679,6 +713,31 @@ function ToolCard({
   const [choice, setChoice] = React.useState<boolean | null>(null)
   const open = choice ?? !quiet
 
+  /**
+   * A diff's rows, with the `+`/`-`/` ` sign split off and the rest highlighted.
+   *
+   * The language comes off `entry.title`, which for `Edit`/`Write`/`MultiEdit`/
+   * `NotebookEdit` **is** the file path (see `toolTitle` in `chatMapper`), so
+   * nothing new has to cross the wire to know that a body is Java.
+   *
+   * Each line is tokenized on its own rather than the body being treated as one
+   * document, and that is the honest reading: a diff is non-contiguous hunks, so
+   * a `/*` opened in one hunk has no business colouring the next. The cost is
+   * that a genuinely multi-line string inside a single hunk loses its colour
+   * after the first row, which is the smaller of the two wrongs.
+   *
+   * The sign keeps its own span so the columns still line up — it is structure,
+   * not code, and feeding it to the tokenizer would make `-foo` a subtraction.
+   */
+  const rows = React.useMemo(() => {
+    if (entry.body.kind !== 'diff') return []
+    const lang = langForPath(entry.title)
+    return text.split('\n').map((l) => {
+      const sign = l[0] === '+' || l[0] === '-' ? l[0] : ''
+      return { sign, toks: tokenize(sign ? l.slice(1) : l, lang) }
+    })
+  }, [entry.body.kind, entry.title, text])
+
   const toggle = (): void => {
     if (!expandable) return
     if (!open && entry.body.truncated) handlers.onExpand(entry.id)
@@ -709,7 +768,7 @@ function ToolCard({
           <span style={{ color: statusColor(entry.status), flex: 'none' }}>{entry.result}</span>
         )}
         {expandable && (
-          <span style={{ marginLeft: 'auto', flex: 'none', fontSize: 10.5, color: CHAT.dim3 }}>
+          <span style={{ marginLeft: 'auto', flex: 'none', fontSize: TYPE.gutter, color: CHAT.dim3 }}>
             {/* A card that closed itself says how much it is holding, or the
                 size rule reads as the app having lost the output. `+` where main
                 clipped the body: this counts what arrived, not what exists. */}
@@ -736,21 +795,36 @@ function ToolCard({
             overflowX: 'auto'
           }}
         >
-          {text.split('\n').map((l, i) => (
+          {rows.map((r, i) => (
             <div
               key={i}
               style={{
                 whiteSpace: 'pre',
-                background: l.startsWith('+')
-                  ? 'rgba(111,191,139,.10)'
-                  : l.startsWith('-')
-                    ? 'rgba(224,108,108,.10)'
-                    : 'transparent',
-                color: l.startsWith('+') || l.startsWith('-') ? CHAT.prose : CHAT.dim3,
+                background:
+                  r.sign === '+'
+                    ? 'rgba(111,191,139,.10)'
+                    : r.sign === '-'
+                      ? 'rgba(224,108,108,.10)'
+                      : 'transparent',
+                // What the sign and any uncoloured token inherit — full prose on a
+                // changed line, dim on the context around it, the same two greys
+                // the rows had before any of them were highlighted.
+                color: r.sign ? CHAT.prose : CHAT.dim3,
                 padding: '0 10px'
               }}
             >
-              {l || ' '}
+              {/* A blank line still needs a space, or the row collapses and the
+                  diff loses the gap between hunks. */}
+              {r.sign || (r.toks.length ? null : ' ')}
+              {r.toks.map((t, n) =>
+                t.color ? (
+                  <span key={n} style={{ color: t.color }}>
+                    {t.text}
+                  </span>
+                ) : (
+                  t.text
+                )
+              )}
             </div>
           ))}
           {entry.body.truncated && !full && (
@@ -778,6 +852,47 @@ function ToolCard({
       )}
     </Line>
   )
+}
+
+/**
+ * `41200` → `41.2k`. One decimal below 100k, none above — the same rule the
+ * header meter's reading uses, and for the same reason: these are numbers you
+ * watch climb, and rounding 41 200 to `41k` hides every change until the next
+ * thousand lands.
+ */
+function tok(n: number): string {
+  if (n < 1000) return String(n)
+  const k = n / 1000
+  return k < 100 ? `${Math.round(k * 10) / 10}k` : `${Math.round(k)}k`
+}
+
+/**
+ * What the turn has cost, beside the clock that is already reporting on it.
+ *
+ * **Output tokens, and the arrow says so.** The other three readings are in the
+ * tooltip because they cannot be added into one number honestly: the whole
+ * context is re-sent with every message of a turn, so a summed input reads as a
+ * cost the turn did not incur, and the context meter in the header is already the
+ * answer to "how full is the window". Output is the one that only ever means work
+ * this turn produced.
+ *
+ * Absent until the first message of the turn reports (`ChatTurnTokens` explains
+ * why that is per message and not per token), and it renders nothing at all
+ * rather than a `0` — a zero would read as a claim, where nothing reads as "not
+ * yet", which is what it is.
+ */
+function Tokens({ tokens }: { tokens?: ChatTurnTokens }): React.ReactElement | null {
+  if (!tokens || tokens.output === 0) return null
+  const title = [
+    `${tok(tokens.output)} output`,
+    `${tok(tokens.input)} input`,
+    `${tok(tokens.cacheRead)} cache read`,
+    `${tok(tokens.cacheCreation)} cache write`
+  ].join(' · ')
+  // The separator is the span's own, exactly like the `· esc interrupts` sibling
+  // beside it: inside `Card` these are flex children with a 10px gap, so a leading
+  // space of its own would set this one reading further out than that one.
+  return <span title={`${title} — this turn, subagents excluded`}>{`· ↓ ${tok(tokens.output)} tokens`}</span>
 }
 
 /** A duration that appears only once the call is genuinely slow. */
@@ -821,7 +936,7 @@ function TaskRow({
     entry.status,
     entry.durationMs !== null ? `${Math.round(entry.durationMs / 1000)}s` : null,
     entry.tools !== null ? `${entry.tools} tools` : null,
-    entry.tokens !== null ? `${Math.round(entry.tokens / 100) / 10}k tok` : null
+    entry.tokens !== null ? `${tok(entry.tokens)} tok` : null
   ].filter(Boolean)
 
   return (
@@ -848,13 +963,13 @@ function TaskRow({
           ) : (
             <span style={{ flex: 'none', color: CHAT.dim2 }}>{stats.join(' · ')}</span>
           )}
-          <span style={{ flex: 'none', fontSize: 10.5, color: CHAT.dim3 }}>
+          <span style={{ flex: 'none', fontSize: TYPE.gutter, color: CHAT.dim3 }}>
             {open ? 'hide' : `show${sub.length ? ` ${sub.length}` : ''}`}
           </span>
         </Card>
       </Line>
       {open && (
-        <div style={{ borderLeft: `1px solid ${CHAT.borderSoft}`, marginLeft: GUTTER + 18 }}>
+        <div style={{ borderLeft: `1px solid ${CHAT.borderSoft}`, marginLeft: SUB_INDENT }}>
           {sub.map((e) => (
             <LogRow key={e.id} entry={e} handlers={handlers} depth={depth + 1} />
           ))}

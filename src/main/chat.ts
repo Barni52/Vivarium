@@ -11,8 +11,11 @@ import type {
   ChatMode,
   ChatModelOption,
   ChatOpenResult,
+  ChatRewindRange,
+  ChatRewindResult,
   ChatState,
   ChatTodo,
+  ChatTurnTokens,
   Project,
   Session
 } from '@shared/types'
@@ -26,7 +29,8 @@ import {
   parseQuestions,
   takeTurn,
   textBlockId,
-  truncateBody
+  truncateBody,
+  walkTranscript
 } from './chatMapper'
 
 // One live Claude Code CLI process per chat session, keyed by session id — the
@@ -69,6 +73,64 @@ function prose(entries: ChatEntry[]): number {
   let n = 0
   for (const e of entries) if (e.kind === 'text' && e.role === 'claude') n += e.md.trim().length
   return n
+}
+
+/**
+ * One usage report, in this app's spelling.
+ *
+ * The four fields are read separately rather than kept as the raw object because
+ * the same shape arrives from three places — `message_start`, `message_delta` and
+ * `result` — and every later reader would otherwise have to know which
+ * snake_case spelling each of them used. Absent fields are 0, not null: the CLI
+ * omits `cache_creation_input_tokens` on a message that created no cache entry,
+ * and a null there would make the sum unrepresentable rather than zero.
+ *
+ * Returns null only for a frame with no usage at all, which is how a caller tells
+ * "nothing to record" from "a message that cost nothing".
+ */
+function readUsage(raw: Json | null): ChatTurnTokens | null {
+  if (!raw) return null
+  const output = num(raw.output_tokens)
+  const input = num(raw.input_tokens)
+  if (output === null && input === null) return null
+  return {
+    output: output ?? 0,
+    input: input ?? 0,
+    cacheRead: num(raw.cache_read_input_tokens) ?? 0,
+    cacheCreation: num(raw.cache_creation_input_tokens) ?? 0
+  }
+}
+
+/** The turn's reading: its messages' latest reports, added up. */
+function sumUsage(usage: Map<string, ChatTurnTokens>): ChatTurnTokens {
+  const total: ChatTurnTokens = { output: 0, input: 0, cacheRead: 0, cacheCreation: 0 }
+  for (const u of usage.values()) {
+    total.output += u.output
+    total.input += u.input
+    total.cacheRead += u.cacheRead
+    total.cacheCreation += u.cacheCreation
+  }
+  return total
+}
+
+/**
+ * Union a session's abandoned transcript ranges.
+ *
+ * Reverting twice is the case this exists for, and it is not additive: the second
+ * revert starts *above* the first, so its range swallows it. Left unmerged the
+ * list grows one entry per revert and every whole-file read pays for all of them,
+ * and worse, two ranges that touch would leave the byte between them readable —
+ * a single line of a conversation the model has forgotten.
+ */
+function mergeRanges(ranges: ChatRewindRange[]): ChatRewindRange[] {
+  const sorted = [...ranges].sort((a, b) => a.from - b.from)
+  const out: ChatRewindRange[] = []
+  for (const r of sorted) {
+    const last = out[out.length - 1]
+    if (last && r.from <= last.to) last.to = Math.max(last.to, r.to)
+    else out.push({ ...r })
+  }
+  return out
 }
 
 /**
@@ -221,9 +283,29 @@ interface Live {
   streaming: Streaming | null
   /** the pending coalesced flush of that message's deltas */
   streamTimer: ReturnType<typeof setTimeout> | null
+  /**
+   * This turn's usage so far, keyed by API message id — latest report per message
+   * wins, and the turn's reading is the sum.
+   *
+   * Per message rather than one running total, because each message is reported
+   * *twice*: provisionally at `message_start` and finally at `message_delta`. A
+   * single accumulator would add both and roughly double the turn.
+   */
+  usage: Map<string, ChatTurnTokens>
   turnRunning: boolean
   /** set by an interrupt so the turn's `idle` raises no attention flag */
   interrupted: boolean
+  /**
+   * A `set_permission_mode` is in flight, so the CLI's *reported* mode is stale.
+   *
+   * `init` carries `permissionMode` and is otherwise the authority on what the
+   * process is actually in — except while we are mid-change, and at spawn a `plan`
+   * session always is: the switch rides on stdin behind a boot that takes a second
+   * or more, and the init frame that overtakes it truthfully reports the launch
+   * mode. Without this the chip flips to bypass and back on every plan session's
+   * open, which is the header lying about the one fact the toggle exists for.
+   */
+  modeSwitch: boolean
   closing: boolean
 }
 
@@ -250,8 +332,21 @@ export class ChatService {
     private emitActivity: EmitActivity,
     /** persist a /clear's new conversation id, and retire the outgoing one */
     private onConversationReset: (sessionId: string, next: string, previous: string) => void,
+    /**
+     * persist the transcript stretches a revert abandoned — the whole merged
+     * list, so config never has to know how ranges combine. Empty means forget
+     * them (a /clear: the offsets point into the retired file).
+     */
+    private onRewind: (sessionId: string, ranges: ChatRewindRange[]) => void,
     /** cache a project's slash-command names so a cold chat has a menu */
     private onCommands: (projectId: string, commands: string[]) => void,
+    /**
+     * persist a mode change this app did not receive from the toggle — approving a
+     * plan is one, and it is a real change to a persisted preference: without it
+     * config still says `plan`, so closing the chat and reopening it mid-implementation
+     * would relaunch the agent into the mode the approval just left.
+     */
+    private onMode: (sessionId: string, mode: ChatMode) => void,
     /** a rate_limit_event tops up the title bar's existing chips */
     private onRateLimit: (five: Json | null, seven: Json | null) => void
   ) {}
@@ -309,8 +404,10 @@ export class ChatService {
       context: null,
       streaming: null,
       streamTimer: null,
+      usage: new Map(),
       turnRunning: false,
       interrupted: false,
+      modeSwitch: false,
       closing: false
     }
 
@@ -398,7 +495,22 @@ export class ChatService {
     l.turnOffset = bytes
     l.transcriptExists = r.bytes > 0
     const mapper = new ChatMapper(0)
-    const { lines } = parseNdjson(complete)
+    // Minus anything a revert threw away. Claude Code does not truncate the file
+    // when it winds a conversation back — it appends a `last-prompt` branch
+    // pointer and leaves the abandoned lines where they are — so read in file
+    // order those messages are still here, and rendering them would put turns on
+    // screen that the model has forgotten. That is the exact drift the
+    // transcript-as-model rule exists to prevent, so the ranges this app
+    // recorded when it performed the revert are subtracted here.
+    //
+    // Why a recorded range rather than following the CLI's own branch pointer:
+    // its loader resolves the live branch through compaction boundaries and
+    // preserved segments, and an ancestry walk from the leaf does *not*
+    // reconstruct the conversation without them — measured on real transcripts,
+    // one file of 3 701 message lines has a 196-deep chain and another of 895
+    // has a 5-deep one, because every compaction restarts it. Guessing at that
+    // resolution fails by blanking history on conversations nobody reverted.
+    const { lines } = walkTranscript(complete, l.session.rewound ?? [])
     const now = Date.now()
     for (const line of lines) mapper.feed(line, now)
     mapper.markCancelled(0)
@@ -490,8 +602,13 @@ export class ChatService {
     // Keep the turn's clock row: it is the only row in a turn that the transcript
     // cannot reproduce until `system/turn_duration` lands, and dropping it would
     // make the freeze look like a disappearance.
+    //
+    // **Last, not first.** It reports on the turn as a whole, so it reads under
+    // the work it timed rather than above it — which is also exactly where the
+    // mapper puts a `turn_duration` row when this same conversation is reloaded
+    // from disk, so a settled turn and a reopened one draw identically.
     const clock = l.entries.filter((e) => e.turn === turn && e.kind === 'turn')
-    const settled = [...clock, ...mapper.entries]
+    const settled = [...mapper.entries, ...clock]
     // Dropped by id as well as by turn. A transcript line can be mapped under
     // one turn and then again under another — a `set_model` writes a `Set model
     // to …` line **between** turns, which no settle has accounted for, so the
@@ -532,6 +649,30 @@ export class ChatService {
     })
     proc.on('error', () => this.onExit(l, 1))
     proc.on('close', (code) => this.onExit(l, code ?? 0))
+    // A `plan` session is launched in bypassPermissions like every other one and
+    // *transitioned* into plan mode here — execArgs documents why launching in plan
+    // is a door that does not open again. Written at spawn, so it is the first line
+    // the CLI reads on stdin: a turn cannot be sent until `open` has returned, and
+    // that is after this, so no turn can overtake the switch.
+    if (l.session.mode === 'plan') {
+      l.modeSwitch = true
+      void this.request(l, { subtype: 'set_permission_mode', mode: 'plan' }).then((r) => {
+        l.modeSwitch = false
+        // Told again on purpose: the spawn-time `init` frame reports
+        // bypassPermissions — truthfully, that is what the process started in — so
+        // without this the chip would sit on bypass while the agent plans.
+        if (r.ok) {
+          this.emit({ kind: 'meta', sessionId: l.session.id, mode: 'plan' })
+          return
+        }
+        // Only the *guarded* modes (bypassPermissions, auto) can be refused, so this
+        // is a should-not-happen — but the mode the CLI is in is the one the header
+        // has to show, and the lie the other way round (claiming plan while the
+        // agent may write) is the dangerous one.
+        l.session = { ...l.session, mode: 'bypassPermissions' }
+        this.emit({ kind: 'meta', sessionId: l.session.id, mode: 'bypassPermissions' })
+      })
+    }
     return true
   }
 
@@ -604,7 +745,15 @@ export class ChatService {
 
   private armSilence(l: Live): void {
     if (l.silence) clearTimeout(l.silence)
-    if (!l.turnRunning) {
+    // **A turn parked on a card is not silent, it is waiting.** The CLI has asked
+    // and will write nothing at all until we answer, so the clock has to stop while
+    // any can_use_tool is outstanding — otherwise a question or a plan left on
+    // screen for a minute failed its own turn under the user's hands: an alert row
+    // claiming no response, the turn's clock dropped, `idle` raising an attention
+    // flag, and the answer they were still typing landing in a turn main had
+    // already given up on. The threshold detects a *broken CLI* (see SILENCE_MS),
+    // and a CLI blocked on a human is the one case that is provably not that.
+    if (!l.turnRunning || l.pending.size > 0) {
       l.silence = null
       return
     }
@@ -753,7 +902,10 @@ export class ChatService {
       l.commands = commands
       this.onCommands(l.project.id, commands)
     }
-    const mode = str(f.permissionMode)
+    // Withheld while a switch of our own is outstanding: this frame reports what
+    // the process is in *now*, which is not what it is about to be in (see
+    // Live.modeSwitch).
+    const mode = l.modeSwitch ? '' : str(f.permissionMode)
     this.emit({
       kind: 'meta',
       sessionId: l.session.id,
@@ -780,6 +932,24 @@ export class ChatService {
         texts: 0,
         dirty: new Set()
       }
+      // The message's opening usage: input and cache are already final here (the
+      // request has been sent), output is a partial. Counted at the start rather
+      // than only at `message_delta` so the reading moves when a *message* starts
+      // rather than only when one ends — which on a turn of one long answer is the
+      // difference between a number that appears and one that appears at the end.
+      this.countUsage(l, l.streaming.msgId, obj(msg?.usage))
+      return
+    }
+    // The message's closing usage, and the only place the API states an output
+    // count it will not revise. There is nothing in between — usage is reported at
+    // the two ends of a message and nowhere inside it — so the reading steps per
+    // message and does not tick. Estimating between them (characters ÷ 4) was
+    // rejected on the precedent an interrupted turn's duration set: a figure this
+    // app made up is worse than one it does not have, and the estimate is not even
+    // close on the answers most worth watching — a 60-line list of numbers
+    // streamed 179 characters for 149 output tokens, three times the guess.
+    if (kind === 'message_delta') {
+      if (l.streaming) this.countUsage(l, l.streaming.msgId, obj(ev.usage))
       return
     }
     if (kind !== 'content_block_delta') return
@@ -837,6 +1007,26 @@ export class ChatService {
     }
     s.dirty.clear()
     if (rows.length) this.upsert(l, rows)
+  }
+
+  /**
+   * Record one API message's usage and repaint the turn's clock row with the
+   * running total.
+   *
+   * Not coalesced, unlike the text deltas: this arrives twice per API message
+   * where those arrive per token, so a turn is a handful of upserts rather than a
+   * flood, and a number the user is watching should not wait 40 ms to be right.
+   */
+  private countUsage(l: Live, msgId: string, raw: Json | null): void {
+    const next = readUsage(raw)
+    if (!next) return
+    l.usage.set(msgId, next)
+    const entry = l.entries.find((e) => e.turn === l.turn && e.kind === 'turn')
+    // Only while it is running: a frozen clock holds `result.usage`, which is the
+    // CLI's own arithmetic, and a late frame must not reopen it.
+    if (!entry || entry.kind !== 'turn' || entry.durationMs !== undefined) return
+    entry.tokens = sumUsage(l.usage)
+    this.upsert(l, [entry])
   }
 
   private taskEvent(l: Live, f: Json): void {
@@ -900,7 +1090,7 @@ export class ChatService {
       // hh:mm on the `you` row and this one.
       this.dropTurnClock(l)
     } else {
-      this.freezeTurnClock(l, num(f.duration_ms))
+      this.freezeTurnClock(l, num(f.duration_ms), obj(f.usage))
     }
 
     // Suppressed at the same branch that reads terminal_reason for the stop row:
@@ -954,7 +1144,15 @@ export class ChatService {
     const previous = l.session.claudeSessionId
     const id = next || randomUUID()
     if (previous && previous !== id) this.onConversationReset(l.session.id, id, previous)
-    l.session = { ...l.session, claudeSessionId: id }
+    // A new conversation is a new file, so every recorded abandoned range is now
+    // an offset into a transcript this session no longer reads.
+    if (l.session.rewound?.length) this.onRewind(l.session.id, [])
+    l.session = { ...l.session, claudeSessionId: id, rewound: undefined }
+    // A card still up belongs to the conversation that just went away. **Answered,
+    // not dropped**, for the reason controlRequest documents — an unanswered
+    // can_use_tool parks the agent for good — and answering is also what empties
+    // `pending`, which the silence clock reads (see armSilence).
+    for (const [requestId] of l.pending) this.respond(l, requestId, { behavior: 'cancelled' })
     l.entries = []
     l.bodies.clear()
     l.todos.clear()
@@ -964,6 +1162,7 @@ export class ChatService {
     if (l.streamTimer) clearTimeout(l.streamTimer)
     l.streamTimer = null
     l.streaming = null
+    l.usage.clear()
     l.mapper = null
     this.emit({ kind: 'reset', sessionId: l.session.id, claudeSessionId: id })
     this.emit({ kind: 'todo', sessionId: l.session.id, todos: [] })
@@ -1023,6 +1222,10 @@ export class ChatService {
     // cannot see this case at all, which makes chat's reading strictly more
     // correct than the pty's rather than an approximation of it.
     this.setActivity(l, 'waiting')
+    // Stops the silence clock. The chunk this request arrived in armed it on the way
+    // in (onStdout arms before it frames), so the card has to disarm it on the way
+    // out — see armSilence.
+    this.armSilence(l)
   }
 
   private controlResponse(l: Live, f: Json): void {
@@ -1090,6 +1293,8 @@ export class ChatService {
     l.turnRunning = true
     l.interrupted = false
     l.streaming = null
+    // The reading is per turn, so the messages of the last one are not this one's.
+    l.usage.clear()
     // Everything the CLI writes from here belongs to this turn, and the settle
     // re-reads from exactly here.
     l.turnOffset = l.offset
@@ -1170,24 +1375,175 @@ export class ChatService {
     await this.request(l, { subtype: 'interrupt' }, 5_000)
   }
 
+  /**
+   * Wind the conversation back to just before one of your messages, and hand its
+   * text back for editing.
+   *
+   * This is Claude Code's own `rewind_conversation` control request, on the
+   * channel `interrupt` and `set_model` already ride. It is undocumented and
+   * absent from `claude --help`, and three of its behaviours are load-bearing
+   * here, all read off the CLI (2.1.220) rather than guessed:
+   *
+   * 1. **It pops exactly one message.** Anything newer than the target and it
+   *    refuses with `stale target` — the test is "is there a later *human* user
+   *    message", which is why a slash-command echo or an interrupt marker does
+   *    not count. On success it truncates its own message array at the target,
+   *    which is what makes the next call to an earlier message legal. So going
+   *    back N messages is N sequential calls, newest first, and the loop below
+   *    is not an optimisation waiting to happen.
+   * 2. **The first message cannot be popped** — `no preceding assistant`, behind
+   *    a gate that is off by default. `/clear` is already that gesture and the
+   *    message says so.
+   * 3. **The transcript is not truncated**, so the abandoned bytes have to be
+   *    recorded or a later reopen renders them again (see `readHistory`).
+   *
+   * The pop list comes from the *file*, not from `l.entries`, and that matters
+   * for one case: an interrupted turn is `skipTurn`'d rather than settled, so its
+   * user row keeps the optimistic `you:<turn>` id it was painted with and carries
+   * no transcript uuid at all. Targeting from memory would leave that message
+   * unpoppable and every earlier target permanently `stale target` behind it.
+   */
+  async rewind(sessionId: string, entryId: string): Promise<ChatRewindResult> {
+    const l = this.live.get(sessionId)
+    if (!l?.proc) return { ok: false, removed: 0, prefill: null, message: 'the chat is not open' }
+    const uuid = l.session.claudeSessionId
+    if (!uuid) return { ok: false, removed: 0, prefill: null, message: 'no conversation yet' }
+
+    // A card is answered and a running turn cut first, reusing the documented
+    // deny-then-interrupt order. `interrupt_if_running` below would abort the turn
+    // on its own but it cannot answer an outstanding can_use_tool, and a request
+    // left unanswered parks the agent forever.
+    await this.interrupt(sessionId)
+    // Then *wait for the turn to be over*, which the interrupt's own ack does not
+    // mean. The turn ends at its `result` frame, which arrives separately and
+    // still runs the whole turn-end path — freeze the clock, append a stop row,
+    // `skipTurn` the bytes — all of it writing into entries this is about to
+    // truncate, and some of it after the truncation. Whichever landed second used
+    // to win, which is a log that disagrees with the model at random.
+    for (let i = 0; l.turnRunning && i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+
+    const read = await this.docker.readTranscript(l.project, uuid, 0)
+    if (!read.ok) {
+      return { ok: false, removed: 0, prefill: null, message: read.message || 'could not read the conversation' }
+    }
+    const { complete, bytes: eof } = completeLines(read.text)
+    const { users } = walkTranscript(complete, l.session.rewound ?? [])
+    const target = entryId.includes('#') ? entryId.slice(0, entryId.indexOf('#')) : entryId
+    const at = users.findIndex((u) => u.uuid === target)
+    if (at < 0) return { ok: false, removed: 0, prefill: null, message: 'that message is no longer in the conversation' }
+
+    // Newest first, down to and including the picked one — popping the target is
+    // what "revert *to* this message" means: it comes off the conversation and
+    // comes back in the composer.
+    let popped = 0
+    let landed: string | null = null
+    let prefill: string | null = null
+    let message: string | undefined
+    for (let i = users.length - 1; i >= at; i--) {
+      // 20s on the first: with a turn still winding down `interrupt_if_running`
+      // polls for idle for up to 10s, which outlasts request()'s own default.
+      const r = await this.request(
+        l,
+        {
+          subtype: 'rewind_conversation',
+          target_message_uuid: users[i].uuid,
+          interrupt_if_running: true
+        },
+        popped === 0 ? 20_000 : 15_000
+      )
+      const res = obj(r.response)
+      if (r.ok && res?.rewound === true) {
+        popped += 1
+        landed = users[i].uuid
+        prefill = str(res.prefillText) || null
+        continue
+      }
+      const why = str(res?.error) || r.error || 'the CLI refused'
+      // Not a real human message after all — a slash command's echo, an
+      // interrupt marker, an injected reminder. The CLI is the authority on which
+      // user lines it counts, so this walks past rather than guessing at the rule.
+      if (why === 'target not found') continue
+      message =
+        why === 'no preceding assistant'
+          ? 'that is the first message in the conversation — use /clear to start over'
+          : why
+      break
+    }
+
+    if (!landed) {
+      return { ok: false, removed: 0, prefill: null, message: message ?? 'nothing was reverted' }
+    }
+
+    // Recorded against what actually came off, never against what was asked: a
+    // loop that stopped early has already destroyed the messages above the one it
+    // failed on, and a log claiming otherwise is worse than the failure itself.
+    //
+    // `to` is the end of the file **as it was read above**, not as it is now. The
+    // pops appended one `last-prompt` marker each, and those sit past that mark —
+    // outside the range on purpose, since they are not abandoned, and invisible
+    // either way because the mapper whitelists `user | assistant | system`. What
+    // has to be inside the range is every message line of the discarded branch,
+    // and all of those were written before the first pop.
+    const from = users[users.findIndex((u) => u.uuid === landed)].offset
+    const rewound = mergeRanges([...(l.session.rewound ?? []), { from, to: eof }])
+    l.session = { ...l.session, rewound }
+    this.onRewind(sessionId, rewound)
+
+    if (l.streamTimer) clearTimeout(l.streamTimer)
+    l.streamTimer = null
+    l.streaming = null
+    l.mapper = null
+    l.turnRunning = false
+
+    // Then re-derive the whole log from the transcript, exactly as opening the
+    // session would — which is the point, and worth the second read.
+    //
+    // Slicing main's array at the reverted row instead is what this used to do,
+    // and it addressed entries by the uuid in their id, which the rows of an
+    // *interrupted* turn do not have (they keep the optimistic `you:<turn>` they
+    // were painted with, because an aborted turn is skipped rather than settled).
+    // A stopped-short loop could therefore land on a message with no row to find,
+    // and silently truncate nothing. Re-reading has no such case, rebuilds the
+    // todo fold — which spans the conversation and is not addressable by turn —
+    // and re-anchors `offset`/`turnOffset` onto the real end of the file, so the
+    // next settle cannot map the abandoned stretch a second time. It also makes
+    // the claim literal rather than aspirational: after a revert the log *is* the
+    // bytes a restart would render.
+    const failed = await this.readHistory(l)
+    this.emit({
+      kind: 'rewound',
+      sessionId,
+      entries: this.wireEntries(l.entries.slice(-MOUNT_WINDOW)),
+      total: l.entries.length
+    })
+    this.emit({ kind: 'todo', sessionId, todos: [...l.todos.values()] })
+    // The revert itself stands either way — it happened in the CLI and the range
+    // is persisted — so this reports the re-read, not a failure to revert.
+    return { ok: true, removed: popped, prefill, message: message ?? failed }
+  }
+
   async answer(sessionId: string, requestId: string, answer: ChatAnswer): Promise<void> {
     const l = this.live.get(sessionId)
     if (!l) return
     const input = this.inputs.get(requestId) ?? {}
 
     if (answer.behavior === 'plan-approve') {
-      // Approving a plan does not by itself leave plan mode; the host chooses the
-      // next mode, and with two modes there is nothing else approval could mean.
-      // The header toggle visibly moves to bypass, and setMode genuinely takes.
-      this.respond(l, requestId, {
-        behavior: 'allow',
-        updatedInput: input,
-        updatedPermissions: [
-          { type: 'setMode', mode: 'bypassPermissions', destination: 'session' }
-        ]
-      })
+      // A plain allow, and deliberately **no** `updatedPermissions: setMode`. That
+      // suggestion was inert: ExitPlanMode's own tool call runs *after* this
+      // response and ends by setting the mode to `prePlanMode ?? 'default'`,
+      // overwriting whatever the host asked for — which is how "Approve & run" used
+      // to leave the session in `default`, prompting for every edit, while the chip
+      // read bypass. What makes approval land in bypass now is upstream of the card:
+      // the process is launched in bypassPermissions and transitions into plan mode,
+      // so `prePlanMode` *is* bypassPermissions and the CLI restores it itself (see
+      // start() and docker.execArgs). With two modes there is nothing else approval
+      // could mean, so the reading and the persisted preference follow it.
+      this.respond(l, requestId, { behavior: 'allow', updatedInput: input })
       l.session = { ...l.session, mode: 'bypassPermissions' }
       this.emit({ kind: 'meta', sessionId, mode: 'bypassPermissions' })
+      this.onMode(sessionId, 'bypassPermissions')
     } else if (answer.behavior === 'plan-deny') {
       // A plain deny. The agent takes the note and re-calls ExitPlanMode within
       // the same turn; there is no PostToolUse asymmetry here, because *we* write
@@ -1243,14 +1599,29 @@ export class ChatService {
       response: { subtype: 'success', request_id: requestId, response: result }
     })
     this.emit({ kind: 'blocking-cleared', sessionId: l.session.id, requestId })
+    // The CLI owes us output again, so the silence clock restarts — from now, not
+    // from whenever the card went up, which is the whole point of stopping it.
+    this.armSilence(l)
   }
 
   /** Accepted mid-conversation and even mid-turn, which is what makes it a toggle. */
   async setMode(sessionId: string, mode: ChatMode): Promise<void> {
     const l = this.live.get(sessionId)
     if (!l) return
+    const previous = l.session.mode ?? 'bypassPermissions'
     l.session = { ...l.session, mode }
-    await this.request(l, { subtype: 'set_permission_mode', mode })
+    l.modeSwitch = true
+    const r = await this.request(l, { subtype: 'set_permission_mode', mode })
+    l.modeSwitch = false
+    if (r.ok || mode === previous) return
+    // The refusal used to be dropped on the floor, and that is what hid the
+    // launched-in-plan bug for a version: the chip moved, the CLI did not, and the
+    // next tool call asked for permission from a session whose header promised it
+    // never would. bypassPermissions is the refusable one (settings or a feature
+    // gate can disable it outright); main is the authority on what the process is
+    // actually in, so the reading goes back.
+    l.session = { ...l.session, mode: previous }
+    this.emit({ kind: 'meta', sessionId, mode: previous })
   }
 
   async setModel(sessionId: string, model: string): Promise<boolean> {
@@ -1434,11 +1805,30 @@ export class ChatService {
    * number is pre-computed inside the container and never subtracted from
    * anything. The cost is a visible jump when the two clocks disagree — in
    * practice, a turn that spanned a host sleep.
+   *
+   * The token reading is frozen from the same frame and for the same reason:
+   * `result.usage` is the CLI's own total for the turn, and it agrees with the sum
+   * the live row was already showing, so adopting it costs nothing and settles the
+   * one case the sum cannot cover — a message whose `message_delta` never arrived.
+   * A `result` carrying no usage at all leaves the live sum in place rather than
+   * blanking the row: that shape has not been observed, and the reading it would
+   * throw away is the CLI's own arithmetic either way.
    */
-  private freezeTurnClock(l: Live, durationMs: number | null): void {
-    const entry = l.entries.find((e) => e.turn === l.turn && e.kind === 'turn')
+  private freezeTurnClock(l: Live, durationMs: number | null, usage?: Json | null): void {
+    const i = l.entries.findIndex((e) => e.turn === l.turn && e.kind === 'turn')
+    const entry = l.entries[i]
     if (!entry || entry.kind !== 'turn') return
     entry.durationMs = durationMs ?? Date.now() - entry.startedAt
+    entry.tokens = readUsage(usage ?? null) ?? entry.tokens
+    // Moved to the end as well as frozen. While it was running the renderer drew
+    // it at the bottom of the log wherever it sat in the list; freezing it
+    // without moving it would drop `done · 12s` back up under the message that
+    // started the turn, and the settle would then hoist it down again a second
+    // later. The renderer applies the same move on its own copy — see
+    // applyEntries — because it upserts by id and would otherwise keep the row
+    // at the index it first landed at.
+    l.entries.splice(i, 1)
+    l.entries.push(entry)
     this.upsert(l, [entry])
   }
 

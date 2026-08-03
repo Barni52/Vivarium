@@ -1,5 +1,6 @@
 import React from 'react'
-import { CHAT, MONO } from '../../theme'
+import { CHAT, CHAT_TEXT as TYPE, MONO } from '../../theme'
+import { langFor, tokenize } from './highlight'
 
 // Markdown for a conversation — headings, paragraphs, nested lists, task lists,
 // blockquotes, fenced and indented code, tables, rules, and the full inline set
@@ -15,19 +16,30 @@ import { CHAT, MONO } from '../../theme'
 // links and tables printed their own syntax. What shipped did not read as
 // "minimal markdown", it read as *no* markdown, which is what the bug says.
 //
-// The trade being made is the same one as before, only honestly priced: a
-// parser plus a sanitiser plus a bundle, against ~350 lines here. It stays
-// worth it for one reason — **everything below renders as text nodes and
-// nothing is ever set as HTML**, so a tool result that happens to contain
-// markup is shown, not run, and there is no sanitiser to get wrong.
+// The one rule everything below is built around: **it renders text nodes and
+// never sets HTML**. A tool result that happens to contain markup is shown
+// rather than run, and there is no sanitiser to get wrong because there is
+// nothing for one to do. That is a property of the output, not an argument
+// about dependencies — `CodeBlock` colours its body with Prism precisely
+// because `Prism.tokenize` hands back a *token tree* rather than the HTML
+// string `Prism.highlight` would, so the spans are built here and the rule
+// still holds. Anything reached for later has to clear the same bar.
 //
-// Type is set to the redesign: 14.5px at 1.68, `CHAT.prose` rather than white,
-// and `text-wrap: pretty` so the last line of a paragraph never leaves one word
-// alone. Lists drop the browser marker for a coral marker in the item's gutter,
-// which is the one place the accent appears inside Claude's own prose.
+// Type comes from `CHAT_TEXT` — every size in here is that scale or derived
+// from it, so the window has one knob rather than thirty numbers. `CHAT.prose`
+// rather than white, and `text-wrap: pretty` so the last line of a paragraph
+// never leaves one word alone. Lists drop the browser marker for a coral marker
+// in the item's gutter, which is the one place the accent appears inside
+// Claude's own prose.
 
-/** Gap between two block-level things. The container cancels the last one. */
-const BLOCK_GAP = 14
+/**
+ * Gap between two block-level things. The container cancels the last one.
+ *
+ * 12 rather than 14, with the type a point smaller and its leading tighter: the
+ * gap between blocks has to stay visibly larger than the gap between lines
+ * *within* one, and that is a ratio, not a constant.
+ */
+const BLOCK_GAP = 12
 
 // ---- inline ---------------------------------------------------------------
 
@@ -485,7 +497,7 @@ function Paragraph({ lines, ctx }: { lines: string[]; ctx: Ctx }): React.ReactEl
   })
   return (
     <div
-      style={{ lineHeight: 1.68, color: ctx.color, textWrap: 'pretty' } as React.CSSProperties}
+      style={{ lineHeight: TYPE.proseLine, color: ctx.color, textWrap: 'pretty' } as React.CSSProperties}
     >
       {nodes}
     </div>
@@ -493,6 +505,12 @@ function Paragraph({ lines, ctx }: { lines: string[]; ctx: Ctx }): React.ReactEl
 }
 
 function CodeBlock({ lang, body }: { lang: string; body: string }): React.ReactElement {
+  // Memoised on its own rather than leaning on `Md`'s: during a turn `Md` is
+  // handed a growing *prefix* of the answer and re-parses every reveal tick, so
+  // its memo never hits — but a settled block above the live row has a body that
+  // stops changing, and this is what stops it re-tokenizing 30 times a second
+  // for the rest of the conversation.
+  const toks = React.useMemo(() => tokenize(body, langFor(lang)), [body, lang])
   return (
     <div
       style={{
@@ -519,15 +537,28 @@ function CodeBlock({ lang, body }: { lang: string; body: string }): React.ReactE
           margin: 0,
           padding: lang ? '6px 13px 11px' : '11px 13px',
           fontFamily: MONO,
-          fontSize: 12,
-          lineHeight: 1.6,
+          fontSize: TYPE.code,
+          lineHeight: 1.55,
+          // The colour a token with no role of its own inherits, which is every
+          // token in a language we do not have — so an unhighlighted block is
+          // still exactly the block that was here before highlighting existed.
           color: CHAT.prose,
           // Wide content scrolls inside its own box; the log never scrolls
           // sideways as a whole.
           overflowX: 'auto'
         }}
       >
-        {body}
+        {/* Inline spans, never per-line wrappers: they cannot change the box's
+            height, and the log re-pins its tail on any height change at all. */}
+        {toks.map((t, i) =>
+          t.color ? (
+            <span key={i} style={{ color: t.color }}>
+              {t.text}
+            </span>
+          ) : (
+            t.text
+          )
+        )}
       </pre>
     </div>
   )
@@ -677,14 +708,14 @@ function List({
             ? `${start + n}.`
             : '–'
         return (
-          <div key={n} style={{ display: 'flex', gap: 10, lineHeight: 1.62 }}>
+          <div key={n} style={{ display: 'flex', gap: 10, lineHeight: TYPE.proseLine }}>
             <span
               style={{
                 flex: 'none',
                 // The one place the accent appears inside Claude's own prose.
                 color: task && task[1] !== ' ' ? CHAT.dim2 : CHAT.you,
                 fontFamily: MONO,
-                fontSize: 12,
+                fontSize: TYPE.code,
                 paddingTop: 1,
                 userSelect: 'none',
                 minWidth: ordered ? 18 : undefined,
@@ -727,7 +758,7 @@ export function Preview({ src }: { src: string }): React.ReactElement {
       style={{
         margin: 0,
         fontFamily: MONO,
-        fontSize: 12,
+        fontSize: TYPE.code,
         lineHeight: 1.5,
         color: CHAT.prose,
         whiteSpace: 'pre'
@@ -754,7 +785,7 @@ function unfence(src: string): string {
 export function Md({
   src,
   color = CHAT.prose,
-  size = 14.5
+  size = TYPE.prose
 }: {
   src: string
   color?: string

@@ -61,7 +61,21 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
   exist because the page is no longer the darkest thing on screen: `well` (a recess inside a panel)
   and `onAccent` (ink on a filled accent), both of which used to be `bg` itself. `radius` /
   `radiusCard` are the corners; the control radius is applied once, as a `.vchat`-scoped rule in
-  `GLOBAL_CSS`, so it reaches buttons nobody has written yet. The whole window is **JetBrains
+  `GLOBAL_CSS`, so it reaches buttons nobody has written yet — and **hover/press are applied the
+  same way and for the same reason**, as a `filter: brightness()` rather than a background,
+  because every control in this window is styled *inline* and an inline background beats any rule
+  that sheet could write (the same trap the focus ring documents). Anything clickable that is not
+  a `<button>` — a tool card, the thinking row, both divs because they wrap block content — opts
+  in with a `data-click` attribute. `CODE` is the syntax palette, held apart from `CHAT` because it
+  is read by exactly one consumer (`highlight.ts`) and because a token hue answers to a different
+  rule than a chrome hue: seven of them appear at once, in a grid, at 11.5px, on the *lighter*
+  `card` rather than on the page — so each is muted a step further than `ACCENT` already asks for.
+  Three of its colours are deliberate near-misses of `CHAT` ones and the doc comment says which:
+  a string is not `live`, a function name is not `claude`, a removed line is not `danger`, because
+  each of those already means something else in this window. `CHAT_TEXT` is the window's type scale (prose, its leading,
+  mono, the gutter, code) and every size in `ChatLog`/`Markdown`/the composer is that object or
+  derived from it: "make the chat smaller" is one request and it must not be thirty numbers. It is
+  not the zoom — zoom is the reader's knob at their own desk and multiplies all of this. The whole window is **JetBrains
   Mono**, set once on the chat root and inherited — including the composer, since
   `input,button,textarea{font-family:inherit}` is already global. Its two role hues
   (`you` coral, `claude` cyan) are load-bearing — telling a user turn, an assistant turn and a tool
@@ -69,12 +83,20 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
   what made the log unreadable. `CHAT.live` is a green and that is allowed where a mode chip's
   green would not be: it marks the CLI process being up, which is the same fact the app's
   running-indicator green already means. The ban is on a colour meaning two things, not on it
-  meaning one thing twice. `components/chat/` is the chat window: `ChatView` (chrome, the reading
-  column, the pinned bands, the composer), `ChatLog` (the two-column message grid),
+  meaning one thing twice. The window is otherwise mono throughout, with **one** exception, and
+  `SANS` exists to spell it: the question overlay is a form — checkboxes, radios, prose
+  descriptions — and in mono it read as terminal output that happened to be clickable.
+  `components/chat/` is the chat window: `ChatView` (chrome, the log column, the pinned bands, the
+  composer, the question overlay), `ChatLog` (the message list: every row is `hh:mm role` on its own
+  line with the content full-width under it — it was a two-column grid with an 84px gutter, and the
+  column charged every line of every message for two words that only ever sat beside the first),
   `Markdown`, `attach` (routing an attachment by reachability).
-  `Markdown` is a **hand-rolled parser with no dependency, and it stays that way for one reason**:
-  everything renders as text nodes and nothing is ever set as HTML, so a tool result containing
-  markup is shown rather than run, and there is no sanitiser to get wrong. It covers what a
+  `Markdown` is a hand-rolled parser, and the rule it is built around is **everything renders as
+  text nodes and nothing is ever set as HTML** — so a tool result containing markup is shown
+  rather than run, and there is no sanitiser to get wrong. That is a constraint on the *output*,
+  not a ban on dependencies: `highlight.ts` uses Prism, but only `Prism.tokenize`, which returns a
+  token tree, never `Prism.highlight`, which returns an HTML string. Anything reached for later
+  clears the same bar or it does not go in. It covers what a
   conversation actually contains — nested lists (by indentation, recursing back through the block
   parser, which is the line that stops a sub-bullet being folded into the sentence above it), task
   items, tables, blockquotes, fenced and indented code, rules, and the inline set including links.
@@ -84,6 +106,18 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
   anything that starts a block, or `## Next` under a bullet joins the bullet. Links go out through
   `openExternal`, never an `<a>`: this window has no new-window handler, so a navigation would open
   the page *inside* the app.
+  `highlight.ts` is the syntax colouring, for fenced blocks and for the diff an Edit/Write tool card
+  holds — the language of the latter comes off the card's title, which for those tools **is** the
+  file path. It owns the Prism grammar list (js/ts/jsx/tsx and java first, then the C family, the
+  scripting and data languages, and `diff`), the alias and extension maps, and the token-type →
+  `CODE` map, which reads a token's **type before its `alias`** because several grammars alias to
+  something that reads wrong here — Java's `annotation` is aliased to `punctuation`, and
+  alias-first would print `@Override` in the grey of a semicolon. Nested tokens **inherit** the
+  enclosing colour, which is what makes a diff's `deleted-sign` (whose children carry no colour of
+  their own) come out red at all. An unknown language, a missing grammar or anything thrown
+  degrades to plain text: a block that renders uncoloured is a non-event, one that takes the log
+  down with it is not. Colour lands on the spans and never in a stylesheet, for the reason
+  `theme.ts` already documents about inline styles winning.
   `Elapsed.tsx` is the only thing in the UI
   that ticks: it re-renders three characters of duration instead of its host row, on an interval
   that follows the granularity on screen (1s while showing seconds, 15s once only minutes can
@@ -91,14 +125,15 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
 
 **Adding an IPC feature** touches four places in order: channel name in `src/shared/ipc.ts` →
 handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → renderer call via
-`window.vivarium.*` (usually from a store action). No exceptions for chat — its ten outbound
+`window.vivarium.*` (usually from a store action). No exceptions for chat — its eleven outbound
 channels each follow this path.
 
 **`chat:event` is the one deliberate departure** from one-channel-per-payload: it carries a
 discriminated `ChatEvent` union. `ptyData`/`ptyExit` can be separate channels safely because exit
 is terminal and data is opaque bytes; chat's inbound is neither. A turn emits appended entries,
-then the turn-end *replacement* of those same entries, plus blocking cards, task/todo, reset and
-exit — and these are strictly ordered. Electron guarantees ordering **within** a channel, not
+then the turn-end *replacement* of those same entries, plus blocking cards, task/todo, reset, the
+whole-window replacement a revert sends (`rewound`, the one event that removes rows rather than
+upserting them) and exit — and these are strictly ordered. Electron guarantees ordering **within** a channel, not
 across channels, so splitting them lets a blocking card overtake the text it refers to and render
 a question above the sentence asking it. The alternative is a sequence number and a reorder buffer
 in the renderer: the same guarantee bought back at a higher price.
@@ -127,14 +162,23 @@ in the renderer: the same guarantee bought back at a higher price.
 - Runtime state (container running, live ptys) is **queried live, never persisted**.
   `config.json` holds only projects/mounts/sessions/settings; writes go through
   `ConfigStore.mutate` (atomic temp-file + rename).
-  **Three deliberate exceptions, all for the same reason** — these are per-session *user
-  preferences*, or facts that cannot be queried live, not runtime state observed from Docker:
-  `Session.mode` and `Session.model` (how a chat's agent runs; restored at spawn as
-  `--permission-mode` / `--model`), and `Session.previousClaudeSessionIds` +
+  **Five deliberate exceptions, all for the same reason** — these are *user preferences*, or facts
+  that cannot be queried live, not runtime state observed from Docker:
+  `Session.mode` and `Session.model` (how a chat's agent runs; `mode` restored at spawn as
+  `--permission-mode` for bypass and as a control-channel transition for plan — see the
+  plan-mode invariant below — `model` as `--model`), `Config.chatZoom` (the chat window's zoom — a fact about the
+  monitor you are sitting at, and one the app was visibly forgetting on every launch), and
+  `Session.previousClaudeSessionIds` +
   `Config.pendingTranscriptDeletes` — which are not really an exception at all, since a deletion
   you owe is exactly a fact that cannot be queried, Docker being down being *why* you owe it.
+  `Session.rewound` is the fifth and lands on the strongest version of that same argument: a
+  rewind you performed is a fact that cannot be queried *even with Docker up*, because Claude Code
+  does not truncate the transcript when it winds a conversation back (see the revert invariant
+  below).
   Deliberately **not** persisted, for contrast: the `list_models` result (global to the account,
-  cached in main for the app run) and the composer draft + pending chips. `Project.slashCommands`
+  cached in main for the app run), the composer draft + pending chips, and `terminalFontSize` —
+  which is the same *kind* of preference as `chatZoom` and is simply not what was asked for; if it
+  ever is, it goes next to it in `Config` and follows the same path. `Project.slashCommands`
   *is* cached, on a different argument — it is a **hint, never authority**: the CLI always decides,
   so a stale entry can only mis-suggest, never mis-execute.
 - Mounts may only change while the container is stopped (`ipc.ts` enforces it); saving settings
@@ -276,6 +320,19 @@ in the renderer: the same guarantee bought back at a higher price.
   until the first user message is written** — `system/init` is the answer to turn one, not a
   greeting, so a client that waits for it deadlocks. The *control* channel is a separate matter and
   is live from spawn, which is what makes the open-time context reading possible.
+- **A chat is always *launched* in `bypassPermissions`, and a `plan` session is transitioned into
+  plan mode over the control channel at spawn.** Never `--permission-mode plan` — the CLI (2.1.220)
+  makes that a one-way door twice over: `isBypassPermissionsModeAvailable` is decided once at
+  startup from `--permission-mode bypassPermissions || --dangerously-skip-permissions`, so every
+  later `set_permission_mode bypassPermissions` is *refused* for the life of the process; and
+  ExitPlanMode's approval path ends by setting the mode to `prePlanMode ?? 'default'`, where
+  `prePlanMode` is only recorded by a transition **into** plan mode. Launched in plan there is no
+  transition, so "Approve & run" landed the session in `default` — prompting for every edit, which
+  is not one of this app's two modes — while the header read bypass. Entering plan mode from bypass
+  answers both: bypass stays available, and the CLI's own plan exit restores the mode it came from,
+  so the app asks for nothing on approval beyond a plain `allow`. A `set_permission_mode` refusal is
+  therefore never swallowed: main puts the reading back rather than let the chip promise a mode the
+  process is not in.
 - **The transcript is the chat's model, not a log of it.** History comes from the container-side
   `/home/node/.claude/projects/-workspace/<uuid>.jsonl`, read with `docker exec`; there is **no
   host-side mirror**, because a mirror only knows turns the app streamed and can drift from the
@@ -305,6 +362,42 @@ in the renderer: the same guarantee bought back at a higher price.
   they arrived, so counted raw a *complete* transcript scores below the stream on most turns and
   every turn looks like a lost race. An **aborted** turn is not settled but its bytes are still
   stepped over (`skipTurn`), or the next turn would map them again.
+- **A revert is the CLI's own rewind, and the transcript does not shrink for it.** Esc Esc (or the
+  log's context menu) opens `RewindOverlay`, and picking one of your messages winds the conversation
+  back to just before it and hands its text back to the composer. The mechanism is Claude Code's
+  `rewind_conversation` **control request**, on the channel `interrupt` / `set_model` already ride —
+  it is undocumented, and `/rewind` the slash command is `supportsNonInteractive: false` so
+  forwarding it through the composer cannot work in `-p` mode. Four facts about it, all read off the
+  CLI (2.1.220) rather than guessed, and all load-bearing:
+  (1) **It pops exactly one message** — anything newer than the target and it answers `stale target`,
+  the test being "is there a later *human* user message", which is why a slash-command echo or an
+  interrupt marker does not count. On success it truncates its own message array at the target, and
+  *that* is what makes the next call to an earlier message legal. So reverting N messages is N
+  sequential calls, newest first; the loop in `ChatService.rewind` is not an optimisation waiting to
+  happen. (2) **The first message cannot be popped** (`no preceding assistant`, behind a gate that is
+  off by default) — `/clear` is already that gesture and the overlay says so. (3) **It must be aimed
+  from the *file*, not from `l.entries`**: an interrupted turn is `skipTurn`'d rather than settled, so
+  its user row keeps the optimistic `you:<turn>` id it was painted with and carries no transcript
+  uuid at all — target from memory and that message is unpoppable, which leaves every earlier one
+  permanently `stale target` behind it. (4) **The file is not truncated.** A rewind *appends*
+  `{"type":"last-prompt","leafUuid":…,"rewound":true}` and the CLI's loader takes the **last** such
+  line's `leafUuid` as the live branch; the abandoned lines stay where they are forever.
+  So the abandoned **byte range** is recorded on the session (`Session.rewound`) and subtracted by
+  every later whole-file read — `walkTranscript` does the offset-tracking walk that `readHistory` and
+  `rewind` share, and `mergeRanges` unions two reverts so the second swallows the first.
+  **Do not "fix" this by following the branch pointer instead.** That was tried: `last-prompt` is
+  written on *every* turn (2 287 of them across 115 real transcripts), so the filter would be live on
+  every conversation rather than only reverted ones, and an ancestry walk from the leaf does not
+  reconstruct the conversation, because compaction restarts the chain — measured on real files, one
+  of 3 701 message lines has a 196-deep chain and another of 895 has a **5**-deep one. Replicating
+  the loader means replicating compact boundaries and preserved segments, and its failure mode is
+  blanking history on conversations nobody ever reverted. Two things the range record does not cover,
+  by choice: a `/rewind` performed in an **xterm agent** on the same conversation (Vivarium cannot
+  know, so that log will show abandoned turns), and the todo fold, which keeps abandoned entries
+  until the next reopen rebuilds it. **File restore is deliberately absent**: `rewind_files` exists
+  but checkpointing resolves through `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` in SDK mode, and
+  `-p --input-format stream-json` *is* SDK mode, so it is dead until that env var is added to the
+  `docker exec` — and it would restore into `/workspace`, a bind mount of a real checkout.
 - **`isSidechain` is never filtered on in the chat mapper.** A transcript written by `claude -p`
   marks **every** line `isSidechain: true`, main conversation included — the exact inverse of a
   TUI-written transcript, where every line is `false` (verified on 2.1.211). Dropping those lines
@@ -368,7 +461,11 @@ in the renderer: the same guarantee bought back at a higher price.
   exit code is the only signal, while a broken credential emits a normal-looking `init` and then
   nothing at all — hence a **60s silence timeout on *any* frame**, not on `result`. Recovery is
   **never automatic**, the timeout row least of all: a wedged CLI would otherwise be respawned every
-  minute for as long as the app is open.
+  minute for as long as the app is open. **The clock stops while any `can_use_tool` is outstanding**,
+  and restarts when the card is answered: the CLI writes nothing at all until we answer, so a
+  question or a plan left on screen for a minute used to fail its own turn under the user's hands —
+  and a CLI blocked on a human is the one case that is provably not the broken CLI this detects.
+  Nothing anywhere times a card out; the CLI has no such timeout either.
 - **`terminal_reason` is the only test that distinguishes cancelled from failed.** `is_error` cannot
   — a clean deny-then-interrupt reports `is_error: true`. On reopen, where there is no
   `terminal_reason`, a cancelled tool is detected **structurally** (the error results with nothing
@@ -385,12 +482,24 @@ in the renderer: the same guarantee bought back at a higher price.
   row a CLI that emits no such message would produce at all. So whichever lands second is
   suppressed, per turn — never by a shared fixed id, or a conversation with five interrupted turns
   would collapse to one row.
-- **The `AskUserQuestion` card is the whole tool, not a row of labels.** The first version drew the
+- **The `AskUserQuestion` card is the whole tool, not a row of labels — and it is an overlay.** The
+  first version drew the
   option labels as chips, which silently dropped every affordance that makes the tool worth calling:
   the option **descriptions** (tooltip-only), the **previews** the model writes for you to compare,
   whether the question takes one answer or several, the **Other** free-text escape, and **Chat about
-  this**. Four facts hold that surface up, and all four are read off the CLI's own dialog rather than
-  guessed:
+  this**. Rebuilt with all five it stopped fitting where the other blocking cards live: it is the one
+  that is a *form* rather than a sentence with two buttons after it, and pinned above the composer it
+  was a 46vh scroller wedged between the log and the box, competing with both for height. It is a
+  dialog now (`QuestionOverlay`, mounted at the view root so it can cover the view; `BlockingBar`
+  keeps the two one-line cases). The backdrop does **not** dismiss — nothing behind it can proceed,
+  and "Chat about this" is the way out, since that is a real answer to the tool rather than a
+  cancel. A single Esc keeps its single meaning, interrupt the turn, served by ChatView's window
+  handler — and `RewindOverlay`, which the *second* Esc of a pair opens, dismisses on its backdrop
+  precisely because nothing is blocked behind it. The
+  options are drawn controls (a rounded box with a tick, a circle with a dot) rather than `[x]` and
+  `( )` typed in mono: this window is not a terminal, and the ASCII markers made a clickable list
+  read as output. Four facts hold that surface up, and all four are read off the CLI's own dialog
+  rather than guessed:
   - **"Other" is not a separate `response` field, it is an answer.** The dialog files the typed text
     under the question like any label, so it comes back as `"q"="<what you typed>"` and the model
     gets *The user answered: …* — the wording that tells it to read the answer rather than assume it
@@ -419,6 +528,23 @@ in the renderer: the same guarantee bought back at a higher price.
   *resolved* model for display while `Session.model` keeps the **alias**: the alias is what
   `--model` needs at the next spawn, and the resolved id is what makes the chip say `Opus 5`
   instead of `Opus`.
+- **The turn clock's token reading steps per API message and is never estimated between them.**
+  Claude Code reports usage twice per message — provisionally at
+  `stream_event/message_start`, finally at `message_delta` — and once for the whole turn at
+  `result`, and the two agree exactly (a three-message turn's `result.usage.output_tokens` was
+  75+75+5, verified on 2.1.220). So the live row is the sum of the latest report per message id
+  (`Live.usage`, keyed per message because a single accumulator would add both reports and double
+  the turn) and the freeze adopts `result.usage`, which no user can see as a correction. Nothing is
+  reported *inside* a message, so on a turn of one long answer the number appears at the end;
+  interpolating characters ÷ 4 was rejected on the precedent the interrupted turn's duration set —
+  and it is not even close, a 60-line list of numbers being 179 characters for 149 output tokens.
+  **Subagent tokens are excluded because `result.usage` excludes them** (verified: 213 for a turn
+  whose subagent spent 6; they surface only in `result.modelUsage`, which is per model and also
+  counts the account's title-generation Haiku calls), so counting the frames
+  `--forward-subagent-text` forwards would make the live number overshoot the CLI's own total.
+  Only `output` is on screen: the whole context is re-sent every message, so a summed input across a
+  ten-message turn reads as ten times the context — a cost the turn did not incur, and a question
+  the header's context meter already answers. The other three ride the row's tooltip.
 - **A settled turn's rows are dropped by id as well as by turn.** A transcript line can be mapped
   under one turn and then again under another: `set_model` writes a `Set model to …` line
   *between* turns, no settle has accounted for it, so the next turn's settle reads from an offset
@@ -447,28 +573,45 @@ in the renderer: the same guarantee bought back at a higher price.
   from the log without changing anything inside it — and `pinned` (within 40px of the bottom) is
   what keeps it from yanking a user who has scrolled up to read.
   **The corollary binds everything in the pinned bands: a hover may not change their height.**
-  Todo strip, blocking card and chip strip all sit between the log and the composer, so any pixel
+  Todo strip, blocking bar and chip strip all sit between the log and the composer, so any pixel
   they gain or lose is a pixel the *scroller* loses or gains, and the observer answers by re-pinning
   the tail. The question card's preview pane learned this the hard way — it swapped its content on
-  hover, so moving down a list of options jumped the whole conversation once per row. It now lays
-  every option's preview into one grid cell and hides all but the focused one (`visibility`, which
-  keeps layout), so the pane is the size of the tallest from the moment it appears. Reserve the
-  space; do not compute it against font metrics, and do not re-measure on hover.
-- **Chat zoom is CSS `zoom` on the two reading columns, never on the view root.** The chat is a
-  whole layout — a 96px gutter, an 880px measure, cards, a composer — so scaling only the type
-  would leave all of it behind at its 1× proportions. The root is `position:absolute; inset:0` and
-  a zoomed box scales its own edges; the columns are plain auto-width blocks, which fill the
-  scroller at any factor exactly the way browser zoom behaves. Their `max-width` is divided back
-  out below 1× (`columnMax`), because a `max-width` is in *zoomed* pixels: at 0.7 the measure drew
-  616 real pixels and zooming out pulled both edges of the page in from the window, so the type got
-  smaller *and* the reading column got narrower with a band of dead background down each side.
-  Above 1× it is left alone — growing with the type is what keeps the measure in characters roughly
-  constant, and that direction never looked broken. The log's column and the composer's carry the
-  same factor and the same max so the two stay aligned. `chatZoom` is session-only store state,
-  shared by every chat like `terminalFontSize` is shared by every terminal — you zoom because of the monitor
-  you are sitting at. Ctrl +/-/0 and Ctrl+wheel, the chords `TerminalView` already binds, and the
-  log's context menu is where they are written down (the terminal's menu is the precedent: a chord
-  nothing on screen mentions may as well not exist).
+  hover, so moving down a list of options jumped the whole conversation once per row. It lays every
+  option's preview into one grid cell and hides all but the focused one (`visibility`, which keeps
+  layout), so the pane is the size of the tallest from the moment it appears. That card is an
+  overlay now and out from under this rule, and the technique stays anyway — a dialog that resizes
+  under the pointer is its own bug. Reserve the space; do not compute it against font metrics, and
+  do not re-measure on hover.
+- **The turn clock draws at the bottom of the log while it is running.** It is appended at *send*,
+  before a word of the answer exists, so in list order it sits directly under your message and the
+  whole turn then grows below the row reporting on it — `working · 4s` is a reading about right
+  now, and right now is the tail. The move is `ChatView`'s (`rows`), keyed on `durationMs` being
+  undefined so only the live clock is touched; a frozen one is a fact about a finished turn and
+  stays in its place in time. That place is the **end** of the turn, which takes agreement in three
+  files: `settleTurn` puts the kept clock last (`[...mapper.entries, ...clock]`, matching where the
+  mapper puts a `turn_duration` row on reload), `freezeTurnClock` moves it to the end of main's
+  array, and the store's `applyEntries` moves it to the end of the renderer's — which it must do
+  explicitly, since it upserts by id and would otherwise leave `done · 12s` above the answer for
+  the second between the freeze and the settle.
+- **Chat zoom is CSS `zoom` on the two columns, never on the view root.** The chat is a whole
+  layout — a gutter, cards, a composer — so scaling only the type would leave all of it behind at
+  its 1× proportions. The root is `position:absolute; inset:0` and a zoomed box scales its own
+  edges; the columns are plain auto-width blocks, which fill the scroller at any factor exactly the
+  way browser zoom behaves. There is no `max-width` on either one, and that is the second half of
+  the same story: the log used to be capped at an 880px reading measure and centred, so a maximised
+  window drew the conversation as a ribbon between two wide bands of dead background — worse on the
+  left, where the gutter column sat inside it and the prose started another 100px in (that column is
+  gone too now, for the same reason and on the same argument). The cap needed
+  a `columnMax(zoom)` to divide it back out below 1× (a `max-width` is in *zoomed* pixels, so
+  zooming out pulled both edges in from the window); removing it removed that too. **The window is
+  the measure now** — the user sizes it. All the two columns still share is `CHAT_EDGE`, and they
+  must keep sharing it or the log and the box you answer in stop lining up.
+  `chatZoom` is **persisted** (`Config.chatZoom`, read in `init`, written through a 300ms-debounced
+  `persistZoom` — a scroll gesture is thirty notches and each write is a whole-config atomic
+  rename), and shared by every chat: you zoom because of the monitor you are sitting at, not
+  because of the conversation. Ctrl +/-/0 and Ctrl+wheel, the chords `TerminalView` already binds,
+  and the log's context menu is where they are written down (the terminal's menu is the precedent:
+  a chord nothing on screen mentions may as well not exist).
 - **An attention flag is cleared by viewing its session — and focusing the window is viewing.**
   `notifyAgentAttention` declines to flag only when the window is focused *and* that session is
   selected, so anything landing while the app is in the background flags the session you are

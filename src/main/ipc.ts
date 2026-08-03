@@ -15,6 +15,7 @@ import type {
   ChatMode,
   ChatModelOption,
   ChatOpenResult,
+  ChatRewindResult,
   ClaudeStatus,
   ClaudeUpdateResult,
   Config,
@@ -73,10 +74,37 @@ export function registerIpc(win: BrowserWindow): void {
         return cfg
       })
     },
+    (sessionId, ranges) => {
+      // The transcript stretches a revert abandoned. Claude Code leaves them in
+      // the file (a rewind moves a branch pointer, it does not truncate), so
+      // without this record the next whole-file read renders turns the model has
+      // forgotten. Written whole rather than appended: ChatService merges, so
+      // config never has to know how two overlapping reverts combine.
+      void store.mutate((cfg) => {
+        for (const p of cfg.projects) {
+          const s = p.sessions.find((x) => x.id === sessionId)
+          if (s) s.rewound = ranges.length > 0 ? ranges : undefined
+        }
+        return cfg
+      })
+    },
     (projectId, commands) => {
       void store.mutate((cfg) => {
         const p = cfg.projects.find((x) => x.id === projectId)
         if (p) p.slashCommands = commands
+        return cfg
+      })
+    },
+    (sessionId, mode) => {
+      // The same persistence chatSetMode performs, for a mode change that did not
+      // come from the toggle: approving a plan leaves plan mode, and this record is
+      // what every later spawn restores the session to, so a reopen has to agree
+      // with the header rather than plan all over again.
+      void store.mutate((cfg) => {
+        for (const p of cfg.projects) {
+          const s = p.sessions.find((x) => x.id === sessionId)
+          if (s) s.mode = mode
+        }
         return cfg
       })
     },
@@ -331,6 +359,19 @@ export function registerIpc(win: BrowserWindow): void {
       return cfg
     }
   )
+
+  // Clamped here as well as in the store, because config.json is a text file a
+  // user can edit and a bad number would be read back at every launch. Returns
+  // nothing: the renderer already holds the value it just set, and handing back
+  // a whole Config for a zoom step would have the renderer replace its projects
+  // list on every notch of the mouse wheel.
+  ipcMain.handle(CH.setChatZoom, async (_e, value: number): Promise<void> => {
+    const z = Math.max(0.7, Math.min(2.2, Number(value) || 1))
+    await store.mutate((cfg) => {
+      cfg.chatZoom = z
+      return cfg
+    })
+  })
 
   ipcMain.handle(CH.reorderProjects, async (_e, orderedIds: string[]): Promise<Config> => {
     return store.mutate((cfg) => {
@@ -746,6 +787,12 @@ export function registerIpc(win: BrowserWindow): void {
 
   ipcMain.handle(CH.chatInterrupt, (_e, sessionId: string): Promise<void> =>
     chat.interrupt(sessionId)
+  )
+
+  ipcMain.handle(
+    CH.chatRewind,
+    (_e, sessionId: string, entryId: string): Promise<ChatRewindResult> =>
+      chat.rewind(sessionId, entryId)
   )
 
   ipcMain.handle(

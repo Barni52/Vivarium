@@ -297,6 +297,22 @@ export const Restart = ({ size = 15, color = 'currentColor', style }: P): React.
 export const Pencil = ({ size = 13, color = 'currentColor', style }: P): React.ReactElement =>
   svg(size, <path d="M10.8 2.6l2.6 2.6-7.5 7.5H3.3v-2.6z" stroke={color} strokeWidth="1.2" strokeLinejoin="round" />, style)
 
+// A tick. Drawn heavy and with a short tail so it still reads inside the 16px
+// checkbox in the chat's question dialog, which is the only place it is used —
+// at that size a hairline check turns into a grey smudge.
+export const Check = ({ size = 12, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <path
+      d="M3.4 8.4l3.1 3.2 6.2-6.6"
+      stroke={color}
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />,
+    style
+  )
+
 export const Close = ({ size = 13, color = 'currentColor', style }: P): React.ReactElement =>
   svg(size, <path d="M4 4l8 8M12 4l-8 8" stroke={color} strokeWidth="1.4" strokeLinecap="round" />, style)
 
@@ -457,6 +473,26 @@ export const Refresh = ({ size = 14, color = 'currentColor', style }: P): React.
     <>
       <path d="M12.6 6.32A4.9 4.9 0 116.32 3.4" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
       <path d="M5.24 2.04 8.72 2.53 6.36 5.14Z" fill={color} />
+    </>,
+    style
+  )
+
+// Revert-to-a-message. Deliberately *not* the Refresh arc with its head moved:
+// that one is a closed loop and reads as "do it again", which is the opposite of
+// what this does. This is an open arc travelling leftwards, back the way the
+// conversation came, on the same 2.0..13.7 ink box the icons here share.
+export const Undo = ({ size = 14, color = 'currentColor', style }: P): React.ReactElement =>
+  svg(
+    size,
+    <>
+      <path
+        d="M3.1 7.4a5 5 0 118.4 3.7"
+        stroke={color}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        fill="none"
+      />
+      <path d="M2.05 4.3 6.2 7.15 2.2 9.1Z" fill={color} />
     </>,
     style
   )

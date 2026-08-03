@@ -11,6 +11,7 @@ import type {
   ChatErrorInfo,
   ChatEvent,
   ChatMode,
+  ChatRewindResult,
   ChatTodo,
   ClaudeStatus,
   ClaudeUpdateResult,
@@ -213,6 +214,20 @@ function applyEntries(list: ChatEntry[], incoming: ChatEntry[]): ChatEntry[] {
       if (clock >= 0) next.splice(clock, 1)
     }
     const i = next.findIndex((x) => x.id === e.id)
+    // A clock row that is written to again is *moved* to the end, not replaced
+    // in place. Main makes the same move on its own copy (freezeTurnClock): the
+    // row reports on the whole turn, so it belongs under the work it timed, and
+    // upserting it where it first landed would put `done · 12s` back above the
+    // answer for the second between the freeze and the turn's settle. The freeze
+    // is no longer the only such write — the token reading updates the row once
+    // per API message while the turn runs — which changes nothing here: a running
+    // clock is drawn at the tail anyway (see ChatView's `rows`), so re-appending
+    // it is where it already was.
+    if (i >= 0 && e.kind === 'turn') {
+      next.splice(i, 1)
+      next.push(e)
+      continue
+    }
     if (i >= 0) next[i] = e
     else next.push(e)
   }
@@ -239,9 +254,13 @@ interface AppState {
    * `terminalFontSize` is shared by every terminal — you zoom because of the
    * monitor you are sitting at, not because of the conversation.
    *
-   * A factor rather than a font size: the chat is a whole layout (a gutter, a
-   * measure, cards, a composer) and scaling only the type would leave the
-   * gutter and the reading column behind at their 13px-era proportions.
+   * A factor rather than a font size: the chat is a whole layout (a gutter,
+   * cards, a composer) and scaling only the type would leave the gutter behind
+   * at its 13px-era proportions.
+   *
+   * **Persisted**, unlike `terminalFontSize` — `Config.chatZoom`, read back in
+   * `init` and written through `persistZoom`. It is a fact about the monitor,
+   * and a monitor does not change when the app closes.
    */
   chatZoom: number
   /** session ids that currently have a live pty */
@@ -374,6 +393,8 @@ interface AppState {
   /** false when the process is gone — the composer puts the draft back rather than eating it */
   sendChat: (sessionId: string, text: string, attachments: ChatAttachment[]) => Promise<boolean>
   interruptChat: (sessionId: string) => Promise<void>
+  /** wind the conversation back to just before `entryId`, and hand its text back */
+  rewindChat: (sessionId: string, entryId: string) => Promise<ChatRewindResult>
   answerChat: (sessionId: string, requestId: string, answer: ChatAnswer) => Promise<void>
   setChatMode: (sessionId: string, mode: ChatMode) => Promise<void>
   setChatModel: (sessionId: string, model: string) => Promise<void>
@@ -489,6 +510,29 @@ function pushBadge(notifications: Record<string, AttentionKind>, flash: boolean)
   })
 }
 
+/** 70% to 220%, the range `zoomChat` steps through in tenths. */
+function clampZoom(z: number): number {
+  return Math.max(0.7, Math.min(2.2, Number.isFinite(z) ? z : 1))
+}
+
+/**
+ * Write the chat zoom to config.json, at most once per settled gesture.
+ *
+ * Ctrl+wheel emits a notch every few milliseconds and each write is an atomic
+ * temp-file-plus-rename of the whole config — a single scroll would be thirty of
+ * them. The debounce is short enough that the value is on disk long before the
+ * app can be quit, and the on-screen zoom never waits for it: the store is
+ * updated first and this only mirrors it.
+ */
+let zoomWrite: ReturnType<typeof setTimeout> | null = null
+function persistZoom(z: number): void {
+  if (zoomWrite) clearTimeout(zoomWrite)
+  zoomWrite = setTimeout(() => {
+    zoomWrite = null
+    void window.vivarium.setChatZoom(z)
+  }, 300)
+}
+
 export const useStore = create<AppState>((set, get) => ({
   config: { version: 1, projects: [] },
   states: {},
@@ -545,7 +589,9 @@ export const useStore = create<AppState>((set, get) => ({
     ])
     const expanded: Record<string, boolean> = {}
     for (const p of config.projects) expanded[p.id] = true
-    set({ config, docker, appInfo, expanded })
+    // Re-clamped on the way in: config.json is a text file, and the value is
+    // multiplied into every metric in the chat window.
+    set({ config, docker, appInfo, expanded, chatZoom: clampZoom(config.chatZoom ?? 1) })
     await Promise.all([
       get().refreshStates(),
       get().refreshBranches(),
@@ -773,11 +819,17 @@ export const useStore = create<AppState>((set, get) => ({
   resetTerminalZoom: () => set({ terminalFontSize: 13 }),
   // 10% a step, floored at 70% and capped at 220%. The range is wider at the
   // top than the terminal's because prose is what people zoom *into*.
-  zoomChat: (delta) =>
-    set((s) => ({
-      chatZoom: Math.max(0.7, Math.min(2.2, Math.round((s.chatZoom + delta * 0.1) * 100) / 100))
-    })),
-  resetChatZoom: () => set({ chatZoom: 1 }),
+  // Computed off `get()` rather than inside the `set` updater: the write to disk
+  // is a side effect, and a state updater is the one place that must stay pure.
+  zoomChat: (delta) => {
+    const chatZoom = clampZoom(Math.round((get().chatZoom + delta * 0.1) * 100) / 100)
+    persistZoom(chatZoom)
+    set({ chatZoom })
+  },
+  resetChatZoom: () => {
+    persistZoom(1)
+    set({ chatZoom: 1 })
+  },
   setLive: (sessionId, live) => set((s) => ({ live: { ...s.live, [sessionId]: live } })),
 
   setActivity: (sessionId, a, at) =>
@@ -968,6 +1020,18 @@ export const useStore = create<AppState>((set, get) => ({
         // reset does: the log is dropped and the todo fold goes with it.
         patch((c) => ({ ...c, entries: [], total: 0, todos: [], blocking: null, subagents: {} }))
         break
+      case 'rewound':
+        // A revert landed. The **one** event on this channel that replaces the log
+        // rather than upserting into it: `applyEntries` can only add and update,
+        // and what a revert did is *remove*. Main sends a whole window for the
+        // same reason it does at open — the renderer holds a clipped tail, so
+        // "truncate at this id" has a case where the id was never mounted.
+        //
+        // `total` is taken, not maxed: it is the only number here that can go
+        // down, and `load earlier` reads it to decide whether an "earlier" exists
+        // at all.
+        patch((c) => ({ ...c, entries: e.entries, total: e.total, blocking: null }))
+        break
       case 'error':
         patch((c) => ({ ...c, error: e.error }))
         break
@@ -1052,6 +1116,13 @@ export const useStore = create<AppState>((set, get) => ({
 
   interruptChat: async (sessionId) => {
     await window.vivarium.chatInterrupt(sessionId)
+  },
+
+  // Not optimistic, unlike answerChat: what comes off the log is decided by how
+  // many messages the CLI actually popped, and it can pop fewer than were asked
+  // for. Main emits `rewound` with the truth and the caller shows what happened.
+  rewindChat: async (sessionId, entryId) => {
+    return window.vivarium.chatRewind(sessionId, entryId)
   },
 
   answerChat: async (sessionId, requestId, answer) => {

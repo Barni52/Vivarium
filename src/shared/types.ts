@@ -47,6 +47,46 @@ export interface Session {
   mode?: ChatMode
   /** chat only. Same exception, same argument; applied as `--model` at spawn. */
   model?: string
+  /**
+   * chat only. Stretches of this conversation's transcript that a revert
+   * abandoned, skipped by every later whole-file read.
+   *
+   * The same exception again, and on the strongest version of the argument: a
+   * rewind you performed is a fact that *cannot* be queried. Claude Code does
+   * not truncate the file when it winds a conversation back — it appends a
+   * `last-prompt` branch pointer and leaves the abandoned lines in place — and
+   * its own loader resolves the live branch through compaction boundaries and
+   * preserved segments that this app cannot re-derive without guessing. So the
+   * act is recorded rather than the content mirrored, exactly like
+   * `previousClaudeSessionIds` below it.
+   *
+   * Cleared by `/clear`: a new conversation is a new file, and these offsets
+   * would point into the retired one.
+   */
+  rewound?: ChatRewindRange[]
+}
+
+/**
+ * A stretch of transcript bytes a revert abandoned — half-open, `[from, to)`.
+ *
+ * Byte offsets, never string indices: a transcript is read as a Buffer and
+ * every offset in this app is `Buffer.byteLength`, or one multibyte character
+ * anywhere in the conversation slides the whole range.
+ */
+export interface ChatRewindRange {
+  from: number
+  to: number
+}
+
+/** What `chat:rewind` answers: what came off, and what to put in the composer. */
+export interface ChatRewindResult {
+  ok: boolean
+  /** how many of your messages were dropped — 0 when nothing moved */
+  removed: number
+  /** the picked message's own text, handed back for editing */
+  prefill: string | null
+  /** why it refused, or why it stopped short of what was asked */
+  message?: string
 }
 
 export interface Project {
@@ -89,6 +129,19 @@ export interface Config {
    * against (e.g. "origin/master"). Defaults to "origin/master" when unset.
    */
   diffBase?: string
+  /**
+   * The chat window's zoom factor, shared by every chat session.
+   *
+   * Persisted, unlike `terminalFontSize`, and the difference is not principled —
+   * it is what was asked for. The reason it *can* be persisted is that this is a
+   * preference about the monitor you are sitting at, not runtime state observed
+   * from Docker: nothing can query it, and a factor that resets to 1 every time
+   * the app restarts is a setting the app keeps forgetting.
+   *
+   * Optional, and clamped by both ends (`zoomChat` in the store, the handler in
+   * `ipc.ts`) — a hand-edited config.json must not be able to set 40×.
+   */
+  chatZoom?: number
   /**
    * Conversations owed a delete: bare Claude conversation uuids, enqueued in the
    * *same* atomic mutate that removes the session or project that owned them.
@@ -500,7 +553,45 @@ export type ChatEntry =
    * or crashed turn has nothing to freeze to and gets no number at all: the
    * `stop` row replaces this one.
    */
-  | (ChatEntryBase & { kind: 'turn'; startedAt: number; durationMs?: number })
+  | (ChatEntryBase & {
+      kind: 'turn'
+      startedAt: number
+      durationMs?: number
+      /** what the turn has spent so far, or its total once frozen */
+      tokens?: ChatTurnTokens
+    })
+
+/**
+ * What one turn spent, exactly as Claude Code's protocol reports it.
+ *
+ * Every field is a **turn** total. The CLI reports usage per API message — once
+ * provisionally at `stream_event/message_start`, once finally at
+ * `message_delta` — and again for the whole turn at `result`, and the two
+ * agree: a three-message turn's `result.usage.output_tokens` was exactly the sum
+ * of its three `message_delta`s (155 = 75+75+5, verified against 2.1.220). So
+ * the live reading is that running sum and the frozen one is `result.usage`,
+ * and the freeze is not a correction the user can see.
+ *
+ * **Subagent work is deliberately absent, because it is absent from
+ * `result.usage` too** (verified: a turn whose Task subagent spent 6 output
+ * tokens reported 213, the two main-thread messages' 198+15; the subagent's
+ * tokens appear only in `result.modelUsage`, which is per model and also counts
+ * the account's title-generation Haiku calls). Counting the frames
+ * `--forward-subagent-text` forwards would make the live number climb past the
+ * number the CLI settles on, and the freeze would then visibly walk it back.
+ *
+ * `output` is the field on screen; the other three are the tooltip, and they are
+ * *why* the visible one is output-only: the whole context is re-sent with every
+ * message, so a summed input across a ten-message turn reads as ten times the
+ * context — a cost the turn did not incur. The context meter already answers
+ * "how full is the window".
+ */
+export interface ChatTurnTokens {
+  output: number
+  input: number
+  cacheRead: number
+  cacheCreation: number
+}
 
 export interface ChatTodo {
   id: string
@@ -640,6 +731,16 @@ export type ChatEvent =
   | { kind: 'context'; sessionId: string; context: ChatContextUsage | null }
   /** `/clear` landed: a new conversation id, and the log is dropped */
   | { kind: 'reset'; sessionId: string; claudeSessionId: string }
+  /**
+   * A revert landed: the log is **replaced** by this window rather than merged
+   * into, the one event on this channel that is not an upsert.
+   *
+   * It carries a whole window rather than a truncate-at-this-id instruction
+   * because the renderer holds only a clipped tail (MOUNT_WINDOW): an id-based
+   * truncation has a case where the id is not in the window at all, and
+   * replacement has none. It costs what an open already costs.
+   */
+  | { kind: 'rewound'; sessionId: string; entries: ChatEntry[]; total: number }
   | { kind: 'error'; sessionId: string; error: ChatErrorInfo }
   | { kind: 'exit'; sessionId: string; exitCode: number }
   /** model / mode / command list, from each turn's re-emitted `init` */

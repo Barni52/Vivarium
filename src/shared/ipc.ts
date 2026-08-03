@@ -10,6 +10,10 @@ export const CH = {
   addSession: 'session:add',
   renameSession: 'session:rename',
   removeSession: 'session:remove',
+  // The chat window's zoom factor. A setting rather than a chat channel: it is
+  // global to the app and outlives every session, so it is written straight to
+  // config.json and read back at launch.
+  setChatZoom: 'config:set-chat-zoom',
   reorderProjects: 'project:reorder',
   reorderSessions: 'session:reorder',
   // Cross-project move (drag a session onto another project). Separate from
@@ -64,6 +68,7 @@ export const CH = {
   chatOpen: 'chat:open',
   chatSend: 'chat:send',
   chatInterrupt: 'chat:interrupt',
+  chatRewind: 'chat:rewind',
   chatAnswer: 'chat:answer',
   chatSetMode: 'chat:set-mode',
   chatSetModel: 'chat:set-model',

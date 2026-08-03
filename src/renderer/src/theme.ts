@@ -65,6 +65,17 @@ const APP_CSS = `
  */
 export const MONO = "'JetBrains Mono', 'IBM Plex Mono', monospace"
 
+/**
+ * The app's text face, which `body` already sets — so this exists for exactly
+ * one job: getting *back* to it inside a subtree that has declared mono.
+ *
+ * The chat window is mono from its root down, and the one thing in it that is
+ * not a transcript is the question dialog: a form with checkboxes, radios and
+ * prose descriptions, which in mono read as terminal output that happens to be
+ * clickable.
+ */
+export const SANS = "'IBM Plex Sans', system-ui, sans-serif"
+
 // Per-session-type hues. Deliberately muted — three fully saturated colors
 // (violet/cyan/green) next to this slate palette read as neon, and the old
 // host-shell green was the exact same green as the "container running"
@@ -174,6 +185,51 @@ export const CHAT = {
 }
 
 /**
+ * Syntax highlighting, for fenced code blocks and the diff a tool card holds.
+ *
+ * Eight hues and no more. The muting rule `ACCENT` documents applies here twice
+ * over: a code block sits on `CHAT.card`, which is *lighter* than the page, so a
+ * saturated token has even less slate to be quiet against — and unlike a session
+ * icon there are seven of them at once, in a grid, at 11.5px. Every colour below
+ * is a step or two off the pure hue for that reason.
+ *
+ * Two of them are `CHAT` greys reused deliberately: a comment is the dimmest
+ * thing in the window and `dim4` is what "dimmest" already means here, and
+ * punctuation is structure rather than content, which is `dim2`'s job in the
+ * gutter too. Plain code is not in this object at all — it inherits `CHAT.prose`
+ * from the `<pre>`, so a block in a language we do not have renders exactly as it
+ * did before highlighting existed.
+ *
+ * Three near-misses are on purpose, and all three are the one-colour-one-meaning
+ * rule being obeyed rather than ignored:
+ *   - `string` is a sage green and **not** `CHAT.live` (#6FBF8B), which means "the
+ *     CLI process is up" and appears a few pixels away in the header.
+ *   - `fn` is a steel blue and **not** `CHAT.claude` (#7FC3D6), which means "Claude
+ *     said this" and is also the colour of a link in the paragraph above the block.
+ *   - `del` is a soft red and **not** `CHAT.danger` (#E06C6C), which is reserved for
+ *     something having gone wrong; a removed line is a fact, not a failure.
+ */
+export const CODE = {
+  /** comments, and anything else the language treats as ignorable */
+  comment: '#5A6473',
+  /** braces, semicolons, operators — structure, not content */
+  punct: '#7B8695',
+  /** `if`, `class`, `public`, `import` */
+  keyword: '#B98BC9',
+  /** strings, chars, template literals, regex, attribute values */
+  string: '#9CC49A',
+  /** numbers, and the constants that read like them: booleans, `null`, enums */
+  number: '#D6A06B',
+  /** a name in call or definition position */
+  fn: '#82B7DE',
+  /** class names, tags, attribute names, Java annotations, JSON keys */
+  type: '#E0C58A',
+  /** a ```diff fence's own signs. The tool card's diff tints the row instead. */
+  ins: '#9CC49A',
+  del: '#D08A8A'
+}
+
+/**
  * Everything injected at startup: the app's chrome, then the chat's.
  *
  * The chat rules live here rather than in `APP_CSS` for one reason — they are
@@ -189,15 +245,74 @@ export const CHAT = {
  */
 export const GLOBAL_CSS = `${APP_CSS}
   .vchat button,.vchat input,.vchat textarea{border-radius:${CHAT.radius}px}
+  /* Hover and press, once, for every control in the window — the same argument
+     the radius rule makes, and the reason both live here: they reach the
+     controls nobody has written yet.
+
+     It has to be a **filter** rather than a background. Every control in this
+     window is styled *inline* (the palette is a plain object precisely so it
+     cannot leak), and an inline background beats any rule this sheet could
+     write — the hover would silently do nothing on exactly the controls that
+     need it, which is the same trap the focus ring documents. Brightness lifts
+     a filled button's fill, a card's panel and a transparent chip's border and
+     label alike, so one declaration covers all three shapes.
+
+     The data-click attribute is for what is clickable without being a button:
+     a tool card and the thinking row, which are divs because they wrap block
+     content a button may not contain. */
+  .vchat button:not(:disabled),.vchat [data-click]{transition:filter .12s,background-color .12s,border-color .12s,color .12s}
+  .vchat button:not(:disabled):hover,.vchat [data-click]:hover{filter:brightness(1.32)}
+  .vchat button:not(:disabled):active,.vchat [data-click]:active{filter:brightness(.9)}
   /* The chat runs its own palette, and the app-wide thumb is mixed for --bg. */
   .vchat-scroll::-webkit-scrollbar-thumb{background:${CHAT.border};border:3px solid ${CHAT.bg};background-clip:padding-box}
   .vchat-scroll::-webkit-scrollbar-thumb:hover{background:${CHAT.dim4}}
 `
 
-/** The reading column. Everything in the log is centred in it, header to composer. */
-export const CHAT_MEASURE = 880
-/** Timestamp + role word. One number, so a row and a divider cannot drift apart. */
-export const CHAT_GUTTER = 96
+/**
+ * The chat's type scale.
+ *
+ * One object because "make the chat a bit smaller" is one request, and it used
+ * to be thirty inline numbers across three files. It is **not** the zoom: zoom
+ * is what a reader reaches for at their own desk and it multiplies everything
+ * here. This is the size the window is drawn at before they touch it.
+ *
+ * Everything came down about a point: at 14.5/1.68 the log read as a document
+ * being typeset rather than a conversation being followed, and the leading was
+ * the louder half of that — a paragraph is three or four lines here, not thirty,
+ * so it does not need a book's air between them.
+ */
+export const CHAT_TEXT = {
+  /** a message body, and the `Md` size every heading and table derives from */
+  prose: 13.5,
+  /** leading inside a paragraph and between the items of a list */
+  proseLine: 1.6,
+  /** machinery: tool cards, clocks, command output, the composer's status line */
+  mono: 11,
+  /** the gutter's `hh:mm role`, chips, and the `show 40 lines` hints */
+  gutter: 10.5,
+  /** fenced code and an `AskUserQuestion` preview — a grid, which holds its own */
+  code: 11.5
+}
+
+/**
+ * The chat's left and right margin — the *only* thing between the log and the
+ * window edge.
+ *
+ * There used to be an 880px reading measure here and the column was centred in
+ * it. The argument for it (a paragraph that runs to a 2560px edge is scanned,
+ * not read) is a real one, and it lost to what it actually looked like: on a
+ * maximised window the conversation was a narrow ribbon with a wide band of dead
+ * background down each side, and the band on the left read as wider still
+ * because the gutter was inside the column and the prose started another 100px
+ * in. The window is the measure now — the user picks it by sizing the window,
+ * which is the control they already have and the one they were reaching for. The
+ * gutter column went the same way and for the same reason (see `ChatLog`): its
+ * `CHAT_GUTTER` of 84 was the last horizontal number in the log that the content
+ * did not get to use, so `CHAT_EDGE` is now the whole of the left margin, on
+ * every line of every message rather than only on the ones a role word did not
+ * happen to sit beside.
+ */
+export const CHAT_EDGE = 14
 
 /** Which context tint a percentage earns. Colour appears when it means something. */
 export function ctxColor(pct: number): string {

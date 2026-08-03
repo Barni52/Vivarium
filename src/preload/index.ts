@@ -11,6 +11,7 @@ import type {
   ChatMode,
   ChatModelOption,
   ChatOpenResult,
+  ChatRewindResult,
   ClaudeStatus,
   ClaudeUpdateResult,
   Config,
@@ -54,6 +55,8 @@ const api = {
     ipcRenderer.invoke(CH.renameSession, projectId, sessionId, name),
   removeSession: (projectId: string, sessionId: string): Promise<Config> =>
     ipcRenderer.invoke(CH.removeSession, projectId, sessionId),
+  /** The chat window's zoom factor — one setting for every chat session. */
+  setChatZoom: (value: number): Promise<void> => ipcRenderer.invoke(CH.setChatZoom, value),
   reorderProjects: (orderedIds: string[]): Promise<Config> =>
     ipcRenderer.invoke(CH.reorderProjects, orderedIds),
   reorderSessions: (projectId: string, orderedSessionIds: string[]): Promise<Config> =>
@@ -154,6 +157,8 @@ const api = {
     ipcRenderer.invoke(CH.chatSend, sessionId, text, attachments),
   chatInterrupt: (sessionId: string): Promise<void> =>
     ipcRenderer.invoke(CH.chatInterrupt, sessionId),
+  chatRewind: (sessionId: string, entryId: string): Promise<ChatRewindResult> =>
+    ipcRenderer.invoke(CH.chatRewind, sessionId, entryId),
   chatAnswer: (sessionId: string, requestId: string, answer: ChatAnswer): Promise<void> =>
     ipcRenderer.invoke(CH.chatAnswer, sessionId, requestId, answer),
   chatSetMode: (sessionId: string, mode: ChatMode): Promise<Config> =>
