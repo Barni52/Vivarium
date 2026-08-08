@@ -1,4 +1,5 @@
 import React from 'react'
+import { Check, Copy } from '../Icons'
 import { CHAT, CHAT_TEXT as TYPE, MONO } from '../../theme'
 import { langFor, tokenize } from './highlight'
 
@@ -511,14 +512,67 @@ function CodeBlock({ lang, body }: { lang: string; body: string }): React.ReactE
   // stops changing, and this is what stops it re-tokenizing 30 times a second
   // for the rest of the conversation.
   const toks = React.useMemo(() => tokenize(body, langFor(lang)), [body, lang])
+
+  const [copied, setCopied] = React.useState(false)
+  // The tick has a lifetime, so it is cleared by unmount as well as by time: a
+  // log row is dropped and rebuilt whenever its turn settles, and that can land
+  // mid-flip like anything else.
+  React.useEffect(() => {
+    if (!copied) return
+    const t = setTimeout(() => setCopied(false), 1400)
+    return () => clearTimeout(t)
+  }, [copied])
+
   return (
     <div
+      data-code=""
       style={{
+        // The button is absolute against this box rather than in the flow of
+        // it: a control that reserved a row would move the code down, and it
+        // has to stay put while a wide block scrolls sideways underneath it.
+        position: 'relative',
         border: `1px solid ${CHAT.borderCard}`,
         background: CHAT.card,
         borderRadius: CHAT.radiusCard
       }}
     >
+      <button
+        data-copy=""
+        // Reveal is CSS (see GLOBAL_CSS); this is the half of it that outlives
+        // the pointer, so the tick is readable after the click that moved on.
+        data-copied={copied ? '' : undefined}
+        title="Copy"
+        aria-label="Copy code"
+        onClick={(e) => {
+          // Same reason `Link` stops it: a code block can sit inside a card
+          // that is itself clickable, and copying is not opening that card.
+          e.stopPropagation()
+          // What was copied is what is on screen — during a turn `body` is the
+          // revealed prefix, and a partial block copying in full would be a
+          // different thing to the one the reader pointed at.
+          window.vivarium.clipboardWriteText(body)
+          setCopied(true)
+        }}
+        style={{
+          position: 'absolute',
+          top: 4,
+          right: 4,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 22,
+          height: 20,
+          padding: 0,
+          // Opaque, and the block's own card grey: it overlaps the first line
+          // of an unlabelled block, so it has to read as sitting on top rather
+          // than as a glyph tangled in the code.
+          background: CHAT.card,
+          border: `1px solid ${CHAT.borderCard}`,
+          cursor: 'pointer'
+        }}
+      >
+        {copied ? <Check size={11} color={CHAT.live} /> : <Copy size={12} color={CHAT.dim2} />}
+      </button>
       {lang && (
         <div
           style={{

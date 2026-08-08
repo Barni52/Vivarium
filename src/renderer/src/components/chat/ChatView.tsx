@@ -115,10 +115,18 @@ export function ChatView({
   /**
    * Which typeahead row is highlighted, or `null` for "none yet".
    *
-   * The null is not laziness, it is what makes Enter safe: with nothing
-   * highlighted, Enter sends `/clear` as the command you typed, and only once
-   * you have deliberately reached into the list does it mean "take this one".
-   * It is also the first half of the two-press Tab.
+   * **`/` opens with row 0 already highlighted; `@` still opens with none.**
+   * The two are not the same kind of menu. A `/` is only a menu at all when it
+   * is the composer's first character, so the list is unambiguously what you
+   * are doing and a list nobody has pointed at yet reads as inert. An `@`, by
+   * contrast, occurs in ordinary prose — `mail me at foo@bar.com` opens the
+   * file list against `bar.com` — so a default highlight there would put a
+   * completion under Enter in the middle of a sentence.
+   *
+   * What the old null bought for `/` (Enter still meaning "send `/clear`
+   * rather than complete it") is kept by the exact-match rule in `onKeyDown`,
+   * which is the sharper statement of it: Enter completes, unless there is
+   * nothing left to complete.
    */
   const [pick, setPick] = React.useState<number | null>(null)
   const [models, setModels] = React.useState<ChatModelOption[] | null>(null)
@@ -385,10 +393,26 @@ export function ChatView({
     [menu, chat?.commands, tree]
   )
 
-  // A new query is a new list, so the highlight starts over. Without this, a
-  // narrowing filter leaves you pointing at whatever now sits at that index.
+  /**
+   * Does Enter send rather than complete?
+   *
+   * True exactly when the highlighted `/` row is already what is in the box, to
+   * the letter. One computation, read by the key handler *and* by the menu's
+   * footer, so what the hint promises and what the key does cannot drift — and
+   * the footer changing to `⏎ send` on the last character of `/clear` is what
+   * teaches the exception at the one moment it is ambiguous.
+   */
+  const enterSends = React.useMemo(() => {
+    if (menu?.kind !== 'slash' || pick === null) return false
+    return menuRows[pick]?.name.toLowerCase() === draft.trim().toLowerCase()
+  }, [menu?.kind, pick, menuRows, draft])
+
+  // A new query is a new list, so the highlight starts over — at the top for
+  // `/` and nowhere for `@`. Without this, a narrowing filter leaves you
+  // pointing at whatever now sits at that index, which after two more
+  // characters is a different command with the same row number.
   React.useEffect(() => {
-    setPick(null)
+    setPick(menu?.kind === 'slash' ? 0 : null)
   }, [menu?.kind, menu?.query])
 
   /**
@@ -455,18 +479,25 @@ export function ChatView({
       if (e.key === 'Tab') {
         e.preventDefault()
         if (e.shiftKey) return move(-1)
-        // Two presses, shell-style: the first highlights the best match, the
-        // second takes it. One press could not do both — completing straight
-        // away means you can never *look* at the list, and only highlighting
-        // means Tab alone never completes anything.
+        // One press takes the highlighted row. The old two-press dance (first
+        // press highlights, second takes) only existed because `/` opened with
+        // nothing highlighted, and it still applies to `@`, which does.
         if (pick === null) return setPick(0)
-        return acceptRow(menuRows[pick])
+        const row = menuRows[pick]
+        if (row) return acceptRow(row)
+        return
       }
-      // Enter takes the highlighted row only when you put the highlight there.
-      // With none, `/clear` + Enter is still the command you typed being sent.
-      if (e.key === 'Enter' && !e.shiftKey && pick !== null) {
-        e.preventDefault()
-        return acceptRow(menuRows[pick])
+      // Enter completes the highlighted row, except where `enterSends` says
+      // there is nothing left to complete.
+      if (e.key === 'Enter' && !e.shiftKey && pick !== null && !enterSends) {
+        // A `meta` event can re-derive the rows under a keystroke (the disk
+        // scan that opening the menu kicks off lands whenever it lands), so the
+        // index is checked against the list rather than trusted.
+        const row = menuRows[pick]
+        if (row) {
+          e.preventDefault()
+          return acceptRow(row)
+        }
       }
       if (e.key === 'Escape') {
         // preventDefault, so the window-level Esc does not read a dismissed
@@ -617,6 +648,19 @@ export function ChatView({
     )
     return known ? token : null
   }, [draft, chat?.commands])
+
+  // The twin follows the box it sits under on `scroll`, which covers scrolling
+  // but not *arriving* scrolled: it mounts at 0, and a draft can land already
+  // past the fold — paste a long message that happens to start with `/clear`
+  // and the caret is at the end of it. That used to misplace a tint by a few
+  // lines; now that the twin paints the glyphs themselves it would show the top
+  // of the message while the box is looking at the bottom. Layout, not effect,
+  // so the correction is never on screen for a frame.
+  React.useLayoutEffect(() => {
+    if (overlayRef.current && inputRef.current) {
+      overlayRef.current.scrollTop = inputRef.current.scrollTop
+    }
+  }, [draft, commandToken])
 
   const openModelMenu = async (): Promise<void> => {
     setModelMenu((v) => !v)
@@ -863,7 +907,13 @@ export function ChatView({
             />
           )}
           {menu && menuRows.length > 0 && (
-            <Typeahead rows={menuRows} active={pick} onHover={setPick} onPick={acceptRow} />
+            <Typeahead
+              rows={menuRows}
+              active={pick}
+              enterSends={enterSends}
+              onHover={setPick}
+              onPick={acceptRow}
+            />
           )}
 
           <div
@@ -876,14 +926,31 @@ export function ChatView({
               transition: 'border-color .16s'
             }}
           >
-            {/* The command highlight.
-                A textarea holds one flat string and cannot carry a tint, so the
-                tint is drawn *behind* it by a twin that lays out the same text
-                with the same metrics and paints it transparent — only the
-                background of the `/command` run shows through, under the real,
-                selectable, editable text. The alternative (a contenteditable
-                composer) buys the same pixel at the price of owning caret and
-                paste behaviour by hand. */}
+            {/* The command colour.
+                A textarea holds one flat string and paints it in one flat
+                colour, so colouring a *run* of it means the glyphs you can see
+                have to come from somewhere else: a twin, laid out behind with
+                the same metrics. While a known `/command` leads the draft the
+                two swap jobs — the textarea keeps the caret, the selection,
+                the scrolling and the editing but paints nothing, and the twin
+                paints every glyph, the command in coral and the rest in
+                exactly the `CHAT.text` the textarea itself would have used, so
+                the swap is invisible.
+
+                Three things make that safe rather than clever. The twin may
+                differ from the textarea in **colour only** — a weight, size,
+                family or spacing of its own moves the glyphs out from under
+                the caret that is still the textarea's. The swap is scoped to
+                the case that needs it, so ordinary prose is drawn by the
+                textarea exactly as it always was. And the app's `::selection`
+                is 32% alpha (APP_CSS), which is what keeps selected text
+                readable through a band painted over glyphs that are no longer
+                there. The placeholder never collides with any of this: the
+                draft starts with `/`, so it is by construction not empty.
+
+                The alternative (a contenteditable composer) buys the same
+                pixel at the price of owning caret and paste behaviour by
+                hand. */}
             <div style={{ position: 'relative' }}>
               {commandToken && (
                 <div
@@ -898,19 +965,10 @@ export function ChatView({
                     overflowWrap: 'break-word',
                     fontSize: TYPE.prose,
                     lineHeight: 1.55,
-                    color: 'transparent'
+                    color: CHAT.text
                   }}
                 >
-                  {/* Background only — the twin's own glyphs stay transparent,
-                      or two layers of the same word would fringe each other. */}
-                  <span
-                    style={{
-                      background: `${CHAT.you}1F`,
-                      boxShadow: `inset 0 -1px 0 ${CHAT.you}66`
-                    }}
-                  >
-                    {commandToken}
-                  </span>
+                  <span style={{ color: CHAT.you }}>{commandToken}</span>
                   {draft.slice(commandToken.length)}
                 </div>
               )}
@@ -958,7 +1016,12 @@ export function ChatView({
                   overflowY: 'auto',
                   border: 0,
                   background: 'transparent',
-                  color: CHAT.text,
+                  // Transparent only while the twin above is painting the text
+                  // in its place. The caret is not covered by that swap — it
+                  // takes its colour from `color` unless told otherwise, and a
+                  // composer with no visible caret is a broken one.
+                  color: commandToken ? 'transparent' : CHAT.text,
+                  caretColor: CHAT.text,
                   fontSize: TYPE.prose,
                   lineHeight: 1.55,
                   padding: 0,
@@ -1998,10 +2061,9 @@ function RewindOverlay({
   onPick: (entryId: string) => void
   onClose: () => void
 }): React.ReactElement {
-  // Starts at 0 rather than null, unlike the composer's typeahead. There the null
-  // is what keeps Enter meaning "send what I typed"; here Enter has no other
-  // meaning to protect, and the top row — go back one message — is the case this
-  // is opened for.
+  // Starts at 0, like the composer's `/` list and unlike its `@` one: the top
+  // row — go back one message — is the case this is opened for, and Enter has
+  // no other meaning here that a default selection could take away.
   const [active, setActive] = React.useState(0)
   const panelRef = React.useRef<HTMLDivElement>(null)
   React.useEffect(() => {
@@ -2467,14 +2529,25 @@ function typeaheadRows(
 function Typeahead({
   rows,
   active,
+  enterSends,
   onHover,
   onPick
 }: {
   rows: TypeaheadRow[]
   active: number | null
+  /** the highlighted row is already typed out, so Enter sends it as it stands */
+  enterSends: boolean
   onHover: (i: number) => void
   onPick: (row: TypeaheadRow) => void
 }): React.ReactElement {
+  const activeRef = React.useRef<HTMLButtonElement>(null)
+  // Twelve rows do not fit in 240px, so the highlight can be driven off the
+  // bottom of the list — which reads as the arrows having stopped working. Only
+  // `nearest`: a row already on screen must not move, or every mouse-move over
+  // the list would jog it under the pointer.
+  React.useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [active])
   return (
     <div
       style={{
@@ -2491,6 +2564,7 @@ function Typeahead({
           return (
             <button
               key={r.key}
+              ref={on ? activeRef : undefined}
               onMouseMove={() => onHover(i)}
               onMouseDown={(e) => {
                 // mousedown, not click: a blur would close this before the click.
@@ -2541,7 +2615,11 @@ function Typeahead({
           color: CHAT.dim4
         }}
       >
-        {active === null ? 'tab · ↑↓ select' : 'tab · ⏎ insert · ↑↓ next · esc dismiss'}
+        {active === null
+          ? 'tab · ↑↓ select'
+          : enterSends
+            ? 'tab insert · ⏎ send · ↑↓ next · esc dismiss'
+            : 'tab · ⏎ insert · ↑↓ next · esc dismiss'}
       </div>
     </div>
   )

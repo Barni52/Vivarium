@@ -263,6 +263,20 @@ export const GLOBAL_CSS = `${APP_CSS}
   .vchat button:not(:disabled),.vchat [data-click]{transition:filter .12s,background-color .12s,border-color .12s,color .12s}
   .vchat button:not(:disabled):hover,.vchat [data-click]:hover{filter:brightness(1.32)}
   .vchat button:not(:disabled):active,.vchat [data-click]:active{filter:brightness(.9)}
+  /* A fenced code block's copy button. It is revealed by a hover on the
+     *block* rather than on itself, which is the one thing an inline style
+     cannot say — the same argument the two rules above make, and the reason
+     this lives here instead of in Markdown.tsx.
+
+     Hidden means pointer-events:none as well as transparent: an invisible
+     button still takes clicks, and this one sits over the top-right corner of
+     code the reader is trying to select. Focus and the just-copied state hold
+     it open, so a keyboard can reach it and the tick it swaps to is never
+     shown to a corner nobody is pointing at. Opacity only — a hover in this
+     window may not change a height, and the log re-pins its tail on any
+     height change at all. */
+  .vchat [data-code] [data-copy]{opacity:0;pointer-events:none;transition:opacity .12s,filter .12s,color .12s}
+  .vchat [data-code]:hover [data-copy],.vchat [data-code] [data-copy]:focus-visible,.vchat [data-code] [data-copy][data-copied]{opacity:1;pointer-events:auto}
   /* The chat runs its own palette, and the app-wide thumb is mixed for --bg. */
   .vchat-scroll::-webkit-scrollbar-thumb{background:${CHAT.border};border:3px solid ${CHAT.bg};background-clip:padding-box}
   .vchat-scroll::-webkit-scrollbar-thumb:hover{background:${CHAT.dim4}}

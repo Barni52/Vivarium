@@ -230,10 +230,22 @@ main, so there is no return value to adopt. It carries the whole `Config` anyway
 - **Neither a slash command's output nor a task notification is something the user typed.** Both
   arrive on ordinary **user** lines, and both render as raw markup inside the tinted `you` bubble
   if the mapper does not recognise them there.
-- The composer's `/` typeahead has **no highlight until you ask for one**, and that null is what
-  makes Enter safe: with nothing selected Enter sends what you typed. Tab is two presses
-  (highlight, then insert). The list is deduped — `init` reports `slash_commands` and `skills`
+- **The composer's `/` typeahead opens with its first row highlighted; its `@` one opens with
+  none.** A `/` is only a menu when it is the first character, so the list is unambiguously what
+  you are doing; an `@` occurs in prose (`foo@bar.com`), where a default highlight would put a
+  completion under Enter mid-sentence. What the old no-highlight default protected — Enter meaning
+  "send `/clear`", not "complete it" — is kept by `enterSends`: Enter completes the highlighted
+  row **unless the row is already typed out to the letter**, and one computation feeds both the key
+  handler and the footer hint so they cannot promise different things. Tab is one press for `/`
+  and still two for `@`. The list is deduped — `init` reports `slash_commands` and `skills`
   separately and they overlap — and a leading `/command` is tinted only when the CLI has it.
+- **A leading `/command` is coloured, not highlighted, and the colour comes from a twin behind the
+  textarea.** One textarea paints one flat colour, so while a known command leads the draft the two
+  swap jobs: the textarea keeps caret, selection and editing but goes `color: transparent` (with
+  `caretColor` restated, or the caret goes with it), and the twin paints every glyph — the command
+  in `CHAT.you`, the rest in exactly `CHAT.text`. The twin may differ from the textarea in **colour
+  only**: any weight, size, family or spacing of its own moves the glyphs out from under the real
+  caret. Selected text stays readable because the app's `::selection` is 32% alpha.
 - **What `/` can expand is learned from `init` *and* from the disk.** `init` is emitted at the
   first turn of a process and re-emitted only when `set_model`/`set_permission_mode` arms it, and
   there is no `list_commands` control request — so a skill written since is missing from the menu.
