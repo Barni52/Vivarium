@@ -326,6 +326,14 @@ There is **no test suite, by design — don't add one.**
 5. Anything docker-, pwsh-, or WSL-dependent cannot run in that container — the user verifies those
    paths on the Windows host. Say so explicitly instead of claiming verification.
 
+## Git
+
+- **Every commit is followed by a push.** `git push` to the current branch's upstream (`-u origin
+  <branch>` the first time) in the same turn as the commit — do not leave commits sitting locally
+  waiting to be asked about. If the push fails, say so; do not silently treat the commit as done.
+- Committing itself is still on request, as always — this rule says what happens *after* a commit,
+  not that work should be committed unprompted.
+
 ## Code style
 
 - Prettier-ish: 2-space indent, single quotes, no semicolons, explicit return types on functions.
