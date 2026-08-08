@@ -110,7 +110,7 @@ export function ContextMenu(): React.ReactElement | null {
           minWidth: 190,
           background: 'var(--panel)',
           border: '1px solid var(--border)',
-          boxShadow: '0 18px 44px -16px rgba(0,0,0,.7)',
+          boxShadow: '0 18px 44px -16px var(--shadow)',
           animation: 'vpop .12s ease',
           padding: 4,
           visibility: pos ? 'visible' : 'hidden'
@@ -118,7 +118,7 @@ export function ContextMenu(): React.ReactElement | null {
       >
         {menu.items.map((item, i) =>
           item.label === '---' ? (
-            <div key={i} style={{ height: 1, background: 'var(--border-2)', margin: '4px 6px' }} />
+            <div key={i} style={{ height: 1, background: 'var(--border)', margin: '4px 6px' }} />
           ) : (
             <MenuRow
               key={i}
@@ -166,20 +166,20 @@ function MenuRow({
   onSelect: () => void
 }): React.ReactElement {
   const [hover, setHover] = React.useState(false)
-  const color = disabled ? 'var(--text-3)' : danger ? 'var(--danger)' : 'var(--text)'
+  const color = disabled ? 'var(--dim)' : danger ? 'var(--danger)' : 'var(--fg)'
   // Glyphs sit one step below the label in brightness (and brighten with the
   // row): they're there to be recognised at a glance, not read — a full-strength
   // icon column would out-shout the words it's labelling.
   const iconColor = disabled
-    ? 'var(--text-3)'
+    ? 'var(--dim)'
     : danger
       ? 'var(--danger)'
       : hover
-        ? 'var(--text-2)'
-        : 'var(--text-3)'
-  // Non-danger hover uses the selection color (--sel) — the old --row-hover was
+        ? 'var(--muted)'
+        : 'var(--dim)'
+  // Non-danger hover uses the selection color (--sel) — the old --sel was
   // nearly indistinguishable from the panel background. Danger keeps its red tint.
-  const bg = hover && !disabled ? (danger ? 'rgba(250,77,86,.14)' : 'var(--sel)') : 'transparent'
+  const bg = hover && !disabled ? (danger ? 'var(--danger-soft)' : 'var(--sel)') : 'transparent'
   return (
     <div
       onMouseEnter={() => setHover(true)}
@@ -191,7 +191,7 @@ function MenuRow({
         gap: 9,
         height: 30,
         padding: '0 12px',
-        fontSize: 13,
+        fontSize: 12.5,
         color,
         background: bg,
         cursor: disabled ? 'default' : 'pointer',
@@ -223,7 +223,7 @@ function MenuRow({
             marginLeft: 'auto',
             paddingLeft: 18,
             fontSize: 11.5,
-            color: 'var(--text-3)',
+            color: 'var(--dim)',
             fontFamily: MONO,
             flex: 'none'
           }}

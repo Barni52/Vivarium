@@ -145,13 +145,19 @@ function emphasisAt(src: string, i: number): { node: React.ReactNode; end: numbe
   const inner = src.slice(i + run, close)
   if (!inner.trim()) return null
   const kids = inlineNodes(inner)
+  // Bold is `--str`, the same warm hue a quoted string takes in a code block —
+  // one colour for "the part of this the author picked out", whether the author
+  // is a model writing prose or a language marking a literal. It carries the
+  // weight too: at 12.5px mono, 700 on the page grey is a weaker mark than 500
+  // in a hue, and the two together are what a `**bold**` run is asking for.
+  const strong: React.CSSProperties = { color: 'var(--str)', fontWeight: 700 }
   const node =
     run === 1 ? (
       <i style={{ color: 'inherit' }}>{kids}</i>
     ) : run === 2 ? (
-      <b style={{ color: CHAT.text, fontWeight: 500 }}>{kids}</b>
+      <b style={strong}>{kids}</b>
     ) : (
-      <b style={{ color: CHAT.text, fontWeight: 500 }}>
+      <b style={strong}>
         <i>{kids}</i>
       </b>
     )

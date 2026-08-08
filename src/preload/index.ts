@@ -215,6 +215,8 @@ const api = {
   windowMinimize: (): void => ipcRenderer.send(CH.windowMinimize),
   windowMaximize: (): void => ipcRenderer.send(CH.windowMaximize),
   windowClose: (): void => ipcRenderer.send(CH.windowClose),
+  /** The active theme's `--bg`, so Chromium paints the window the same colour. */
+  setWindowBackground: (color: string): void => ipcRenderer.send(CH.setWindowBackground, color),
   // Confirm-on-quit: main asks (quitRequested), renderer confirms (confirmQuit).
   onQuitRequested: (cb: () => void): (() => void) => {
     const h = (): void => cb()

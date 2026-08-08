@@ -32,18 +32,18 @@ export function MountList({
     if (v && onAdd) onAdd(v)
   }
   return (
-    <div style={{ border: '1px solid var(--border)', background: 'var(--field)', opacity: locked ? 0.62 : 1 }}>
-      <div style={{ padding: '13px 16px 12px 16px', borderBottom: '1px solid var(--border-2)' }}>
+    <div style={{ border: '1px solid var(--border)', background: 'var(--input)', opacity: locked ? 0.62 : 1 }}>
+      <div style={{ padding: '13px 16px 12px 16px', borderBottom: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ color: 'var(--accent)', display: 'flex' }}>
             <Folder />
           </span>
-          <span style={{ fontSize: 13.5, fontWeight: 600 }}>Mount folders</span>
+          <span style={{ fontSize: 12.5, fontWeight: 600 }}>Mount folders</span>
           {locked ? (
             <span
               style={{
-                fontSize: 11,
-                color: 'var(--text-3)',
+                fontSize: 11.5,
+                color: 'var(--dim)',
                 marginLeft: 'auto',
                 display: 'flex',
                 alignItems: 'center',
@@ -53,17 +53,17 @@ export function MountList({
               <Lock /> Locked
             </span>
           ) : (
-            <span style={{ fontSize: 11, color: 'var(--text-3)', marginLeft: 'auto' }}>
+            <span style={{ fontSize: 11.5, color: 'var(--dim)', marginLeft: 'auto' }}>
               {mounts.length} {mounts.length === 1 ? 'folder' : 'folders'}
             </span>
           )}
         </div>
         {locked ? (
-          <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 6, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 11.5, color: 'var(--danger)', marginTop: 6, lineHeight: 1.5 }}>
             {lockedNote ?? 'Mounts can’t change while the container is running — stop it to edit them.'}
           </div>
         ) : (
-          <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 5, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 11.5, color: 'var(--dim)', marginTop: 5, lineHeight: 1.5 }}>
             Only these subfolders are mounted into the container. Everything else in the base
             folder stays on the host.
           </div>
@@ -85,12 +85,12 @@ export function MountList({
             style={{
               flex: 1,
               height: 36,
-              background: 'var(--field-2)',
+              background: 'var(--card2)',
               border: 0,
-              borderBottom: '1px solid var(--text-3)',
-              color: 'var(--text)',
+              borderBottom: '1px solid var(--dim)',
+              color: 'var(--fg)',
               fontFamily: MONO,
-              fontSize: 13,
+              fontSize: 12.5,
               padding: '0 12px',
               outline: 'none'
             }}
@@ -102,11 +102,11 @@ export function MountList({
               style={{
                 height: 36,
                 padding: '0 14px',
-                background: 'var(--field-2)',
+                background: 'var(--card2)',
                 border: 0,
-                borderBottom: '1px solid var(--text-3)',
-                color: 'var(--text)',
-                fontSize: 13,
+                borderBottom: '1px solid var(--dim)',
+                color: 'var(--fg)',
+                fontSize: 12.5,
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
@@ -125,8 +125,8 @@ export function MountList({
               padding: '0 16px',
               background: 'var(--accent)',
               border: 0,
-              color: '#fff',
-              fontSize: 13,
+              color: 'var(--accent-fg)',
+              fontSize: 12.5,
               fontWeight: 500,
               cursor: 'pointer',
               display: 'flex',
@@ -160,10 +160,10 @@ export function MountList({
               justifyContent: 'center',
               gap: 6,
               border: '1px dashed var(--border)',
-              color: 'var(--text-3)'
+              color: 'var(--dim)'
             }}
           >
-            <span style={{ fontSize: 13 }}>No folders mounted yet</span>
+            <span style={{ fontSize: 12.5 }}>No folders mounted yet</span>
             <span style={{ fontSize: 11.5 }}>Add the subfolders your agent should see.</span>
           </div>
         ) : (
@@ -176,17 +176,17 @@ export function MountList({
                 gap: 10,
                 height: 38,
                 padding: '0 6px 0 12px',
-                background: 'var(--field-2)',
+                background: 'var(--card2)',
                 borderLeft: '2px solid var(--accent)'
               }}
             >
-              <span style={{ color: 'var(--text-3)', display: 'flex' }}>
+              <span style={{ color: 'var(--dim)', display: 'flex' }}>
                 <Folder size={13} />
               </span>
-              <span style={{ flex: 1, fontFamily: MONO, fontSize: 13, color: 'var(--text)' }}>
+              <span style={{ flex: 1, fontFamily: MONO, fontSize: 12.5, color: 'var(--fg)' }}>
                 {relLabel(basePath, m)}
               </span>
-              <span style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: MONO }}>
+              <span style={{ fontSize: 11.5, color: 'var(--dim)', fontFamily: MONO }}>
                 → /workspace/{leaf(m)}
               </span>
               {editable && onRemove && (
@@ -197,7 +197,7 @@ export function MountList({
                     height: 28,
                     border: 0,
                     background: 'transparent',
-                    color: 'var(--text-3)',
+                    color: 'var(--dim)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',

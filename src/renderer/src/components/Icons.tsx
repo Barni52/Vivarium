@@ -441,17 +441,27 @@ const CODE_EXTS = new Set([
 const TABLE_EXTS = new Set(['csv', 'tsv', 'xls', 'xlsx'])
 const ARCHIVE_EXTS = new Set(['zip', '7z', 'rar', 'tar', 'gz'])
 
+/**
+ * A file's glyph and its tint, in the output tree.
+ *
+ * Eight kinds sharing the palette's chromatic tokens rather than eight hues of
+ * their own — the shape is doing the work here, exactly as it does for the
+ * session types, and the colour only groups them: warm (`--str`) for things you
+ * read, `--code-fn` blue for source, `--ok` for data, `--danger` for the one
+ * that opens outside the app. Everything else stays grey, which is most of a
+ * tree most of the time.
+ */
 export function FileIcon({ name, size = 14, style }: { name: string; size?: number; style?: React.CSSProperties }): React.ReactElement {
   const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : ''
-  if (IMAGE_EXTS.has(ext)) return <ImageFile size={size} color="#a56eff" style={style} />
-  if (ext === 'html' || ext === 'htm') return <Globe size={size} color="var(--accent-2)" style={style} />
-  if (ext === 'md' || ext === 'markdown') return <DocLines size={size} color="#3ddbd9" style={style} />
-  if (ext === 'pdf') return <DocLines size={size} color="#fa4d56" style={style} />
-  if (ext === 'txt' || ext === 'log') return <DocLines size={size} color="var(--text-3)" style={style} />
-  if (CODE_EXTS.has(ext)) return <CodeFile size={size} color="#f1c21b" style={style} />
-  if (TABLE_EXTS.has(ext)) return <TableFile size={size} color="#42be65" style={style} />
-  if (ARCHIVE_EXTS.has(ext)) return <Archive size={size} color="var(--text-2)" style={style} />
-  return <File size={size} color="var(--text-3)" style={style} />
+  if (IMAGE_EXTS.has(ext)) return <ImageFile size={size} color="var(--code-keyword)" style={style} />
+  if (ext === 'html' || ext === 'htm') return <Globe size={size} color="var(--accent2)" style={style} />
+  if (ext === 'md' || ext === 'markdown') return <DocLines size={size} color="var(--role-you)" style={style} />
+  if (ext === 'pdf') return <DocLines size={size} color="var(--danger)" style={style} />
+  if (ext === 'txt' || ext === 'log') return <DocLines size={size} color="var(--dim)" style={style} />
+  if (CODE_EXTS.has(ext)) return <CodeFile size={size} color="var(--code-fn)" style={style} />
+  if (TABLE_EXTS.has(ext)) return <TableFile size={size} color="var(--ok)" style={style} />
+  if (ARCHIVE_EXTS.has(ext)) return <Archive size={size} color="var(--muted)" style={style} />
+  return <File size={size} color="var(--dim)" style={style} />
 }
 
 // A 270° arc opening at the top right, closed by a solid arrowhead pointing

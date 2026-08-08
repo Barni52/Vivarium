@@ -44,11 +44,11 @@ function AgentStatus({ sessionId }: { sessionId: string }): React.ReactElement |
           display: 'flex',
           alignItems: 'center',
           gap: 5,
-          fontSize: 11,
+          fontSize: 11.5,
           fontFamily: MONO,
           // A waiting agent is mid-turn, so it keeps the agent hue rather than
           // dropping to the idle grey — the word is what distinguishes them.
-          color: working || waiting ? ACCENT.agent : 'var(--text-3)'
+          color: working || waiting ? ACCENT.agent : 'var(--dim)'
         }}
       >
         {waiting ? 'waiting' : working ? 'working' : 'idle'}
@@ -130,7 +130,7 @@ export function TerminalHost(): React.ReactElement {
         display: 'flex',
         flexDirection: 'column',
         minWidth: 0,
-        background: 'var(--terminal-bg)'
+        background: 'var(--bg)'
       }}
     >
       {/* Header — only a selected session has one to show, and a chat brings its
@@ -145,10 +145,11 @@ export function TerminalHost(): React.ReactElement {
             alignItems: 'center',
             gap: 9,
             padding: '0 16px',
-            background: 'var(--terminal-bg)',
-            // --border, not the hairline --border-2 this used to be: the header
-            // and the terminal under it are the same surface, and against the
-            // lighter grey background a #1b222b line is invisible.
+            background: 'var(--bg)',
+            // The header and the terminal under it are the same surface, so the
+            // line between them is the only thing saying where one ends — it has
+            // to be --border, the hairline that is *visible* on the page fill,
+            // not the softer edge a panel can afford.
             borderBottom: '1px solid var(--border)'
           }}
         >
@@ -160,17 +161,17 @@ export function TerminalHost(): React.ReactElement {
           >
             <TypeIcon type={sel.session.type} size={14} />
           </span>
-          <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>
+          <span style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--fg)' }}>
             {sel.session.name}
           </span>
-          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{sel.project.name}</span>
+          <span style={{ fontSize: 11.5, color: 'var(--dim)' }}>{sel.project.name}</span>
           <div style={{ flex: 1 }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 9, flex: 'none' }}>
             {sel.session.type === 'agent' && <AgentStatus sessionId={sel.session.id} />}
             <span
               style={{
-                fontSize: 11,
-                color: 'var(--text-3)',
+                fontSize: 11.5,
+                color: 'var(--dim)',
                 fontFamily: MONO
               }}
             >
@@ -260,7 +261,7 @@ function StoppedPlaceholder({
         gap: 16,
         padding: 40,
         textAlign: 'center',
-        background: 'var(--terminal-bg)'
+        background: 'var(--bg)'
       }}
     >
       <div
@@ -272,16 +273,16 @@ function StoppedPlaceholder({
           justifyContent: 'center',
           borderRadius: 16,
           border: '1px solid var(--border)',
-          background: 'var(--field-2)',
+          background: 'var(--card2)',
           color: ACCENT[session.type]
         }}
       >
         <TypeIcon type={session.type} size={26} />
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 7, alignItems: 'center' }}>
-        <div style={{ fontSize: 17, fontWeight: 600, color: 'var(--text)' }}>Container stopped</div>
-        <div style={{ fontSize: 13, color: 'var(--text-2)', maxWidth: 380, lineHeight: 1.55 }}>
-          Start <b style={{ color: 'var(--text)' }}>{project.name}</b>’s container to open this{' '}
+        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--fg)' }}>Container stopped</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', maxWidth: 380, lineHeight: 1.55 }}>
+          Start <b style={{ color: 'var(--fg)' }}>{project.name}</b>’s container to open this{' '}
           {kind}.
         </div>
       </div>
@@ -291,10 +292,10 @@ function StoppedPlaceholder({
         style={{
           height: 34,
           padding: '0 18px',
-          background: starting ? 'var(--field-2)' : 'var(--accent)',
-          color: starting ? 'var(--text-3)' : '#fff',
+          background: starting ? 'var(--card2)' : 'var(--accent)',
+          color: starting ? 'var(--dim)' : 'var(--accent-fg)',
           border: 0,
-          fontSize: 13,
+          fontSize: 12.5,
           fontWeight: 500,
           cursor: starting ? 'default' : 'pointer'
         }}
@@ -321,15 +322,15 @@ function EmptyState(): React.ReactElement {
         gap: 20,
         padding: 40,
         textAlign: 'center',
-        background: 'var(--terminal-bg)'
+        background: 'var(--bg)'
       }}
     >
       <Logo size={76} style={{ borderRadius: 18, boxShadow: '0 8px 44px -12px var(--accent)' }} />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
-        <div style={{ fontSize: 19, fontWeight: 600, letterSpacing: '.2px', color: 'var(--text)' }}>
+        <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '.2px', color: 'var(--fg)' }}>
           Vivarium
         </div>
-        <div style={{ fontSize: 13.5, color: 'var(--text-2)', maxWidth: 360, lineHeight: 1.55 }}>
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', maxWidth: 360, lineHeight: 1.55 }}>
           Select a session on the left to open its terminal — or add one to a project to get
           started.
         </div>
@@ -347,7 +348,7 @@ function EmptyState(): React.ReactElement {
               border: '1px solid var(--border)',
               padding: '3px 9px',
               fontSize: 11.5,
-              color: 'var(--text-2)'
+              color: 'var(--muted)'
             }}
           >
             <span style={{ display: 'flex', color: t.accent }}>

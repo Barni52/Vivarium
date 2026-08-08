@@ -6,41 +6,57 @@ import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import type { Project, Session } from '@shared/types'
 import { useStore } from '../state/store'
 import { Chevron, Close, Copy, Paste, Refresh, Search, SelectAll, ZoomIn, ZoomOut } from './Icons'
-import { MONO } from '../theme'
+import { MONO, themeFor, tokensFor, type ThemeName } from '../theme'
 
-// Windows console "Campbell" ANSI palette — makes colored program output
-// (PSReadLine highlighting, git, ls, npm, etc.) render the way it does in a
-// real Windows terminal instead of xterm's washed-out defaults.
-const CAMPBELL = {
-  black: '#0c0c0c',
-  red: '#c50f1f',
-  green: '#13a10e',
-  yellow: '#c19c00',
-  blue: '#3b78ff',
-  magenta: '#881798',
-  cyan: '#3a96dd',
-  white: '#cccccc',
-  brightBlack: '#767676',
-  brightRed: '#e74856',
-  brightGreen: '#16c60c',
-  brightYellow: '#f9f1a5',
-  brightBlue: '#6aa9ff',
-  brightMagenta: '#b4009e',
-  brightCyan: '#61d6d6',
-  brightWhite: '#f2f2f2'
+/**
+ * The terminal's own copy of the theme.
+ *
+ * xterm renders into a canvas it paints itself and cannot resolve a custom
+ * property, so this reads the token map by name — which is what stops it
+ * drifting from the `var(--bg)` gutter padding TerminalView/TerminalHost draw
+ * around the same canvas. A drift there shows up as a visible seam at the edges
+ * of the terminal.
+ *
+ * Being a function rather than a constant is the whole of the theme support
+ * here: a `var()` re-resolves itself on a theme swap and a canvas does not, so
+ * every live terminal has to be handed a new object (see the effect below).
+ */
+function xtermTheme(name: ThemeName): Record<string, string> {
+  const t = tokensFor(name)
+  return {
+    background: t.bg,
+    foreground: t.fg,
+    cursor: t.fg,
+    selectionBackground: t.selection,
+    ...themeFor(name).ansi
+  }
 }
 
-// All session types share the app's dark terminal background. The literal is the
-// same color as --terminal-bg in theme.ts and has to be kept that way by hand:
-// xterm renders into its own canvas/DOM layer and takes a real color, while the
-// gutter padding drawn around it by TerminalView/TerminalHost uses the var — any
-// drift shows up as a visible seam at the edges of the terminal.
-const DARK_THEME = {
-  background: '#1c2128',
-  foreground: '#c7cfda',
-  cursor: '#c7cfda',
-  selectionBackground: 'rgba(69,137,255,.32)',
-  ...CAMPBELL
+/**
+ * Match highlighting for the find bar, per theme.
+ *
+ * The fussiest of the non-CSS consumers: xterm composites these itself and
+ * accepts **plain #RRGGBB only — no alpha**, so `--selection` (translucent by
+ * design) cannot be reused here. The inactive match is `--sel`, the app's
+ * row-highlight fill, and the active one steps up to `--accent` with an
+ * `--accent-fg` edge — the same "this is the selected one" language the
+ * sidebar's 3px bar speaks.
+ *
+ * The overview-ruler entries are required by the type but inert: that ruler only
+ * draws when `overviewRulerWidth` is set, which it isn't.
+ */
+function searchOpts(name: ThemeName): ISearchOptions {
+  const t = tokensFor(name)
+  return {
+    decorations: {
+      matchBackground: t.sel,
+      matchBorder: t['border-strong'],
+      matchOverviewRuler: t.accent,
+      activeMatchBackground: t.accent,
+      activeMatchBorder: t['accent-fg'],
+      activeMatchColorOverviewRuler: t.fg
+    }
+  }
 }
 
 // The bits of xterm's internals we have to reach for: its scrollbar geometry and
@@ -137,24 +153,6 @@ function wheelLines(term: Terminal, ev: WheelEvent): number {
 const MIN_FIT_W = 40
 const MIN_FIT_H = 30
 
-/**
- * Match highlighting for the find bar. xterm composites these itself and only
- * accepts plain #RRGGBB here — no alpha — so they are pre-mixed against the
- * terminal background instead of reusing the translucent selection blue.
- * The overview-ruler entries are required by the type but inert: that ruler only
- * draws when `overviewRulerWidth` is set, which it isn't.
- */
-const SEARCH_OPTS: ISearchOptions = {
-  decorations: {
-    matchBackground: '#3e5068',
-    matchBorder: '#4f6687',
-    matchOverviewRuler: '#5a769f',
-    activeMatchBackground: '#5a769f',
-    activeMatchBorder: '#93aacb',
-    activeMatchColorOverviewRuler: '#c7cfda'
-  }
-}
-
 // One long-lived xterm bound to a single session's pty. It is created once and
 // never destroyed on selection change — only hidden — so scrollback survives
 // switching (plan: TerminalHost). Visibility is driven by `visible`.
@@ -175,6 +173,9 @@ export function TerminalView({
   visibleRef.current = visible
   const setLive = useStore((s) => s.setLive)
   const setActivity = useStore((s) => s.setActivity)
+  // Subscribed, not read once: this canvas has to be repainted by hand when the
+  // theme changes (see the effect further down).
+  const theme = useStore((s) => s.theme)
 
   // --- find bar (Ctrl+F) ---
   // The addon is reached through a ref because the key handler that opens the
@@ -200,7 +201,9 @@ export function TerminalView({
     const search = searchRef.current
     const { term, caseSensitive } = findRef.current
     if (!search || !term) return
-    const opts = { ...SEARCH_OPTS, caseSensitive }
+    // Read at call time, not captured: a theme swap has to reach the next
+    // jump without this callback being rebuilt.
+    const opts = { ...searchOpts(useStore.getState().theme), caseSensitive }
     if (back) search.findPrevious(term, opts)
     else search.findNext(term, opts)
   }, [])
@@ -228,7 +231,7 @@ export function TerminalView({
       // bundled; it is what the mono bits of the UI chrome ask for.
       fontWeight: 400,
       fontWeightBold: 700,
-      theme: DARK_THEME
+      theme: xtermTheme(useStore.getState().theme)
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -681,11 +684,28 @@ export function TerminalView({
     // incremental keeps the current match while the term is being extended,
     // instead of hopping to the next one on every keystroke
     search.findNext(find.term, {
-      ...SEARCH_OPTS,
+      ...searchOpts(theme),
       caseSensitive: find.caseSensitive,
       incremental: true
     })
-  }, [find.open, find.term, find.caseSensitive])
+    // `theme` is a dependency so a swap re-runs the search and repaints the
+    // decorations — xterm has already drawn them in the old palette.
+  }, [find.open, find.term, find.caseSensitive, theme])
+
+  // --- repaint the canvas on a theme swap ---
+  // The rest of the app gets this for free: a `var()` re-resolves and the
+  // browser repaints. xterm does not — it holds a plain object of colours and
+  // rebuilds its WebGL glyph atlas from it — so a swap has to be handed over by
+  // hand, and until it is, the terminal keeps running the old palette inside a
+  // window that has already changed around it. Assigning `options.theme`
+  // invalidates the atlas and redraws every cell, including the scrollback.
+  //
+  // No fit: the palette does not touch cell metrics, so the row/column count is
+  // unchanged and the pty must not be resized (every resize makes a TUI repaint).
+  React.useEffect(() => {
+    const term = termRef.current
+    if (term) term.options.theme = xtermTheme(theme)
+  }, [theme])
 
   // --- apply terminal zoom (global font size) + refit ---
   const fontSize = useStore((s) => s.terminalFontSize)
@@ -719,7 +739,7 @@ export function TerminalView({
         inset: 0,
         padding: '10px 14px 12px 16px',
         overflow: 'hidden',
-        background: 'var(--terminal-bg)',
+        background: 'var(--bg)',
         visibility: visible ? 'visible' : 'hidden'
       }}
     >
@@ -789,13 +809,14 @@ function FindBar({
         alignItems: 'center',
         gap: 4,
         height: 32,
-        padding: '0 4px 0 9px',
+        padding: '0 4px 0 8px',
         background: 'var(--panel)',
-        border: '1px solid var(--border)',
-        boxShadow: '0 12px 30px -14px rgba(0,0,0,.8)'
+        border: '1px solid var(--border-strong)',
+        borderRadius: 'var(--radius)',
+        boxShadow: '0 12px 30px -14px var(--shadow)'
       }}
     >
-      <span style={{ display: 'flex', color: 'var(--text-3)', flex: 'none' }}>
+      <span style={{ display: 'flex', color: 'var(--dim)', flex: 'none' }}>
         <Search size={13} />
       </span>
       <input
@@ -826,7 +847,7 @@ function FindBar({
           height: 24,
           background: 'transparent',
           border: 0,
-          color: 'var(--text)',
+          color: 'var(--fg)',
           fontFamily: MONO,
           fontSize: 12.5,
           padding: 0,
@@ -842,16 +863,16 @@ function FindBar({
         style={{
           minWidth: 58,
           textAlign: 'right',
-          fontSize: 11,
+          fontSize: 11.5,
           fontFamily: MONO,
-          color: none ? 'var(--danger)' : 'var(--text-3)',
+          color: none ? 'var(--danger)' : 'var(--dim)',
           flex: 'none'
         }}
       >
         {counter}
       </span>
       <FindBtn title="Match case" active={state.caseSensitive} onClick={onToggleCase}>
-        <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '.3px' }}>Aa</span>
+        <span style={{ fontSize: 11.5, fontWeight: 600, letterSpacing: '.3px' }}>Aa</span>
       </FindBtn>
       <FindBtn title="Previous match (Shift+Enter)" onClick={() => onStep(true)}>
         <Chevron size={13} style={{ transform: 'rotate(-90deg)' }} />
@@ -892,8 +913,8 @@ function FindBtn({
         height: 24,
         flex: 'none',
         border: 0,
-        background: active ? 'var(--sel)' : hover ? 'var(--field-2)' : 'transparent',
-        color: active ? 'var(--text)' : hover ? 'var(--text)' : 'var(--text-2)',
+        background: active ? 'var(--sel)' : hover ? 'var(--card2)' : 'transparent',
+        color: active ? 'var(--fg)' : hover ? 'var(--fg)' : 'var(--muted)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',

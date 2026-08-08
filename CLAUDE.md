@@ -34,22 +34,26 @@ electron-vite, three build targets, aliases `@shared` / `@renderer`.
 
 `src/preload/index.ts` — the typed `window.vivarium`. The renderer never touches `ipcRenderer`.
 
-`src/shared/` — `ipc.ts` (`CH`, channel names), `types.ts` (all cross-process types), `models.ts`.
-That last is the only *logic* in `@shared` and earns it: both processes name models, so a second
-copy of the rule would let two surfaces disagree about what is answering you. It returns anything
-it does not recognise **unchanged** — inventing a name is how a chip ends up lying.
+`src/shared/` — `ipc.ts` (`CH`, channel names), `types.ts` (all cross-process types), `models.ts`,
+`theme.ts`. `models.ts` is the only *logic* in `@shared` and earns it: both processes name models,
+so a second copy of the rule would let two surfaces disagree about what is answering you. It
+returns anything it does not recognise **unchanged** — inventing a name is how a chip ends up
+lying. `theme.ts` is the two-value sliver of the palette that main also needs: `ThemeName` and
+`THEME_BG`, because `BrowserWindow.backgroundColor` paints under the document and main has neither
+CSS nor the renderer's `localStorage`.
 
 `src/renderer/src/` — React + zustand + xterm; `state/store.ts` is the single store for UI state.
 
-- `theme.ts` — the palette, `SESSION_TYPES` (the one place type wording, hue and popover geometry
-  live, with `TypeIcon` so types never depend on colour alone), and the chat window's own tokens:
-  `CHAT` (plain strings, **not** CSS custom properties, precisely so they cannot leak into the
-  sidebar, title bar or terminals — its greys are *copied* from the agent tab and must move
-  together), `CHAT_TEXT` (one type scale, so "make the chat smaller" is one edit and not thirty),
-  `CODE` (the syntax palette, held apart and muted a step further, with three deliberate
-  near-misses of `CHAT` hues documented in place) and `SANS` (the single non-mono exception: the
-  question card is a form). Hover, press and the control radius are `.vchat`-scoped rules in
-  `GLOBAL_CSS`; anything clickable that is not a `<button>` opts in with `data-click`.
+- `theme.ts` — **the whole palette, three themes wide**, plus `SESSION_TYPES` (the one place type
+  wording, hue and popover geometry live, with `TypeIcon` so types never depend on colour alone).
+  `MIDNIGHT` is both the default and the schema — `Tokens` derives from its keys, so a theme that
+  forgets a token does not compile, and there is no fallback because a missing custom property
+  renders as nothing. `CHAT` / `CODE` are now **names for `var(--x)`, not a second palette**; they
+  survive so the log can say "the page", "an inset card", "the fourth grey" instead of spelling a
+  token 200 times, and nothing in them may hold a literal again. `CHAT_TEXT` is one type scale
+  (12.5 base, 11.5 for anything that is a label). Hover, press and the control radius are
+  `.vchat`-scoped rules in `GLOBAL_CSS`; anything clickable that is not a `<button>` opts in with
+  `data-click`.
 - `components/chat/` — `ChatView` (chrome, log column, pinned bands, composer), `ChatLog`,
   `Markdown`, `highlight.ts`, `attach`.
 - `Markdown` is hand-rolled and built around one rule: **everything renders as text nodes and
@@ -75,6 +79,32 @@ main, so there is no return value to adopt. It carries the whole `Config` anyway
 `adoptConfig`, so the store keeps having exactly one way to take a config update.
 
 ## Invariants — do not break
+
+### Colour and theming
+
+- **No literal colour anywhere outside `theme.ts`.** Two exceptions, both deliberate and both
+  documented in place: the close button's hover red (`#c2352a` in `TitleBar` — Windows' red, not
+  Vivarium's, and the same on every theme) and `Logo.tsx` (brand artwork, the same paint as
+  `build/icon.svg`, which Windows draws in the taskbar knowing nothing about themes). A grep for
+  `#[0-9a-f]{3,8}` outside those two files should come back empty.
+- **Three themes — midnight (default), graphite, paper — and every token is defined by all three.**
+  Values live in `renderer/theme.ts`; `Tokens` is derived from `MIDNIGHT`'s keys so an incomplete
+  theme is a type error.
+- **`data-theme` on `<html>` is the authority.** The pre-paint script in `renderer/index.html`
+  resolves it from `localStorage['vivarium.theme']` **before any module loads** — that is what
+  stops a dark→light snap, and it is why the key and the three names are spelled as literals there.
+  `store.theme` is a mirror for React to re-render off; only `setTheme` writes both, in that order.
+- **A `var()` re-resolves itself; four consumers do not, and must be told.** xterm's `theme` and
+  its find-bar `ISearchOptions` (canvas, and the latter refuses alpha), the taskbar badge (canvas),
+  and `BrowserWindow.backgroundColor` (another process). They read `tokensFor(name)`; the terminals
+  repaint via an effect on `theme` and main is pushed the page colour on `window:set-background`.
+- **Ink is never a constant.** `--accent2` is a light orange on midnight, a light amber on graphite
+  and a dark rust on paper, so anything filled names its own ink token — `--on-accent2`,
+  `--danger-fg`, `--send-fg`, `--accent-fg`. This is the rule paper breaks first if ignored.
+- **The theme swap transitions; progress fills opt out** with `data-meter`. A meter animates its
+  own `width` and escalates through three hues, and cross-fading colour on top of that smears it.
+- The ANSI palette is per theme: Campbell on the dark two, a darkened set on paper where `white`
+  and `brightWhite` are **deliberately inverted** so `\e[97m` stays readable on cream.
 
 ### Docker and persistence
 

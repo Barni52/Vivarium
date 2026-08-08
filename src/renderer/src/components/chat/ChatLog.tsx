@@ -25,10 +25,11 @@ import { langForPath, tokenize } from './highlight'
 // was the bug: one grey mono line each, differing only in a word most of which
 // are five characters long.
 //
-//   you     — a lifted band across the full row width, coral role word, bright
-//             prose. It is what the eye finds when scrolling back.
-//   claude  — no band, cool cyan role word, prose one step below white. The page.
-//   the rest — bordered mono cards on `CHAT.card`. Tool calls, command output,
+//   you     — a raised `--card` bubble across the full row width, `--role-you`
+//             role word. It is what the eye finds when scrolling back.
+//   claude  — no bubble at all: bare `--bg`, `--accent2` role word, 1.55 leading.
+//             The page itself, which is what most of the log is.
+//   the rest — bordered mono cards on `CHAT.inset`. Tool calls, command output,
 //             plans, clocks and stops all live in that one family, so a burst of
 //             twelve of them reads as one block of machinery.
 
@@ -70,9 +71,16 @@ const mono: React.CSSProperties = {
 /**
  * One log row: the meta line, then the message under it at full width.
  *
- * `band` is what a `you` row wears. It is a white lift rather than a tint of the
- * accent, so it reads the same whatever hue `CHAT.you` is set to and never
- * fights the coral role word sitting inside it.
+ * `band` is what a `you` row wears — a real `--card` bubble now, one step up
+ * from the page. It used to be a white lift at 4%, chosen so it would read the
+ * same whatever hue the role word was set to; with a palette that has a surface
+ * *for* this, the lift is just a weaker way of drawing the same thing.
+ *
+ * Everything else sits on bare `--bg` with no surface at all, which is the whole
+ * of the treatment: what Claude said is the page, what you said is on top of it,
+ * and the machinery is in bordered cards. Role words are 500 weight in their own
+ * hue, behind a `--dim` timestamp — the one place in the log where colour and
+ * weight are both spent on four characters.
  */
 function Line({
   at,
@@ -84,7 +92,7 @@ function Line({
   at: number
   role: string
   color?: string
-  /** the lifted background that marks a turn you started */
+  /** the raised bubble that marks a turn you started */
   band?: boolean
   children: React.ReactNode
 }): React.ReactElement {
@@ -93,15 +101,15 @@ function Line({
       style={{
         padding: ROW_PAD,
         background: band ? CHAT.band : undefined,
-        // Only the banded row has an edge to round; every other row is a
-        // transparent block on the page and a radius on it would draw nothing.
+        // Only the bubble has an edge to round; every other row is a transparent
+        // block on the page and a radius on it would draw nothing.
         borderRadius: band ? CHAT.radiusCard : undefined
       }}
     >
       <div
         style={{
           display: 'flex',
-          gap: 7,
+          gap: 8,
           alignItems: 'baseline',
           marginBottom: META_GAP,
           fontFamily: MONO,
@@ -164,7 +172,10 @@ function Card({
         // where the card is itself a flex item in some future wrapper.
         minWidth: 0,
         padding: '8px 12px',
-        background: CHAT.card,
+        // `--card2`, not `--card`: the `you` bubble is the raised surface in this
+        // log and a tool card is an *inset* one, so they must not be the same
+        // fill. The hairline is what makes it a card at all.
+        background: CHAT.inset,
         border: `1px solid ${tone ?? CHAT.borderCard}`,
         borderRadius: CHAT.radiusCard,
         color: CHAT.dim,
@@ -367,7 +378,7 @@ export const LogRow = React.memo(function LogRow({
                           border: `1px solid ${picked ? CHAT.hold : CHAT.border}`,
                           borderRadius: CHAT.radius,
                           color: picked ? CHAT.text : CHAT.dim3,
-                          background: picked ? CHAT.card : 'transparent'
+                          background: picked ? CHAT.inset : 'transparent'
                         }}
                       >
                         {picked ? '✓ ' : ''}
@@ -386,7 +397,7 @@ export const LogRow = React.memo(function LogRow({
                         border: `1px dashed ${CHAT.hold}`,
                         borderRadius: CHAT.radius,
                         color: CHAT.text,
-                        background: CHAT.card
+                        background: CHAT.inset
                       }}
                     >
                       ✓ {t}
@@ -408,7 +419,7 @@ export const LogRow = React.memo(function LogRow({
                       maxHeight: 300,
                       overflow: 'auto',
                       padding: '6px 12px',
-                      background: CHAT.card,
+                      background: CHAT.inset,
                       border: `1px solid ${CHAT.borderCard}`,
                       borderRadius: CHAT.radiusCard
                     }}
@@ -430,7 +441,7 @@ export const LogRow = React.memo(function LogRow({
         <Line at={entry.at} role="plan" color={CHAT.hold}>
           <div
             style={{
-              background: CHAT.card,
+              background: CHAT.inset,
               border: `1px solid ${CHAT.borderCard}`,
               borderLeft: `2px solid ${CHAT.hold}`,
               borderRadius: CHAT.radiusCard,
@@ -466,7 +477,7 @@ export const LogRow = React.memo(function LogRow({
         <Line
           at={entry.at}
           role="stop"
-          color={entry.tone === 'alert' ? CHAT.danger : CHAT.dim2}
+          color={entry.tone === 'alert' ? CHAT.danger : CHAT.stop}
         >
           <Card tone={entry.tone === 'alert' ? CHAT.danger : undefined}>
             {/* A crash row carries the CLI's own message, which can be a whole
@@ -839,7 +850,7 @@ function ToolCard({
             ...mono,
             marginTop: 6,
             border: `1px solid ${CHAT.borderCard}`,
-            background: CHAT.card,
+            background: CHAT.inset,
             borderRadius: CHAT.radiusCard,
             // The rounded corner has to clip the tinted rows, or a `+` line at
             // the top of a diff paints its green back into the square corner.
@@ -864,9 +875,9 @@ function ToolCard({
                 minWidth: '100%',
                 background:
                   r.sign === '+'
-                    ? 'rgba(111,191,139,.10)'
+                    ? 'var(--ins-soft)'
                     : r.sign === '-'
-                      ? 'rgba(224,108,108,.10)'
+                      ? 'var(--del-soft)'
                       : 'transparent',
                 // What the sign and any uncoloured token inherit — full prose on a
                 // changed line, dim on the context around it, the same two greys
@@ -902,7 +913,7 @@ function ToolCard({
             marginTop: 6,
             padding: '9px 12px',
             border: `1px solid ${CHAT.borderCard}`,
-            background: CHAT.card,
+            background: CHAT.inset,
             borderRadius: CHAT.radiusCard,
             color: CHAT.dim,
             whiteSpace: 'pre-wrap',

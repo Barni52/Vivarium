@@ -11,8 +11,8 @@ import { Elapsed } from './Elapsed'
 const durationStyle: React.CSSProperties = {
   flex: 'none',
   fontFamily: MONO,
-  fontSize: 10.5,
-  color: 'var(--text-3)'
+  fontSize: 11.5,
+  color: 'var(--dim)'
 }
 
 export function SessionRow({ project, session }: { project: Project; session: Session }): React.ReactElement {
@@ -120,13 +120,24 @@ export function SessionRow({ project, session }: { project: Project; session: Se
   // the live state (it is the thing you haven't seen yet), and a waiting agent
   // shows the same "?" whether or not it was flagged: one you are watching is
   // still one that is waiting for you.
-  let badge: { glyph: string; color: string; title: string } | null = null
+  // Each badge carries its own ink as well as its fill. A glyph on a filled disc
+  // cannot share one ink across two fills once there is a light theme — see the
+  // same pair in ProjectRow. The "?" is `--accent2` rather than this session's
+  // *type* hue for the same reason: the type is already said by the glyph two
+  // columns to the left, and a per-type fill would need a per-type ink.
+  let badge: { glyph: string; color: string; ink: string; title: string } | null = null
   if (isAgent && attention === 'finished') {
-    badge = { glyph: '!', color: 'var(--danger)', title: 'Agent finished — click to view' }
+    badge = {
+      glyph: '!',
+      color: 'var(--danger)',
+      ink: 'var(--danger-fg)',
+      title: 'Agent finished — click to view'
+    }
   } else if (isAgent && (waiting || attention === 'question')) {
     badge = {
       glyph: '?',
-      color: accent,
+      color: 'var(--accent2)',
+      ink: 'var(--on-accent2)',
       title: 'Agent is waiting for you — click to answer'
     }
   }
@@ -134,23 +145,28 @@ export function SessionRow({ project, session }: { project: Project; session: Se
   // has done rather than how long you have been away from your desk.
   const until = waiting ? waitingSince : undefined
 
-  const bg = selected ? 'var(--sel)' : hover ? 'var(--row-hover)' : 'transparent'
-  const nameColor = selected ? 'var(--text)' : 'var(--text-2)'
+  // One token for both. The palette gives hover and selected the same fill on
+  // purpose — what tells them apart is the 3px accent bar and the brighter name,
+  // which is a difference you can see without moving the mouse away to check.
+  const bg = selected || hover ? 'var(--sel)' : 'transparent'
+  const nameColor = selected ? 'var(--fg)' : 'var(--muted)'
 
   // state dot (shown when not hovering / not editing)
   // A working agent doesn't use this dot at all — it renders ThinkingDots in
   // the agent accent instead, so "agent busy" (violet ellipsis) and "container
   // up" (green square on the project header) can't be mistaken for each other.
-  let dotBorder = '#6f7a92'
+  let dotBorder = 'var(--dim)'
   let dotTitle = ''
   if (isAgent) {
     dotTitle = 'Agent idle'
   } else {
     dotTitle = live ? 'Session live' : 'Session idle'
-    dotBorder = live ? '#42be65' : '#6f7a92'
+    dotBorder = live ? 'var(--ok)' : 'var(--dim)'
   }
 
-  const selBar = `inset 2px 0 0 ${selected ? 'var(--accent)' : 'transparent'}`
+  // 3px, and drawn as an inset shadow rather than a border so the row's own
+  // geometry does not shift by 3 the moment you select it.
+  const selBar = `inset 3px 0 0 ${selected ? 'var(--accent)' : 'transparent'}`
   const dropShadow =
     dropIndicator === 'before'
       ? 'inset 0 2px 0 0 var(--accent)'
@@ -200,10 +216,14 @@ export function SessionRow({ project, session }: { project: Project; session: Se
         display: 'flex',
         alignItems: 'center',
         gap: 8,
-        height: 31,
+        height: 30,
+        // The 10 here is half of the 30px indent — the rail in ProjectRow is the
+        // other 20. Changing either without the other moves the session glyphs
+        // off the step they are meant to sit on.
         padding: '0 8px 0 10px',
         cursor: 'pointer',
         background: bg,
+        transition: 'background-color .1s',
         boxShadow: dropShadow ? `${selBar}, ${dropShadow}` : selBar
       }}
     >
@@ -227,10 +247,11 @@ export function SessionRow({ project, session }: { project: Project; session: Se
           style={{
             flex: 1,
             minWidth: 0,
-            background: 'var(--field)',
+            background: 'var(--input)',
             border: '1px solid var(--accent)',
-            color: 'var(--text)',
-            fontSize: 13,
+            borderRadius: 'var(--radius-sm)',
+            color: 'var(--fg)',
+            fontSize: 12.5,
             height: 24,
             padding: '0 6px',
             outline: 'none'
@@ -240,7 +261,12 @@ export function SessionRow({ project, session }: { project: Project; session: Se
         <span
           style={{
             flex: 1,
-            fontSize: 13,
+            // `minWidth: 0` is what makes the ellipsis real. A flex item's
+            // automatic minimum size is its content, so without it a long
+            // session name pushes the row wider than the sidebar instead of
+            // truncating, and `textOverflow` never fires.
+            minWidth: 0,
+            fontSize: 12.5,
             color: nameColor,
             overflow: 'hidden',
             textOverflow: 'ellipsis',
@@ -294,8 +320,8 @@ export function SessionRow({ project, session }: { project: Project; session: Se
             marginRight: 1,
             borderRadius: '50%',
             background: badge.color,
-            color: '#fff',
-            fontSize: 11,
+            color: badge.ink,
+            fontSize: 11.5,
             fontWeight: 700,
             lineHeight: 1,
             display: 'flex',
@@ -350,8 +376,9 @@ function RowBtn({
         width: 24,
         height: 24,
         border: 0,
-        background: hover ? (danger ? 'rgba(250,77,86,.14)' : 'var(--field-2)') : 'transparent',
-        color: hover ? (danger ? 'var(--danger)' : 'var(--text)') : 'var(--text-2)',
+        borderRadius: 'var(--radius-sm)',
+        background: hover ? (danger ? 'var(--danger-soft)' : 'var(--card2)') : 'transparent',
+        color: hover ? (danger ? 'var(--danger)' : 'var(--fg)') : 'var(--muted)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',

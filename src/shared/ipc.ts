@@ -119,6 +119,13 @@ export const CH = {
   windowMinimize: 'window:minimize',
   windowMaximize: 'window:maximize',
   windowClose: 'window:close',
+  // The theme's page colour, pushed down so Chromium paints the same thing the
+  // document does. `BrowserWindow.backgroundColor` shows through wherever the
+  // renderer has not drawn yet — the frame before first paint, and the edge you
+  // are dragging during a resize — and main has no way to know which theme is on
+  // (it is in the renderer's localStorage). So the renderer tells it, at boot
+  // and on every switch.
+  setWindowBackground: 'window:set-background',
   // Confirm-on-quit handshake: main intercepts every close path and emits
   // quitRequested; the renderer shows its dialog and sends confirmQuit back once
   // the user accepts, which lets the real close through.

@@ -27,7 +27,15 @@ import type {
   VolumeInfo
 } from '@shared/types'
 import { behindIds } from '../claude'
-import { ADD_SESSION_POPOVER } from '../theme'
+import {
+  ADD_SESSION_POPOVER,
+  MONO,
+  THEMES,
+  applyTheme,
+  currentTheme,
+  tokensFor,
+  type ThemeName
+} from '../theme'
 
 /**
  * Why an agent session is flagged: turn finished, or blocked on the user —
@@ -266,6 +274,18 @@ interface AppState {
   expanded: Record<string, boolean>
   sidebarWidth: number
   sidebarCollapsed: boolean
+  /**
+   * Which theme is on.
+   *
+   * **Mirrored state, and the mirror is the point.** `data-theme` on `<html>` is
+   * the authority — it is what the CSS keys off and what the pre-paint script in
+   * `index.html` sets before any of this exists — but every consumer that is not
+   * CSS needs to *re-render* when it changes: the terminals repaint their canvas
+   * theme, the title bar re-outlines a swatch. An attribute is not reactive and
+   * a zustand field is, so this holds a copy and `setTheme` writes both. Nothing
+   * else may write `data-theme`.
+   */
+  theme: ThemeName
   terminalFontSize: number
   /**
    * The chat window's zoom factor, shared by every chat session the way
@@ -388,6 +408,9 @@ interface AppState {
   toggle: (projectId: string) => void
   setSidebarWidth: (n: number) => void
   toggleSidebar: () => void
+  setTheme: (name: ThemeName) => void
+  /** the next theme in `THEMES` order, wrapping — what Ctrl+Shift+T does */
+  cycleTheme: () => void
   zoomTerminal: (delta: number) => void
   resetTerminalZoom: () => void
   /** The chat window's own zoom — one step per call, the terminal's convention. */
@@ -509,11 +532,17 @@ function badgeDataUrl(count: number): string {
   if (!g) return ''
   g.beginPath()
   g.arc(16, 16, 16, 0, Math.PI * 2)
-  g.fillStyle = '#fa4d56'
+  // A canvas is one of the four places in this app that cannot resolve a custom
+  // property (see the note on MIDNIGHT in theme.ts), so the values are read off
+  // the active theme's token map by name instead. `currentTheme()` rather than a
+  // captured value: a badge is redrawn on every change to the notification map,
+  // which is long after the theme may have been switched.
+  const t = tokensFor(currentTheme())
+  g.fillStyle = t.danger
   g.fill()
   const label = count > 9 ? '9+' : String(count)
-  g.fillStyle = '#fff'
-  g.font = `bold ${label.length > 1 ? 16 : 20}px 'IBM Plex Sans', system-ui, sans-serif`
+  g.fillStyle = t['danger-fg']
+  g.font = `bold ${label.length > 1 ? 16 : 20}px ${MONO}`
   g.textAlign = 'center'
   g.textBaseline = 'middle'
   g.fillText(label, 16, 17)
@@ -566,8 +595,10 @@ export const useStore = create<AppState>((set, get) => ({
   outputHeight: 200,
   selectedSessionId: null,
   expanded: {},
-  sidebarWidth: 292,
+  sidebarWidth: 288,
   sidebarCollapsed: false,
+  // Adopted from the attribute, never decided here — see the field's note.
+  theme: currentTheme(),
   terminalFontSize: 13,
   chatZoom: 1,
   live: {},
@@ -836,6 +867,26 @@ export const useStore = create<AppState>((set, get) => ({
 
   setSidebarWidth: (n) => set({ sidebarWidth: Math.max(232, Math.min(460, n)) }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+
+  // The attribute (which the CSS reads and localStorage remembers) and the
+  // store field (which React re-renders off) always move together, in that
+  // order — see the `theme` field's note for why there are two of them.
+  //
+  // The window's own background colour goes with them. It is painted by Chromium
+  // underneath the document — during a resize, and for the frame before the
+  // renderer has drawn anything — so a `paper` window without this flashes a
+  // near-black band down whichever edge you are dragging.
+  setTheme: (name) => {
+    applyTheme(name)
+    set({ theme: name })
+    window.vivarium.setWindowBackground(tokensFor(name).bg)
+  },
+  cycleTheme: () => {
+    const i = THEMES.findIndex((t) => t.name === get().theme)
+    // `i + 1` off a -1 lands on 0, which is the default theme — the right answer
+    // for a `theme` that somehow is not in the list.
+    get().setTheme(THEMES[(i + 1) % THEMES.length].name)
+  },
   zoomTerminal: (delta) =>
     set((s) => ({ terminalFontSize: Math.max(8, Math.min(32, s.terminalFontSize + delta)) })),
   resetTerminalZoom: () => set({ terminalFontSize: 13 }),

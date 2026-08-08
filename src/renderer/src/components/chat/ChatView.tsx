@@ -14,7 +14,7 @@ import type {
 } from '@shared/types'
 import { modelName, modelOptionLabel } from '@shared/models'
 import { useStore } from '../../state/store'
-import { CHAT, CHAT_EDGE as EDGE, CHAT_TEXT as TYPE, MONO, SANS, ctxColor } from '../../theme'
+import { CHAT, CHAT_EDGE as EDGE, CHAT_TEXT as TYPE, MONO, ctxColor } from '../../theme'
 import { formatElapsed } from '../Elapsed'
 import { Check, Copy, Refresh, Undo, ZoomIn, ZoomOut } from '../Icons'
 import { LogRow, type LogHandlers } from './ChatLog'
@@ -824,7 +824,7 @@ export function ChatView({
                 display: 'block',
                 margin: '0 auto 18px',
                 fontFamily: MONO,
-                fontSize: 10.5,
+                fontSize: 11.5,
                 border: `1px solid ${CHAT.border}`,
                 background: 'transparent',
                 color: CHAT.dim3,
@@ -920,9 +920,12 @@ export function ChatView({
             style={{
               padding: '14px 16px 12px',
               background: CHAT.composer,
-              border: `1px solid ${focus ? CHAT.border : CHAT.borderComposer}`,
+              // --border-strong at rest and --accent on focus. The box you type
+              // into is the one edge in this window that is meant to be seen
+              // without being looked for, which is what --border-strong is for.
+              border: `1px solid ${focus ? 'var(--accent)' : CHAT.borderComposer}`,
               borderRadius: CHAT.radiusCard,
-              boxShadow: '0 8px 30px rgba(0,0,0,.35)',
+              boxShadow: '0 8px 30px -18px var(--shadow)',
               transition: 'border-color .16s'
             }}
           >
@@ -964,11 +967,22 @@ export function ChatView({
                     whiteSpace: 'pre-wrap',
                     overflowWrap: 'break-word',
                     fontSize: TYPE.prose,
-                    lineHeight: 1.55,
+                    lineHeight: TYPE.proseLine,
                     color: CHAT.text
                   }}
                 >
-                  <span style={{ color: CHAT.you }}>{commandToken}</span>
+                  {/* Heavier as well as coloured — a slash command is the one
+                      thing you can type here that the CLI executes rather than
+                      reads. **Not `fontWeight`.** The twin may differ from the
+                      textarea in colour only: a bold run is wider than the
+                      regular run the textarea is still laying out underneath,
+                      so every glyph after the command would slide out from
+                      under the real caret. A text stroke is painted, not laid
+                      out — the advance widths are untouched, and the weight is
+                      the same weight. */}
+                  <span style={{ color: CHAT.cmd, WebkitTextStroke: '.4px currentColor' }}>
+                    {commandToken}
+                  </span>
                   {draft.slice(commandToken.length)}
                 </div>
               )}
@@ -1023,7 +1037,7 @@ export function ChatView({
                   color: commandToken ? 'transparent' : CHAT.text,
                   caretColor: CHAT.text,
                   fontSize: TYPE.prose,
-                  lineHeight: 1.55,
+                  lineHeight: TYPE.proseLine,
                   padding: 0,
                   resize: 'none',
                   outline: 'none',
@@ -1043,20 +1057,25 @@ export function ChatView({
                   alignItems: 'center',
                   gap: 7,
                   fontFamily: MONO,
-                  fontSize: 10.5,
+                  fontSize: TYPE.gutter,
                   color: CHAT.dim3
                 }}
               >
                 {/* Drawn exactly like the header's active chip — same hue on the
                     border and the word, same radius, no fill. The two readings
                     of the mode are far apart on screen, so looking the same is
-                    what makes them read as one fact rather than two controls. */}
+                    what makes them read as one fact rather than two controls.
+                    `plan` is the quiet one: a --border-strong outline and a
+                    --muted word, which is the same "outlined, not shouting"
+                    treatment every inert control in the app wears. `bypass`
+                    takes --accent2 on both, because it is the state worth
+                    noticing. */}
                 <span
                   style={{
-                    padding: '2px 7px',
-                    border: `1px solid ${mode === 'plan' ? CHAT.mode : CHAT.you}`,
+                    padding: '2px 6px',
+                    border: `1px solid ${mode === 'plan' ? 'var(--border-strong)' : CHAT.bypass}`,
                     borderRadius: CHAT.radius,
-                    color: mode === 'plan' ? CHAT.mode : CHAT.you
+                    color: mode === 'plan' ? CHAT.mode : CHAT.bypass
                   }}
                 >
                   {mode === 'plan' ? 'plan' : 'bypass'}
@@ -1072,7 +1091,7 @@ export function ChatView({
                   gap: 14
                 }}
               >
-                <span style={{ fontFamily: MONO, fontSize: 10.5, color: CHAT.dim4 }}>
+                <span style={{ fontFamily: MONO, fontSize: TYPE.gutter, color: CHAT.dim4 }}>
                   {working ? 'esc interrupt · ⏎ queue' : '⏎ send · ⇧⏎ newline'}
                 </span>
                 {/* Mirrors Enter, and the only reason it exists is that Enter is
@@ -1082,14 +1101,22 @@ export function ChatView({
                 <button
                   onClick={send}
                   disabled={!canSend}
+                  // The one control that opts out of the window's 1.32 hover
+                  // (see GLOBAL_CSS): that number is tuned for the transparent
+                  // chips it mostly lands on, and on a saturated fill it reads
+                  // as the button changing colour rather than lighting up.
+                  data-send=""
                   style={{
-                    padding: '7px 16px',
+                    padding: '6px 16px',
                     border: 0,
                     fontFamily: MONO,
-                    fontSize: 11.5,
+                    fontSize: TYPE.code,
                     fontWeight: 500,
                     transition: '.14s',
-                    background: canSend ? CHAT.you : CHAT.well,
+                    // The one filled warm control in the window. Disabled drops
+                    // to the well rather than dimming the fill — a 40%-opacity
+                    // red still reads as a red button you are allowed to press.
+                    background: canSend ? CHAT.send : CHAT.well,
                     color: canSend ? CHAT.onAccent : CHAT.dim2,
                     cursor: canSend ? 'pointer' : 'default'
                   }}
@@ -1238,7 +1265,7 @@ function Header({
         <span
           style={{
             fontFamily: MONO,
-            fontSize: 11,
+            fontSize: 11.5,
             color: CHAT.dim3,
             whiteSpace: 'nowrap',
             overflow: 'hidden',
@@ -1255,36 +1282,39 @@ function Header({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 7,
+            gap: 8,
             fontFamily: MONO,
-            fontSize: 11,
+            fontSize: TYPE.gutter,
             color: CHAT.dim2
           }}
         >
           <span style={{ color: CHAT.dim }}>
             {context ? `${tok(context.totalTokens)} / ${tok(context.maxTokens)}` : '— / —'}
           </span>
-          {/* A 10px well with its own edge, not a 3px hairline drawn on top of
-              hairlines. At 3px against `borderSoft` the empty half of the bar
-              carried exactly the weight of the rules it sat between, so the one
-              reading in this header meant to be taken at a glance had to be found
-              first and then squinted at; and any fill under about 4% had no pixel
-              left to draw in, which is precisely the reading where a meter is
-              doing its job. The fill keeps a minimum sliver for the same reason —
-              "a little" must never render as "none". */}
+          {/* 84×5 on --track: wider and thinner than the title bar's quota pills,
+              because this one is read continuously while the other two are
+              glanced at, and length is what a percentage is easiest to judge by.
+              No border — --track carries the empty half on its own, where the
+              hairline this used to have made a 4% fill compete with a rule.
+              The fill keeps a minimum sliver for the same reason: "a little"
+              must never render as "none". */}
           <span
             style={{
-              width: 68,
-              height: 8,
+              width: 84,
+              height: 5,
               display: 'block',
-              background: CHAT.well,
-              border: `1px solid ${CHAT.border}`,
+              background: 'var(--track)',
               borderRadius: 4,
               overflow: 'hidden'
             }}
           >
             {pct !== null && (
               <span
+                // data-meter: out of the global theme transition (GLOBAL_CSS).
+                // This fill already animates its own `width` and escalates
+                // through three hues; cross-fading the colour on top of that
+                // smears the escalation while the bar is moving.
+                data-meter=""
                 style={{
                   display: 'block',
                   height: '100%',
@@ -1326,24 +1356,27 @@ function Header({
             // A hue per mode, not one hue for "whichever is on". The toggle used
             // the same blue either way, so the only thing telling you which mode
             // you were in was reading the two five-letter words — which is the
-            // same failure the log rows had. Blue for plan, coral for bypass, and
-            // the composer's status chip already spells it that way, so the two
-            // places that report the mode now agree.
-            const hue = m === 'plan' ? CHAT.mode : CHAT.you
+            // same failure the log rows had. `plan` is the quiet register
+            // (--border-strong edge, --muted word) and `bypass` is --accent2 on
+            // both; the composer's status chip is drawn from the same two, so
+            // the two places that report the mode agree by construction.
+            const edge = m === 'plan' ? 'var(--border-strong)' : CHAT.bypass
+            const ink = m === 'plan' ? CHAT.mode : CHAT.bypass
             return (
               <button
                 key={m}
                 title={m === 'plan' ? 'Plan first, then approve' : 'Run without asking'}
                 onClick={() => onMode(m)}
                 style={{
-                  padding: '3px 10px',
-                  border: `1px solid ${active ? hue : CHAT.border}`,
+                  padding: '2px 10px',
+                  border: `1px solid ${active ? edge : CHAT.border}`,
+                  borderRadius: CHAT.radius,
                   cursor: 'pointer',
                   fontFamily: MONO,
-                  fontSize: 11,
+                  fontSize: TYPE.gutter,
                   transition: '.14s',
                   background: 'transparent',
-                  color: active ? hue : CHAT.dim2,
+                  color: active ? ink : CHAT.dim2,
                   fontWeight: active ? 500 : 400
                 }}
               >
@@ -1361,15 +1394,18 @@ function Header({
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: 7,
+              gap: 6,
               // Sized to the 34px header: every control in this row clears it
               // with a little air, so nothing has to be clipped or centred by eye.
-              padding: '3px 9px',
-              background: CHAT.well,
-              border: `1px solid ${CHAT.border}`,
+              // Outlined and unfilled like the two mode chips beside it — the
+              // model is a reading, not a state, so it gets --fg rather than a hue.
+              padding: '2px 8px',
+              background: 'transparent',
+              border: '1px solid var(--border-strong)',
+              borderRadius: CHAT.radius,
               color: CHAT.model,
               fontFamily: MONO,
-              fontSize: 11,
+              fontSize: TYPE.gutter,
               cursor: 'pointer',
               transition: 'border-color .14s'
             }}
@@ -1377,8 +1413,9 @@ function Header({
             <span
               title={live ? 'The CLI process is running' : 'No process — the chat is not open'}
               style={{
-                width: 5,
-                height: 5,
+                width: 6,
+                height: 6,
+                flex: 'none',
                 borderRadius: '50%',
                 background: live ? CHAT.live : CHAT.dim4
               }}
@@ -1401,7 +1438,7 @@ function Header({
                   background: CHAT.card,
                   border: `1px solid ${CHAT.border}`,
                   borderRadius: CHAT.radiusCard,
-                  boxShadow: '0 18px 44px -16px rgba(0,0,0,.7)',
+                  boxShadow: '0 18px 44px -16px var(--shadow)',
                   minWidth: 232,
                   maxHeight: 300,
                   overflowY: 'auto',
@@ -1449,7 +1486,7 @@ function Header({
                         <span
                           style={{
                             fontFamily: MONO,
-                            fontSize: 10,
+                            fontSize: 11.5,
                             color: CHAT.dim3,
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
@@ -1492,7 +1529,7 @@ function TodoStrip({ todos }: { todos: ChatTodo[] }): React.ReactElement {
         border: `1px solid ${CHAT.borderCard}`,
         borderRadius: CHAT.radiusCard,
         fontFamily: MONO,
-        fontSize: 10.5,
+        fontSize: 11.5,
         color: CHAT.dim3
       }}
     >
@@ -1755,9 +1792,14 @@ function QuestionCard({
         borderRadius: CHAT.radiusCard,
         // A row's shadow, not a floating panel's — enough to lift it off the
         // page, nothing that claims to be above it.
-        boxShadow: '0 6px 20px -10px rgba(0,0,0,.55)',
+        boxShadow: '0 6px 20px -10px var(--shadow)',
         animation: 'vdlg .16s ease',
-        fontFamily: SANS,
+        // No `fontFamily` of its own. This card used to be the app's one sans
+        // exception — a form with checkboxes and prose descriptions, which in
+        // mono read as terminal output that happened to be clickable. The app is
+        // one face now, so the exception is gone with the second face; what tells
+        // the form apart from the log is its border, its `hold` edge and its
+        // fields, which is enough and was always doing most of the work.
         outline: 'none'
       }}
     >
@@ -1770,14 +1812,14 @@ function QuestionCard({
           borderBottom: `1px solid ${CHAT.borderSoft}`
         }}
       >
-        <span style={{ fontSize: 14, fontWeight: 500, color: CHAT.text }}>Claude is asking</span>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: CHAT.text }}>Claude is asking</span>
         {questions.length > 1 && (
-          <span style={{ fontSize: 12, color: CHAT.dim3 }}>{questions.length} questions</span>
+          <span style={{ fontSize: 11.5, color: CHAT.dim3 }}>{questions.length} questions</span>
         )}
         <div style={{ flex: 1 }} />
         {/* The one place Esc is taught while a card is up. It does here what it
             does everywhere else in the chat: ends the turn. */}
-        <span style={{ fontFamily: MONO, fontSize: 10.5, color: CHAT.dim4 }}>esc interrupts</span>
+        <span style={{ fontFamily: MONO, fontSize: 11.5, color: CHAT.dim4 }}>esc interrupts</span>
       </div>
 
       <div
@@ -1834,7 +1876,7 @@ function QuestionCard({
                     background: CHAT.well,
                     border: `1px solid ${CHAT.border}`,
                     color: CHAT.text,
-                    fontSize: 13,
+                    fontSize: 12.5,
                     padding: '0 10px',
                     outline: 'none'
                   }}
@@ -1858,7 +1900,7 @@ function QuestionCard({
                   <span
                     style={{
                       fontFamily: MONO,
-                      fontSize: 10,
+                      fontSize: 11.5,
                       letterSpacing: '.04em',
                       textTransform: 'uppercase',
                       padding: '2px 6px',
@@ -1890,7 +1932,7 @@ function QuestionCard({
                 <span
                   style={{
                     flex: 'none',
-                    fontSize: 11,
+                    fontSize: 11.5,
                     padding: '2px 9px',
                     borderRadius: 999,
                     background: CHAT.well,
@@ -1974,7 +2016,7 @@ function QuestionCard({
                         background: CHAT.well,
                         border: `1px solid ${CHAT.border}`,
                         color: CHAT.text,
-                        fontSize: 13,
+                        fontSize: 12.5,
                         padding: '0 10px',
                         outline: 'none'
                       }}
@@ -1998,7 +2040,7 @@ function QuestionCard({
           borderTop: `1px solid ${CHAT.borderSoft}`
         }}
       >
-        <span style={{ fontFamily: MONO, fontSize: 10.5, color: CHAT.dim4 }}>
+        <span style={{ fontFamily: MONO, fontSize: 11.5, color: CHAT.dim4 }}>
           {ready ? '⏎ answer' : 'pick an option to answer'}
         </span>
         <div style={{ flex: 1 }} />
@@ -2084,7 +2126,7 @@ function RewindOverlay({
         alignItems: 'center',
         justifyContent: 'center',
         padding: 22,
-        background: 'rgba(8,11,15,.62)',
+        background: 'var(--overlay)',
         animation: 'vover .12s ease'
       }}
     >
@@ -2122,7 +2164,7 @@ function RewindOverlay({
           // under it is one of your messages.
           borderTop: `2px solid ${CHAT.you}`,
           borderRadius: CHAT.radiusCard,
-          boxShadow: '0 28px 70px -22px rgba(0,0,0,.75)',
+          boxShadow: '0 28px 70px -22px var(--shadow)',
           animation: 'vdlg .16s ease',
           fontFamily: MONO,
           outline: 'none'
@@ -2138,9 +2180,9 @@ function RewindOverlay({
             borderBottom: `1px solid ${CHAT.borderSoft}`
           }}
         >
-          <span style={{ fontSize: 13, color: CHAT.text }}>Revert to a message</span>
+          <span style={{ fontSize: 12.5, color: CHAT.text }}>Revert to a message</span>
           <div style={{ flex: 1 }} />
-          <span style={{ fontSize: 10.5, color: CHAT.dim4 }}>
+          <span style={{ fontSize: 11.5, color: CHAT.dim4 }}>
             {busy ? 'reverting…' : '↑↓ · ⏎ revert · esc cancel'}
           </span>
         </div>
@@ -2193,10 +2235,10 @@ function RewindOverlay({
                 {/* What it costs, in the unit the user is actually deciding in.
                     The top row drops one message — itself — and each row below
                     drops one more, so the number is the row's own index + 1. */}
-                <span style={{ flex: 'none', fontSize: 10, color: CHAT.dim4 }}>
+                <span style={{ flex: 'none', fontSize: 11.5, color: CHAT.dim4 }}>
                   {i === 0 ? 'last' : `−${i + 1} msgs`}
                 </span>
-                <span style={{ flex: 'none', fontSize: 10, color: CHAT.dim4 }}>
+                <span style={{ flex: 'none', fontSize: 11.5, color: CHAT.dim4 }}>
                   {formatElapsed(Date.now() - t.at)} ago
                 </span>
               </button>
@@ -2209,7 +2251,7 @@ function RewindOverlay({
             flex: 'none',
             borderTop: `1px solid ${CHAT.borderSoft}`,
             padding: '8px 18px',
-            fontSize: 10.5,
+            fontSize: 11.5,
             color: error ? CHAT.danger : CHAT.dim4
           }}
         >
@@ -2287,18 +2329,18 @@ function OptionRow({
         // A ticked row is tinted in the hold hue at low alpha — the same hue the
         // marker and the dialog's top edge carry, so one colour means "this is
         // the decision" throughout the card.
-        background: on ? 'rgba(194,161,94,.13)' : lit ? CHAT.hover : CHAT.well,
+        background: on ? 'var(--accent2-soft)' : lit ? CHAT.hover : CHAT.well,
         cursor: 'pointer',
         transition: 'background .12s, border-color .12s'
       }}
     >
       <Marker multi={multi} on={on} />
       <span style={{ display: 'grid', gap: 3, minWidth: 0, overflowWrap: 'anywhere' }}>
-        <span style={{ fontSize: 13, fontWeight: 500, color: on ? CHAT.text : CHAT.prose }}>
+        <span style={{ fontSize: 12.5, fontWeight: 500, color: on ? CHAT.text : CHAT.prose }}>
           {label}
         </span>
         {description && (
-          <span style={{ fontSize: 12, lineHeight: 1.45, color: CHAT.dim2 }}>{description}</span>
+          <span style={{ fontSize: 11.5, lineHeight: 1.45, color: CHAT.dim2 }}>{description}</span>
         )}
       </span>
     </button>
@@ -2313,6 +2355,11 @@ function OptionRow({
  * blue against a palette that has no blue in it, and `accent-color` styles the
  * fill and nothing else. Sixteen pixels of border and a tick is the whole
  * control, and it can then be tinted with `CHAT.hold` like the row it sits on.
+ *
+ * (The "a palette that has no blue in it" argument that used to be here is no
+ * longer true — the app has exactly one blue and it is `--accent`. What is still
+ * true is the rest of it: `accent-color` styles the fill and nothing else, so a
+ * native control could not carry the `hold` hue this card is built around.)
  */
 function Marker({ multi, on }: { multi: boolean; on: boolean }): React.ReactElement {
   return (
@@ -2328,7 +2375,7 @@ function Marker({ multi, on }: { multi: boolean; on: boolean }): React.ReactElem
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        borderRadius: multi ? 4 : '50%',
+        borderRadius: multi ? CHAT.radius : '50%',
         border: `1.5px solid ${on ? CHAT.hold : CHAT.dim4}`,
         // Filled for a tick, hollow for a dot: a filled circle with a dot in it
         // is unreadable at 16px, and a hollow box with a tick floating in it is
@@ -2339,7 +2386,10 @@ function Marker({ multi, on }: { multi: boolean; on: boolean }): React.ReactElem
     >
       {on &&
         (multi ? (
-          <Check size={11} color={CHAT.onAccent} />
+          // Dark ink, not `onAccent`. The box is filled with `hold`, which is a
+          // *light* warm hue — the white a filled `--send` or `--accent` takes
+          // has nothing to sit against here.
+          <Check size={11} color="var(--on-accent2)" />
         ) : (
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: CHAT.hold }} />
         ))}
@@ -2375,32 +2425,33 @@ function Bar({ hue, children }: { hue: string; children: React.ReactNode }): Rea
   )
 }
 
+// The app's one filled blue, same as "Add project" — this is the button that
+// commits an answer, and there is no second primary anywhere in the window for
+// it to be confused with.
 function primaryButton(disabled: boolean): React.CSSProperties {
   return {
     flex: 'none',
     height: 32,
-    padding: '0 17px',
+    padding: '0 16px',
     border: 0,
-    background: disabled ? CHAT.well : CHAT.you,
-    color: disabled ? CHAT.dim2 : CHAT.onAccent,
-    fontSize: 13,
+    borderRadius: CHAT.radius,
+    background: disabled ? CHAT.well : 'var(--accent)',
+    color: disabled ? CHAT.dim2 : 'var(--accent-fg)',
+    fontSize: 12.5,
     fontWeight: 500,
     cursor: disabled ? 'default' : 'pointer'
   }
 }
 
-// Drawn from CHAT, not from the app's slate custom properties: this palette is
-// deliberately its own so it cannot leak *out*, and `var(--border)` on a control
-// inside the chat window is the same mistake pointing inwards — a near-black
-// panel wearing the sidebar's hairline.
 const secondaryButton: React.CSSProperties = {
   flex: 'none',
   height: 32,
-  padding: '0 17px',
-  border: `1px solid ${CHAT.border}`,
+  padding: '0 16px',
+  border: '1px solid var(--border-strong)',
+  borderRadius: CHAT.radius,
   background: 'transparent',
   color: CHAT.dim,
-  fontSize: 13,
+  fontSize: 12.5,
   cursor: 'pointer'
 }
 
@@ -2439,7 +2490,7 @@ function ChipStrip({
             alignItems: 'baseline',
             gap: 9,
             fontFamily: MONO,
-            fontSize: 11,
+            fontSize: 11.5,
             color: c.ok ? CHAT.dim : CHAT.danger
           }}
         >
@@ -2611,7 +2662,7 @@ function Typeahead({
           borderTop: `1px solid ${CHAT.borderSoft}`,
           padding: '4px 14px',
           fontFamily: MONO,
-          fontSize: 10,
+          fontSize: 11.5,
           color: CHAT.dim4
         }}
       >

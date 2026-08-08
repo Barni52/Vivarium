@@ -46,9 +46,9 @@ function SmallButton({
         padding: '0 11px',
         border: '1px solid',
         borderColor: accent ? 'var(--accent)' : 'var(--border)',
-        background: hover ? (accent ? 'var(--accent)' : 'var(--field)') : 'transparent',
-        color: hover && accent ? '#fff' : accent ? 'var(--accent-2)' : 'var(--text-2)',
-        fontSize: 12,
+        background: hover ? (accent ? 'var(--accent)' : 'var(--input)') : 'transparent',
+        color: hover && accent ? 'var(--accent-fg)' : accent ? 'var(--accent2)' : 'var(--muted)',
+        fontSize: 11.5,
         cursor: 'pointer',
         flex: 'none'
       }}
@@ -72,8 +72,8 @@ function Row({ info, latest }: { info: ClaudeVersionInfo; latest: string | null 
       return (
         <span
           style={{
-            fontSize: 12,
-            color: 'var(--text-2)',
+            fontSize: 11.5,
+            color: 'var(--muted)',
             animation: 'vpending 1.2s ease-in-out infinite'
           }}
         >
@@ -84,13 +84,13 @@ function Row({ info, latest }: { info: ClaudeVersionInfo; latest: string | null 
     if (result && !result.ok) {
       return (
         <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 12, color: 'var(--danger)' }}>failed</span>
+          <span style={{ fontSize: 11.5, color: 'var(--danger)' }}>failed</span>
           <SmallButton onClick={() => void updateClaudeIn(info.projectId)}>Retry</SmallButton>
         </span>
       )
     }
     if (result?.ok) {
-      return <span style={{ fontSize: 12, color: '#42be65' }}>updated ✓</span>
+      return <span style={{ fontSize: 11.5, color: 'var(--ok)' }}>updated ✓</span>
     }
     if (behind) {
       return (
@@ -99,9 +99,9 @@ function Row({ info, latest }: { info: ClaudeVersionInfo; latest: string | null 
         </SmallButton>
       )
     }
-    if (info.installed) return <span style={{ fontSize: 12, color: 'var(--text-3)' }}>up to date</span>
+    if (info.installed) return <span style={{ fontSize: 11.5, color: 'var(--dim)' }}>up to date</span>
     return (
-      <span style={{ fontSize: 12, color: 'var(--text-3)' }} title={reasonLabel(info.reason)}>
+      <span style={{ fontSize: 11.5, color: 'var(--dim)' }} title={reasonLabel(info.reason)}>
         {reasonShort(info.reason)}
       </span>
     )
@@ -115,7 +115,7 @@ function Row({ info, latest }: { info: ClaudeVersionInfo; latest: string | null 
         gap: 12,
         minHeight: 44,
         padding: '0 24px',
-        borderTop: '1px solid var(--border-2)'
+        borderTop: '1px solid var(--border)'
       }}
     >
       {/* same rounded-square vocabulary as the sidebar's container indicator */}
@@ -124,16 +124,16 @@ function Row({ info, latest }: { info: ClaudeVersionInfo; latest: string | null 
           width: 8,
           height: 8,
           flex: 'none',
-          borderRadius: 2.5,
-          background: info.installed ? (behind ? '#f1c21b' : '#42be65') : 'transparent',
-          border: `1.5px solid ${info.installed ? (behind ? '#f1c21b' : '#42be65') : 'var(--text-3)'}`
+          borderRadius: 2,
+          background: info.installed ? (behind ? 'var(--warn)' : 'var(--ok)') : 'transparent',
+          border: `1.5px solid ${info.installed ? (behind ? 'var(--warn)' : 'var(--ok)') : 'var(--dim)'}`
         }}
       />
       <span
         style={{
           flex: 1,
           minWidth: 0,
-          fontSize: 13,
+          fontSize: 12.5,
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap'
@@ -145,7 +145,7 @@ function Row({ info, latest }: { info: ClaudeVersionInfo; latest: string | null 
         style={{
           fontFamily: MONO,
           fontSize: 12.5,
-          color: info.installed ? 'var(--text-2)' : 'var(--text-3)',
+          color: info.installed ? 'var(--muted)' : 'var(--dim)',
           flex: 'none'
         }}
       >
@@ -192,10 +192,10 @@ export function ClaudeUpdate(): React.ReactElement | null {
         <div style={{ padding: '20px 24px 18px 24px', flex: 'none' }}>
           <div
             style={{
-              fontSize: 11,
+              fontSize: 11.5,
               letterSpacing: '.6px',
               textTransform: 'uppercase',
-              color: 'var(--text-3)',
+              color: 'var(--dim)',
               marginBottom: 8,
               display: 'flex',
               alignItems: 'center',
@@ -207,13 +207,13 @@ export function ClaudeUpdate(): React.ReactElement | null {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-            <div style={{ fontSize: 19, fontWeight: 600 }}>
+            <div style={{ fontSize: 15, fontWeight: 600 }}>
               {status?.latest ? `${status.latest} on npm` : 'Version unknown'}
             </div>
             <span
               style={{
-                fontSize: 12,
-                color: 'var(--text-3)',
+                fontSize: 11.5,
+                color: 'var(--dim)',
                 flex: 1,
                 animation: checking ? 'vpending 1.2s ease-in-out infinite' : 'none'
               }}
@@ -233,8 +233,8 @@ export function ClaudeUpdate(): React.ReactElement | null {
                 width: 28,
                 height: 28,
                 border: 0,
-                background: refreshHover ? 'var(--field-2)' : 'transparent',
-                color: refreshHover ? 'var(--text)' : 'var(--text-2)',
+                background: refreshHover ? 'var(--card2)' : 'transparent',
+                color: refreshHover ? 'var(--fg)' : 'var(--muted)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -246,7 +246,7 @@ export function ClaudeUpdate(): React.ReactElement | null {
             </button>
           </div>
 
-          <div style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.55, marginTop: 10 }}>
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55, marginTop: 10 }}>
             Claude Code is installed inside each project container, so it&rsquo;s updated per
             container and only when you ask — nothing on Windows changes.
           </div>
@@ -260,10 +260,10 @@ export function ClaudeUpdate(): React.ReactElement | null {
             <div
               style={{
                 padding: '14px 24px 18px 24px',
-                borderTop: '1px solid var(--border-2)',
+                borderTop: '1px solid var(--border)',
                 fontSize: 12.5,
                 fontStyle: 'italic',
-                color: 'var(--text-3)'
+                color: 'var(--dim)'
               }}
             >
               No projects yet.
@@ -277,10 +277,10 @@ export function ClaudeUpdate(): React.ReactElement | null {
             style={{
               flex: 'none',
               padding: '12px 24px',
-              borderTop: '1px solid var(--border-2)',
-              background: 'var(--field)',
-              fontSize: 12,
-              color: 'var(--text-2)',
+              borderTop: '1px solid var(--border)',
+              background: 'var(--input)',
+              fontSize: 11.5,
+              color: 'var(--muted)',
               lineHeight: 1.5
             }}
           >
@@ -314,7 +314,7 @@ export function ClaudeUpdate(): React.ReactElement | null {
           </div>
         )}
 
-        <div style={{ flex: 'none', display: 'flex', borderTop: '1px solid var(--border-2)' }}>
+        <div style={{ flex: 'none', display: 'flex', borderTop: '1px solid var(--border)' }}>
           <FooterButton
             /* Only filled while there's something to install — a dimmed accent
                block still reads as the button you're meant to press. */

@@ -46,7 +46,7 @@ function OutputRow({ node, depth }: { node: OutputNode; depth: number }): React.
           paddingLeft: pad,
           paddingRight: 8,
           cursor: 'pointer',
-          background: hover ? 'var(--row-hover)' : 'transparent'
+          background: hover ? 'var(--sel)' : 'transparent'
         }}
       >
         <span
@@ -56,7 +56,7 @@ function OutputRow({ node, depth }: { node: OutputNode; depth: number }): React.
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            color: 'var(--text-3)',
+            color: 'var(--dim)',
             transform: `rotate(${expanded ? 90 : 0}deg)`,
             transition: 'transform .12s',
             visibility: isDir ? 'visible' : 'hidden'
@@ -69,7 +69,7 @@ function OutputRow({ node, depth }: { node: OutputNode; depth: number }): React.
             flex: 'none',
             display: 'flex',
             alignItems: 'center',
-            color: 'var(--text-2)'
+            color: 'var(--muted)'
           }}
         >
           {isDir ? <Folder size={13} /> : <FileIcon name={node.name} size={13} />}
@@ -79,7 +79,7 @@ function OutputRow({ node, depth }: { node: OutputNode; depth: number }): React.
             flex: 1,
             minWidth: 0,
             fontSize: 12.5,
-            color: isDir ? 'var(--text)' : html ? 'var(--accent-2)' : 'var(--text-2)',
+            color: isDir ? 'var(--fg)' : html ? 'var(--accent2)' : 'var(--muted)',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap'

@@ -975,6 +975,15 @@ export function registerIpc(win: BrowserWindow): void {
   ipcMain.on(CH.windowMaximize, () => (win.isMaximized() ? win.unmaximize() : win.maximize()))
   ipcMain.on(CH.windowClose, () => win.close())
 
+  // The renderer's theme, as a colour Chromium can paint under the document.
+  // Validated rather than trusted: this arrives over IPC and goes straight into
+  // a native call, and Electron throws on a string it cannot parse — which would
+  // take the handler down for a value that is only ever cosmetic. #rgb, #rrggbb
+  // and #rrggbbaa are the shapes `tokensFor(name).bg` can produce.
+  ipcMain.on(CH.setWindowBackground, (_e, color: string) => {
+    if (typeof color === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(color)) win.setBackgroundColor(color)
+  })
+
   // Confirm-on-quit: intercept every window-close path — the title-bar ✕ (which
   // routes through windowClose → win.close()), Alt+F4, and the taskbar/Aero
   // close — and ask the renderer to confirm before actually closing. The

@@ -55,7 +55,7 @@ function Row({
         height: 50,
         padding: '0 16px',
         border: 0,
-        background: selected ? 'var(--sel)' : hover ? 'var(--row-hover)' : 'transparent',
+        background: selected ? 'var(--sel)' : hover ? 'var(--sel)' : 'transparent',
         // same selection bar the sidebar uses for the active session, a touch
         // heavier here — which row is armed is the one thing you must not
         // misread before pressing Create
@@ -72,9 +72,9 @@ function Row({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          borderRadius: 5,
+          borderRadius: 'var(--radius-sm)',
           border: `1px solid ${selected ? meta.accent : 'var(--border)'}`,
-          background: selected ? 'var(--field-2)' : 'var(--field)',
+          background: selected ? 'var(--card2)' : 'var(--input)',
           color: meta.accent
         }}
       >
@@ -83,9 +83,9 @@ function Row({
       <span style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
         <span
           style={{
-            fontSize: 13.5,
+            fontSize: 12.5,
             fontWeight: 600,
-            color: selected ? 'var(--text)' : 'var(--text-2)',
+            color: selected ? 'var(--fg)' : 'var(--muted)',
             lineHeight: 1.1
           }}
         >
@@ -93,8 +93,8 @@ function Row({
         </span>
         <span
           style={{
-            fontSize: 11,
-            color: 'var(--text-3)',
+            fontSize: 11.5,
+            color: 'var(--dim)',
             fontFamily: MONO,
             whiteSpace: 'nowrap',
             overflow: 'hidden',
@@ -153,7 +153,7 @@ export function AddSessionPopover(): React.ReactElement | null {
     const where = type === 'host-shell' && project?.basePath ? project.basePath : meta.where
     return (
       <>
-        <span style={{ color: 'var(--text-2)' }}>{meta.shell}</span>
+        <span style={{ color: 'var(--muted)' }}>{meta.shell}</span>
         {` · ${where}`}
       </>
     )
@@ -171,7 +171,7 @@ export function AddSessionPopover(): React.ReactElement | null {
           width: ADD_SESSION_POPOVER.width,
           background: 'var(--panel)',
           border: '1px solid var(--border)',
-          boxShadow: '0 18px 44px -16px rgba(0,0,0,.7)',
+          boxShadow: '0 18px 44px -16px var(--shadow)',
           animation: 'vpop .13s ease',
           paddingBottom: 2
         }}
@@ -179,8 +179,8 @@ export function AddSessionPopover(): React.ReactElement | null {
         <div
           style={{
             padding: '13px 16px 10px 16px',
-            fontSize: 12,
-            color: 'var(--text-3)',
+            fontSize: 11.5,
+            color: 'var(--dim)',
             display: 'flex',
             alignItems: 'baseline',
             gap: 6
@@ -189,7 +189,7 @@ export function AddSessionPopover(): React.ReactElement | null {
           New session in
           <span
             style={{
-              color: 'var(--text-2)',
+              color: 'var(--muted)',
               fontWeight: 500,
               overflow: 'hidden',
               textOverflow: 'ellipsis',
@@ -209,11 +209,11 @@ export function AddSessionPopover(): React.ReactElement | null {
                 style={{
                   margin: '8px 0 0 0',
                   padding: '9px 16px 4px 16px',
-                  borderTop: '1px solid var(--border-2)',
-                  fontSize: 10.5,
+                  borderTop: '1px solid var(--border)',
+                  fontSize: 11.5,
                   letterSpacing: '.7px',
                   textTransform: 'uppercase',
-                  color: 'var(--text-3)'
+                  color: 'var(--dim)'
                 }}
               >
                 {meta.group}
@@ -230,8 +230,8 @@ export function AddSessionPopover(): React.ReactElement | null {
 
         <div style={{ padding: '14px 16px 0 16px' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 6 }}>
-            <label style={{ fontSize: 12, color: 'var(--text-2)', flex: 1 }}>Name</label>
-            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>↵ creates</span>
+            <label style={{ fontSize: 11.5, color: 'var(--muted)', flex: 1 }}>Name</label>
+            <span style={{ fontSize: 11.5, color: 'var(--dim)' }}>↵ creates</span>
           </div>
           <input
             value={draft.name}
@@ -245,12 +245,12 @@ export function AddSessionPopover(): React.ReactElement | null {
             style={{
               width: '100%',
               height: 34,
-              background: 'var(--field)',
+              background: 'var(--input)',
               border: '1px solid',
               borderColor: nameFocus ? 'var(--accent)' : 'var(--border)',
-              color: 'var(--text)',
+              color: 'var(--fg)',
               fontFamily: MONO,
-              fontSize: 13,
+              fontSize: 12.5,
               padding: '0 10px',
               outline: 'none'
             }}
@@ -267,8 +267,8 @@ export function AddSessionPopover(): React.ReactElement | null {
               height: 36,
               border: 0,
               background: 'var(--accent)',
-              color: '#fff',
-              fontSize: 13,
+              color: 'var(--accent-fg)',
+              fontSize: 12.5,
               fontWeight: 500,
               cursor: 'pointer',
               whiteSpace: 'nowrap',
@@ -286,8 +286,8 @@ export function AddSessionPopover(): React.ReactElement | null {
               height: 36,
               border: '1px solid var(--border)',
               background: 'transparent',
-              color: 'var(--text-2)',
-              fontSize: 13,
+              color: 'var(--muted)',
+              fontSize: 12.5,
               cursor: 'pointer'
             }}
           >

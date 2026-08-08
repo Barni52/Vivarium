@@ -28,6 +28,36 @@ export function App(): React.ReactElement {
   const requestQuit = useStore((s) => s.requestQuit)
   const dialog = useStore((s) => s.dialog)
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed)
+  const cycleTheme = useStore((s) => s.cycleTheme)
+
+  // Ctrl/Cmd+Shift+T — cycle midnight → graphite → paper → midnight.
+  //
+  // On `window` in the **capture** phase, which is the only place it works from
+  // everywhere: a focused xterm swallows key events in the bubble phase (its
+  // textarea is the target and its own handler runs first), and the chat
+  // composer is a textarea that would otherwise just insert nothing and move on.
+  // Capture runs before either of them see it.
+  //
+  // `preventDefault` because Chromium binds Ctrl+Shift+T to "reopen closed tab":
+  // inert in an Electron window with no tabs, but it is a documented default and
+  // leaving it unclaimed is how a future Electron picks it up again.
+  //
+  // Its own effect rather than a line in the big one below: that effect's
+  // dependency list is the app's whole boot, and re-running it to change a key
+  // handler would tear down every IPC subscription with it.
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      // `e.code`, not `e.key`: with Shift held, `key` is 'T' on a US layout but
+      // whatever the layout puts on that key elsewhere, and the shortcut is
+      // about the physical key.
+      if (e.code !== 'KeyT' || !e.shiftKey || !(e.ctrlKey || e.metaKey) || e.altKey) return
+      e.preventDefault()
+      e.stopPropagation()
+      cycleTheme()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [cycleTheme])
 
   React.useEffect(() => {
     // debug handle for automated smoke tests / DevTools inspection
@@ -105,9 +135,10 @@ export function App(): React.ReactElement {
         height: '100vh',
         width: '100vw',
         background: 'var(--bg)',
-        color: 'var(--text)',
-        fontFamily: "'IBM Plex Sans', system-ui, sans-serif",
-        fontSize: 14,
+        color: 'var(--fg)',
+        // The face and the base size are `body`'s (theme.ts) and are not restated
+        // here — this element used to declare a second one, which is how the app
+        // ended up with a sans chrome wrapped around mono content.
         overflow: 'hidden',
         position: 'relative',
         lineHeight: 1.45

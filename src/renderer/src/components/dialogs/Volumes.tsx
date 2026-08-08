@@ -85,8 +85,8 @@ function Row({ volume }: { volume: VolumeInfo }): React.ReactElement {
         gap: 12,
         minHeight: 46,
         padding: '0 24px',
-        borderTop: '1px solid var(--border-2)',
-        background: hover ? 'var(--row-hover)' : 'transparent'
+        borderTop: '1px solid var(--border)',
+        background: hover ? 'var(--sel)' : 'transparent'
       }}
     >
       {/* An orphan is the only state worth colouring — everything else here is
@@ -97,9 +97,9 @@ function Row({ volume }: { volume: VolumeInfo }): React.ReactElement {
           width: 8,
           height: 8,
           flex: 'none',
-          borderRadius: 2.5,
-          background: orphan ? 'var(--danger)' : inUse ? '#42be65' : 'transparent',
-          border: `1.5px solid ${orphan ? 'var(--danger)' : inUse ? '#42be65' : 'var(--text-3)'}`
+          borderRadius: 2,
+          background: orphan ? 'var(--danger)' : inUse ? 'var(--ok)' : 'transparent',
+          border: `1.5px solid ${orphan ? 'var(--danger)' : inUse ? 'var(--ok)' : 'var(--dim)'}`
         }}
       />
 
@@ -109,7 +109,7 @@ function Row({ volume }: { volume: VolumeInfo }): React.ReactElement {
           style={{
             fontFamily: MONO,
             fontSize: 12.5,
-            color: 'var(--text)',
+            color: 'var(--fg)',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap'
@@ -119,8 +119,8 @@ function Row({ volume }: { volume: VolumeInfo }): React.ReactElement {
         </span>
         <span
           style={{
-            fontSize: 11,
-            color: error ? 'var(--danger)' : 'var(--text-3)',
+            fontSize: 11.5,
+            color: error ? 'var(--danger)' : 'var(--dim)',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap'
@@ -134,7 +134,7 @@ function Row({ volume }: { volume: VolumeInfo }): React.ReactElement {
         style={{
           fontFamily: MONO,
           fontSize: 12.5,
-          color: volume.bytes ? 'var(--text-2)' : 'var(--text-3)',
+          color: volume.bytes ? 'var(--muted)' : 'var(--dim)',
           flex: 'none'
         }}
       >
@@ -143,11 +143,11 @@ function Row({ volume }: { volume: VolumeInfo }): React.ReactElement {
 
       <span style={{ width: 28, display: 'flex', justifyContent: 'flex-end', flex: 'none' }}>
         {busy ? (
-          <span style={{ fontSize: 11, color: 'var(--text-3)', animation: 'vpending 1.2s ease-in-out infinite' }}>
+          <span style={{ fontSize: 11.5, color: 'var(--dim)', animation: 'vpending 1.2s ease-in-out infinite' }}>
             …
           </span>
         ) : volume.locked ? (
-          <span title={reason} style={{ color: 'var(--text-3)', display: 'flex' }}>
+          <span title={reason} style={{ color: 'var(--dim)', display: 'flex' }}>
             <Lock />
           </span>
         ) : (
@@ -160,7 +160,7 @@ function Row({ volume }: { volume: VolumeInfo }): React.ReactElement {
               height: 26,
               border: 0,
               background: 'transparent',
-              color: inUse ? 'var(--text-3)' : hover ? 'var(--danger)' : 'var(--text-2)',
+              color: inUse ? 'var(--dim)' : hover ? 'var(--danger)' : 'var(--muted)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -187,12 +187,12 @@ function Group({ title, volumes }: { title: string; volumes: VolumeInfo[] }): Re
           alignItems: 'baseline',
           gap: 8,
           padding: '13px 24px 5px 24px',
-          borderTop: '1px solid var(--border-2)',
-          background: 'var(--field)',
-          fontSize: 10.5,
+          borderTop: '1px solid var(--border)',
+          background: 'var(--input)',
+          fontSize: 11.5,
           letterSpacing: '.7px',
           textTransform: 'uppercase',
-          color: 'var(--text-3)'
+          color: 'var(--dim)'
         }}
       >
         {title}
@@ -232,10 +232,10 @@ export function Volumes(): React.ReactElement {
         <div style={{ padding: '20px 24px 18px 24px', flex: 'none' }}>
           <div
             style={{
-              fontSize: 11,
+              fontSize: 11.5,
               letterSpacing: '.6px',
               textTransform: 'uppercase',
-              color: 'var(--text-3)',
+              color: 'var(--dim)',
               marginBottom: 8,
               display: 'flex',
               alignItems: 'center',
@@ -247,7 +247,7 @@ export function Volumes(): React.ReactElement {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-            <div style={{ fontSize: 19, fontWeight: 600 }}>
+            <div style={{ fontSize: 15, fontWeight: 600 }}>
               {loading && volumes === null
                 ? 'Measuring…'
                 : totalLabel(all)
@@ -256,8 +256,8 @@ export function Volumes(): React.ReactElement {
             </div>
             <span
               style={{
-                fontSize: 12,
-                color: 'var(--text-3)',
+                fontSize: 11.5,
+                color: 'var(--dim)',
                 flex: 1,
                 animation: loading ? 'vpending 1.2s ease-in-out infinite' : 'none'
               }}
@@ -277,8 +277,8 @@ export function Volumes(): React.ReactElement {
                 width: 28,
                 height: 28,
                 border: 0,
-                background: refreshHover ? 'var(--field-2)' : 'transparent',
-                color: refreshHover ? 'var(--text)' : 'var(--text-2)',
+                background: refreshHover ? 'var(--card2)' : 'transparent',
+                color: refreshHover ? 'var(--fg)' : 'var(--muted)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -290,7 +290,7 @@ export function Volumes(): React.ReactElement {
             </button>
           </div>
 
-          <div style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.55, marginTop: 10 }}>
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55, marginTop: 10 }}>
             Mounting a folder with a <code>package.json</code> or <code>pom.xml</code> gives it
             container-local caches so installs and builds never touch your Windows checkout.
             Nothing else in Vivarium removes them — not even deleting the project.
@@ -305,10 +305,10 @@ export function Volumes(): React.ReactElement {
             <div
               style={{
                 padding: '14px 24px 18px 24px',
-                borderTop: '1px solid var(--border-2)',
+                borderTop: '1px solid var(--border)',
                 fontSize: 12.5,
                 fontStyle: 'italic',
-                color: 'var(--text-3)'
+                color: 'var(--dim)'
               }}
             >
               {error ? `Could not read volumes: ${error}` : 'No Vivarium volumes on this machine.'}
@@ -323,10 +323,10 @@ export function Volumes(): React.ReactElement {
             style={{
               flex: 'none',
               padding: '12px 24px',
-              borderTop: '1px solid var(--border-2)',
-              background: 'var(--field)',
-              fontSize: 12,
-              color: 'var(--text-2)',
+              borderTop: '1px solid var(--border)',
+              background: 'var(--input)',
+              fontSize: 11.5,
+              color: 'var(--muted)',
               lineHeight: 1.5
             }}
           >
@@ -335,7 +335,7 @@ export function Volumes(): React.ReactElement {
           </div>
         )}
 
-        <div style={{ flex: 'none', display: 'flex', borderTop: '1px solid var(--border-2)' }}>
+        <div style={{ flex: 'none', display: 'flex', borderTop: '1px solid var(--border)' }}>
           <FooterButton
             primary={orphans.length > 0}
             height={48}

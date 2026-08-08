@@ -33,16 +33,16 @@ export function AddProject(): React.ReactElement {
         <div style={{ padding: '20px 24px 4px 24px', flex: 'none' }}>
           <div
             style={{
-              fontSize: 11,
+              fontSize: 11.5,
               letterSpacing: '.6px',
               textTransform: 'uppercase',
-              color: 'var(--text-3)',
+              color: 'var(--dim)',
               marginBottom: 6
             }}
           >
             New project
           </div>
-          <div style={{ fontSize: 19, fontWeight: 600 }}>Add project</div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>Add project</div>
         </div>
 
         <div
@@ -79,11 +79,11 @@ export function AddProject(): React.ReactElement {
                 style={{
                   height: 40,
                   padding: '0 16px',
-                  background: 'var(--field-2)',
+                  background: 'var(--card2)',
                   border: 0,
-                  borderBottom: '1px solid var(--text-3)',
-                  color: 'var(--text)',
-                  fontSize: 13,
+                  borderBottom: '1px solid var(--dim)',
+                  color: 'var(--fg)',
+                  fontSize: 12.5,
                   cursor: 'pointer',
                   whiteSpace: 'nowrap'
                 }}
@@ -111,7 +111,7 @@ export function AddProject(): React.ReactElement {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
               <label style={labelStyle}>
                 Published port{' '}
-                <span style={{ color: 'var(--text-3)' }}>{slim ? '(Full image only)' : '(optional)'}</span>
+                <span style={{ color: 'var(--dim)' }}>{slim ? '(Full image only)' : '(optional)'}</span>
               </label>
               <input
                 value={ap.port}
@@ -124,7 +124,7 @@ export function AddProject(): React.ReactElement {
           </div>
         </div>
 
-        <div style={{ flex: 'none', display: 'flex', borderTop: '1px solid var(--border-2)' }}>
+        <div style={{ flex: 'none', display: 'flex', borderTop: '1px solid var(--border)' }}>
           <FooterButton primary onClick={createProject}>
             Create project
           </FooterButton>

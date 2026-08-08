@@ -3,6 +3,36 @@
   <head>
     <meta charset="UTF-8" />
     <title>Vivarium</title>
+    <script>
+      // Theme, resolved before anything paints.
+      //
+      // This is deliberately a blocking classic script in <head> rather than
+      // anything the app imports: the module graph is fetched asynchronously (a
+      // dev server over HTTP, a bundle off disk in production), so by the time
+      // theme.ts could run, a frame has already been composited. Set the
+      // attribute here and the very first frame the stylesheet applies to is
+      // already the right theme — there is no dark-to-light snap to see.
+      //
+      // The key and the three names are LITERALS here, and that is the one place
+      // in the app they are allowed to be: nothing has loaded yet, so there is
+      // nothing to import them from. They are mirrored by THEME_KEY / ThemeName
+      // in src/theme.ts — change one, change the other.
+      //
+      // Unknown, absent, or unreadable (localStorage throws outright when
+      // storage is disabled) all land on midnight, which is also what the bare
+      // :root block holds, so the attribute and the CSS agree either way.
+      ;(function () {
+        var fallback = 'midnight'
+        var name = fallback
+        try {
+          var stored = localStorage.getItem('vivarium.theme')
+          if (stored === 'midnight' || stored === 'graphite' || stored === 'paper') name = stored
+        } catch (e) {
+          /* storage disabled — midnight it is */
+        }
+        document.documentElement.dataset.theme = name
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

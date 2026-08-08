@@ -53,7 +53,8 @@ export function Panel({
         maxWidth: 'calc(100vw - 40px)',
         background: 'var(--panel)',
         border: '1px solid var(--border)',
-        boxShadow: '0 24px 60px -20px rgba(0,0,0,.7)',
+        borderRadius: 'var(--radius)',
+        boxShadow: '0 24px 60px -20px var(--shadow)',
         animation: 'vdlg .16s ease',
         display: 'flex',
         flexDirection: 'column',
@@ -65,18 +66,20 @@ export function Panel({
   )
 }
 
-export const labelStyle: React.CSSProperties = { fontSize: 12, color: 'var(--text-2)' }
+export const labelStyle: React.CSSProperties = { fontSize: 11.5, color: 'var(--muted)' }
 
+// `mono` is now only about *size*: the app is one face throughout, so a path
+// field and a label field differ by the weight of what they hold, not by family.
 export function fieldStyle(mono?: boolean): React.CSSProperties {
   return {
-    height: 40,
-    background: 'var(--field)',
-    border: 0,
-    borderBottom: '1px solid var(--text-3)',
-    color: 'var(--text)',
-    fontFamily: mono ? MONO : 'inherit',
-    fontSize: mono ? 13 : 14,
-    padding: '0 12px',
+    height: 38,
+    background: 'var(--input)',
+    border: '1px solid var(--border-strong)',
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--fg)',
+    fontFamily: MONO,
+    fontSize: mono ? 11.5 : 12.5,
+    padding: '0 10px',
     outline: 'none'
   }
 }
@@ -98,17 +101,10 @@ export function FooterButton({
 }): React.ReactElement {
   const [hover, setHover] = React.useState(false)
   const lit = hover && !disabled
-  const bg = danger
-    ? lit
-      ? '#da1e28'
-      : 'var(--danger)'
-    : primary
-      ? lit
-        ? 'var(--accent-2)'
-        : 'var(--accent)'
-      : lit
-        ? 'var(--field)'
-        : 'transparent'
+  // A filled button brightens; an unfilled one takes the row fill. Neither has a
+  // second colour of its own — see the "Add project" button for the argument.
+  const filled = primary || danger
+  const bg = danger ? 'var(--danger)' : primary ? 'var(--accent)' : lit ? 'var(--sel)' : 'transparent'
   return (
     <button
       onClick={onClick}
@@ -119,10 +115,13 @@ export function FooterButton({
         flex: 1,
         height,
         border: 0,
+        borderRadius: 0,
         background: bg,
-        color: primary || danger ? '#fff' : 'var(--text-2)',
-        fontSize: 14,
-        fontWeight: primary || danger ? 500 : 400,
+        filter: lit && filled ? 'brightness(1.12)' : 'none',
+        transition: 'filter .12s,background-color .12s',
+        color: danger ? 'var(--danger-fg)' : primary ? 'var(--accent-fg)' : 'var(--muted)',
+        fontSize: 12.5,
+        fontWeight: filled ? 500 : 400,
         // Dim rather than grey out: the label still has to be readable, since
         // it's usually explaining *why* it's unavailable.
         opacity: disabled ? 0.45 : 1,
@@ -144,18 +143,27 @@ export function ImageToggle({
   const cell = (active: boolean): React.CSSProperties => ({
     flex: 1,
     border: 0,
+    borderRadius: 0,
     background: active ? 'var(--accent)' : 'transparent',
-    color: active ? '#fff' : 'var(--text-2)',
-    fontSize: 13,
+    color: active ? 'var(--accent-fg)' : 'var(--muted)',
+    fontSize: 12.5,
     cursor: 'pointer',
     fontWeight: 500
   })
   return (
-    <div style={{ display: 'flex', border: '1px solid var(--border)', height: 40 }}>
+    <div
+      style={{
+        display: 'flex',
+        border: '1px solid var(--border-strong)',
+        borderRadius: 'var(--radius-sm)',
+        overflow: 'hidden',
+        height: 38
+      }}
+    >
       <button style={cell(value === 'slim')} onClick={() => onChange('slim')}>
         Slim
       </button>
-      <button style={{ ...cell(value === 'full'), borderLeft: '1px solid var(--border)' }} onClick={() => onChange('full')}>
+      <button style={{ ...cell(value === 'full'), borderLeft: '1px solid var(--border-strong)' }} onClick={() => onChange('full')}>
         Full
       </button>
     </div>

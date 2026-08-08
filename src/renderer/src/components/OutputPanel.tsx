@@ -25,8 +25,8 @@ function IconBtn({
         width: 24,
         height: 24,
         border: 0,
-        background: hover ? 'var(--field-2)' : 'transparent',
-        color: hover ? 'var(--text)' : 'var(--text-2)',
+        background: hover ? 'var(--card2)' : 'transparent',
+        color: hover ? 'var(--fg)' : 'var(--muted)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -91,7 +91,7 @@ export function OutputPanel(): React.ReactElement {
     ])
   }
 
-  const border = { flex: 'none' as const, borderTop: '1px solid var(--border-2)', background: 'var(--sidebar)' }
+  const border = { flex: 'none' as const, borderTop: '1px solid var(--border)', background: 'var(--panel)' }
 
   // --- no folder configured yet ---
   if (!folder) {
@@ -103,10 +103,10 @@ export function OutputPanel(): React.ReactElement {
             display: 'flex',
             alignItems: 'center',
             gap: 7,
-            fontSize: 11,
+            fontSize: 11.5,
             letterSpacing: '.5px',
             textTransform: 'uppercase',
-            color: 'var(--text-3)',
+            color: 'var(--dim)',
             marginBottom: 8,
             paddingLeft: 2
           }}
@@ -123,9 +123,9 @@ export function OutputPanel(): React.ReactElement {
             alignItems: 'center',
             justifyContent: 'center',
             gap: 8,
-            background: 'var(--field-2)',
+            background: 'var(--card2)',
             border: '1px dashed var(--border)',
-            color: 'var(--text-2)',
+            color: 'var(--muted)',
             fontSize: 12.5,
             cursor: 'pointer'
           }}
@@ -182,14 +182,14 @@ export function OutputPanel(): React.ReactElement {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            color: 'var(--text-3)',
+            color: 'var(--dim)',
             transform: `rotate(${collapsed ? 0 : 90}deg)`,
             transition: 'transform .12s'
           }}
         >
           <Chevron size={13} />
         </span>
-        <span style={{ color: 'var(--accent-2)', display: 'flex' }}>
+        <span style={{ color: 'var(--accent2)', display: 'flex' }}>
           <Folder size={14} />
         </span>
         <span style={{ fontSize: 12.5, fontWeight: 600, flex: 'none' }}>Shared output</span>
@@ -199,8 +199,8 @@ export function OutputPanel(): React.ReactElement {
             flex: 1,
             minWidth: 0,
             fontFamily: MONO,
-            fontSize: 11,
-            color: 'var(--text-3)',
+            fontSize: 11.5,
+            color: 'var(--dim)',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap'
@@ -229,8 +229,8 @@ export function OutputPanel(): React.ReactElement {
               style={{
                 padding: '14px 12px',
                 textAlign: 'center',
-                color: 'var(--text-3)',
-                fontSize: 12,
+                color: 'var(--dim)',
+                fontSize: 11.5,
                 fontStyle: 'italic'
               }}
             >
@@ -264,12 +264,17 @@ function DiffBaseRow(): React.ReactElement {
     if (v !== (diffBase ?? 'origin/master')) void setDiffBase(v)
   }
 
+  // Only so the border can answer a click. The global `:focus-visible` ring is
+  // keyboard-only by design, so without this the one editable thing in the
+  // sidebar gave no sign at all that it had taken focus.
+  const [focus, setFocus] = React.useState(false)
+
   return (
     <div
       style={{
         flex: 'none',
-        borderTop: '1px solid var(--border-2)',
-        background: 'var(--sidebar)',
+        borderTop: '1px solid var(--border)',
+        background: 'var(--panel)',
         display: 'flex',
         alignItems: 'center',
         gap: 8,
@@ -279,28 +284,43 @@ function DiffBaseRow(): React.ReactElement {
     >
       <span
         title="The 'Write branch diff' action diffs the current branch against this ref."
-        style={{ fontSize: 11, color: 'var(--text-3)', flex: 'none', whiteSpace: 'nowrap' }}
+        style={{ fontSize: 11.5, color: 'var(--dim)', flex: 'none', whiteSpace: 'nowrap' }}
       >
         Diff base
       </span>
       <input
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
+        onFocus={() => setFocus(true)}
+        onBlur={() => {
+          setFocus(false)
+          commit()
+        }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
         }}
         spellCheck={false}
         placeholder="origin/master"
+        // `--input` and `--border-strong`, which is what those two tokens are
+        // *for* — the palette already draws the distinction this field was
+        // missing. It sat on `--card2` inside `--border`, and both of those are
+        // within a few points of the `--panel` behind them on all three themes,
+        // so the only thing marking it as a field was the text in it.
+        //
+        // `--input` is the token that inverts correctly: it is below the page on
+        // the dark themes and pure white on `paper`, so the field reads as
+        // recessed or raised as the theme requires, rather than as one fixed
+        // direction that happens to be right once.
         style={{
           flex: 1,
           minWidth: 0,
           height: 24,
-          background: 'var(--field-2)',
-          border: '1px solid var(--border)',
-          color: 'var(--text)',
+          background: 'var(--input)',
+          border: `1px solid ${focus ? 'var(--accent)' : 'var(--border-strong)'}`,
+          borderRadius: 'var(--radius-sm)',
+          color: 'var(--fg)',
           fontFamily: MONO,
-          fontSize: 12,
+          fontSize: 11.5,
           padding: '0 8px',
           outline: 'none'
         }}

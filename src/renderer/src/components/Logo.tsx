@@ -5,6 +5,20 @@ import React from 'react'
 // glowing inside. Rendered inline as SVG so it stays crisp at any size. Gradient
 // ids are made unique per instance (React.useId) so several logos can coexist on
 // one page without url(#id) collisions.
+//
+// **The one component that does not read the palette, and deliberately.** These
+// nine values are brand, not chrome: they are the same paint as build/icon.svg,
+// which is compiled into the installer and shown by Windows in the taskbar, the
+// start menu and Explorer — none of which know this app has themes. Theming the
+// mark would mean the icon in the title bar and the icon on the taskbar were
+// different pictures.
+//
+// It is also the element least at risk from a light theme, because it is not
+// transparent: the tile carries its own background, so it renders identically on
+// cream and on carbon, the way an app icon is supposed to. The `rounded` plate
+// exists for exactly that reason — the glyph alone (a light grey container, a
+// violet sparkle) is drawn to sit on the dark tile and would disappear on
+// `paper`, so callers must not pass `rounded={false}` there.
 export function Logo({
   size = 32,
   rounded = true,

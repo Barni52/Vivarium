@@ -33,31 +33,38 @@ export function Sidebar(): React.ReactElement {
         flex: 'none',
         display: 'flex',
         flexDirection: 'column',
-        background: 'var(--sidebar)',
-        borderRight: '1px solid var(--border-2)',
+        background: 'var(--panel)',
+        borderRight: '1px solid var(--border)',
         minHeight: 0,
-        position: 'relative'
+        position: 'relative',
+        fontSize: 12.5
       }}
     >
-      <div style={{ padding: '12px 12px 8px 12px', flex: 'none' }}>
+      <div style={{ padding: '10px 10px 8px 10px', flex: 'none' }}>
         <button
           onClick={openAddProject}
           onMouseEnter={() => setAddHover(true)}
           onMouseLeave={() => setAddHover(false)}
           style={{
             width: '100%',
-            height: 40,
+            height: 38,
             display: 'flex',
             alignItems: 'center',
             gap: 8,
             padding: '0 14px',
-            background: addHover ? 'var(--accent-2)' : 'var(--accent)',
-            color: '#fff',
+            background: 'var(--accent)',
+            color: 'var(--accent-fg)',
             border: 0,
-            fontSize: 13,
+            borderRadius: 'var(--radius)',
+            fontSize: 12.5,
             fontWeight: 500,
             cursor: 'pointer',
-            letterSpacing: '.2px'
+            letterSpacing: '.2px',
+            // Brightness, not a second blue. A filled button has one fill, and a
+            // hover token for it would be a value that exists only to be 12%
+            // lighter than another value — which is what `filter` already is.
+            filter: addHover ? 'brightness(1.12)' : 'none',
+            transition: 'filter .12s'
           }}
         >
           <Plus size={16} />

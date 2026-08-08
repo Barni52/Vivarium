@@ -19,7 +19,7 @@ export function ConfirmMove(): React.ReactElement | null {
   if (!target) return null
 
   const mono: React.CSSProperties = {
-    color: 'var(--text)',
+    color: 'var(--fg)',
     fontFamily: MONO
   }
 
@@ -27,8 +27,8 @@ export function ConfirmMove(): React.ReactElement | null {
     <Overlay onClose={closeDialog} center>
       <Panel width={400}>
         <div style={{ padding: '22px 24px 18px 24px' }}>
-          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Move session?</div>
-          <div style={{ fontSize: 13.5, color: 'var(--text-2)', lineHeight: 1.55 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>Move session?</div>
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55 }}>
             <span style={mono}>{target.sessionName}</span> moves to{' '}
             <span style={mono}>{target.toProjectName}</span> and reopens in that project’s
             container, against that project’s mounts — so file paths from earlier in the
@@ -46,7 +46,7 @@ export function ConfirmMove(): React.ReactElement | null {
             )}
           </div>
         </div>
-        <div style={{ display: 'flex', borderTop: '1px solid var(--border-2)' }}>
+        <div style={{ display: 'flex', borderTop: '1px solid var(--border)' }}>
           {/* danger only when something is actually being cut off; a dead session
               moving is an ordinary confirm */}
           <FooterButton

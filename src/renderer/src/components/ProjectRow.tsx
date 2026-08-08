@@ -39,8 +39,9 @@ function HeaderBtn({
         width: 26,
         height: 26,
         border: 0,
-        background: hover ? 'var(--field-2)' : 'transparent',
-        color: color ?? (hover ? 'var(--text)' : 'var(--text-2)'),
+        borderRadius: 'var(--radius-sm)',
+        background: hover ? 'var(--card2)' : 'transparent',
+        color: color ?? (hover ? 'var(--fg)' : 'var(--muted)'),
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -217,9 +218,22 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
   }
 
   return (
-    <div onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+    <div>
       {/* header */}
       <div
+        // **The hover handlers belong to the header, not to the wrapper.** They
+        // used to sit on the div above, which encloses the session rows as well
+        // — so pointing at a session lit up its project and swapped the
+        // container status chip for the "+" button, two rows away from the
+        // cursor. `mouseenter`/`mouseleave` do not fire for movement between an
+        // element and its own descendants, which is exactly why it read as a
+        // single sticky highlight rather than an obvious bug.
+        //
+        // Both readings of `hover` are the header's own (its fill, and which
+        // control it shows on the right), so there is nothing the wrapper needed
+        // it for. A session row draws its own hover; the project draws its own.
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
         draggable
         onDragStart={(e) => {
           e.dataTransfer.effectAllowed = 'move'
@@ -251,7 +265,8 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
           height: 46,
           padding: '0 8px 0 10px',
           cursor: 'pointer',
-          background: hover ? 'var(--row-hover)' : 'transparent',
+          background: hover ? 'var(--sel)' : 'transparent',
+          transition: 'background-color .1s',
           boxShadow:
             dropIndicator === 'before'
               ? 'inset 0 2px 0 0 var(--accent)'
@@ -271,21 +286,25 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            color: 'var(--text-3)',
+            color: 'var(--dim)',
             transform: `rotate(${expanded ? 90 : 0}deg)`,
             transition: 'transform .12s'
           }}
         >
           <Chevron />
         </span>
-        <span style={{ color: 'var(--text-2)', display: 'flex', alignItems: 'center' }}>
+        <span style={{ color: 'var(--muted)', display: 'flex', alignItems: 'center' }}>
           <Folder />
         </span>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 }}>
           <span
             style={{
-              fontSize: 13,
-              fontWeight: 500,
+              fontSize: 12.5,
+              // Bold, not medium. It is the only bold thing in the sidebar, and
+              // that is what separates a project from the sessions under it now
+              // that they are the same face at nearly the same size.
+              fontWeight: 700,
+              color: 'var(--fg)',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
@@ -303,7 +322,7 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
                 minWidth: 0,
                 fontFamily: MONO,
                 fontSize: 11,
-                color: 'var(--text-3)',
+                color: 'var(--dim)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap'
@@ -320,8 +339,8 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
                   maxWidth: '48%',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 3,
-                  color: 'var(--accent-2)',
+                  gap: 4,
+                  color: 'var(--accent2)',
                   fontSize: 11,
                   overflow: 'hidden'
                 }}
@@ -346,13 +365,18 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
                 ? 'An agent in this project is waiting for you'
                 : 'An agent in this project finished'
             }
+            // **Fill and ink move together.** A glyph on a filled disc is the one
+            // shape in the app where a single ink colour cannot serve two fills:
+            // `--accent2` is a light orange on midnight, a light amber on
+            // graphite and a dark rust on paper, so "white on it" is wrong on at
+            // least one theme in every direction. Each branch names its own pair.
             style={{
               width: 15,
               height: 15,
               flex: 'none',
               borderRadius: '50%',
-              background: attention === 'question' ? ACCENT.agent : 'var(--danger)',
-              color: '#fff',
+              background: attention === 'question' ? 'var(--accent2)' : 'var(--danger)',
+              color: attention === 'question' ? 'var(--on-accent2)' : 'var(--danger-fg)',
               fontSize: 10.5,
               fontWeight: 700,
               lineHeight: 1,
@@ -399,14 +423,14 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
                         : 'Container stopped'
             }
             style={{
-              width: 9,
-              height: 9,
+              width: 8,
+              height: 8,
               flex: 'none',
-              marginRight: 3,
-              borderRadius: 2.5,
-              background: op ? '#f1c21b' : opError ? 'var(--danger)' : running ? '#42be65' : 'transparent',
-              border: `1.5px solid ${op ? '#f1c21b' : opError ? 'var(--danger)' : running ? '#42be65' : 'var(--danger)'}`,
-              boxShadow: !op && !opError && running ? '0 0 6px rgba(66,190,101,.5)' : 'none',
+              marginRight: 4,
+              borderRadius: 2,
+              background: op ? 'var(--warn)' : opError ? 'var(--danger)' : running ? 'var(--ok)' : 'transparent',
+              border: `1.5px solid ${op ? 'var(--warn)' : opError ? 'var(--danger)' : running ? 'var(--ok)' : 'var(--danger)'}`,
+              boxShadow: !op && !opError && running ? '0 0 6px var(--ok-soft)' : 'none',
               animation: op ? 'vpending 1.2s ease-in-out infinite' : 'none'
             }}
           />
@@ -421,7 +445,10 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
           // yet" block, which is the only droppable surface an empty project has.
           onDragOver={onSessionDragOver}
           onDrop={onSessionDrop}
-          style={{ paddingLeft: 20, marginLeft: 18, borderLeft: '1px solid var(--border-2)' }}
+          // The rail sits at 20 and the rows carry their own 10 of padding, so a
+          // session's glyph starts at exactly 30 — one indent step in from the
+          // project name above it, and the only number that decides it.
+          style={{ paddingLeft: 0, marginLeft: 20, borderLeft: '1px solid var(--border)' }}
         >
           {project.sessions.map((s) => (
             <SessionRow key={s.id} project={project} session={s} />
@@ -432,11 +459,11 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8,
-                padding: '9px 10px 12px 10px',
-                color: 'var(--text-3)'
+                padding: '8px 10px 12px 10px',
+                color: 'var(--dim)'
               }}
             >
-              <span style={{ fontSize: 12.5, fontStyle: 'italic' }}>No sessions yet</span>
+              <span style={{ fontSize: 11.5 }}>No sessions yet</span>
               <button
                 onClick={(e) =>
                   openAddSession(project.id, (e.currentTarget as HTMLElement).getBoundingClientRect())
@@ -444,8 +471,8 @@ export function ProjectRow({ project }: { project: Project }): React.ReactElemen
                 style={{
                   border: 0,
                   background: 'transparent',
-                  color: 'var(--accent)',
-                  fontSize: 12.5,
+                  color: 'var(--role-you)',
+                  fontSize: 11.5,
                   cursor: 'pointer',
                   padding: 0
                 }}

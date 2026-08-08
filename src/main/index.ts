@@ -2,6 +2,7 @@ import { app, BrowserWindow, Menu } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { registerIpc } from './ipc'
+import { DEFAULT_THEME, THEME_BG } from '@shared/theme'
 import type { PtyManager } from './pty'
 import type { ChatService } from './chat'
 
@@ -42,7 +43,14 @@ function createWindow(): void {
     minHeight: 480,
     show: false,
     frame: false, // custom title bar (see renderer/TitleBar)
-    backgroundColor: '#0f141b',
+    // The one place a `var()` cannot reach that is also in another process: this
+    // is painted before the renderer has a document, and main cannot know which
+    // theme is on (the choice lives in the renderer's localStorage). So it opens
+    // on the default theme's page colour — read from the shared table rather
+    // than spelled out, so it cannot drift from the CSS — and the renderer
+    // corrects it over `window:set-background` during module eval, long before
+    // `ready-to-show` reveals the window.
+    backgroundColor: THEME_BG[DEFAULT_THEME],
     title: 'Vivarium',
     ...(existsSync(iconPath) ? { icon: iconPath } : {}),
     webPreferences: {
