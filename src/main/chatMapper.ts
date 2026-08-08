@@ -78,6 +78,31 @@ const COMMAND_ARGS_RE = /<command-args>([\s\S]*?)<\/command-args>/
 const LOCAL_STDOUT_RE = /<local-command-stdout>([\s\S]*?)<\/local-command-stdout>/
 
 /**
+ * A **background** agent's completion.
+ *
+ * `Agent` with `run_in_background: true` returns immediately — its tool_result
+ * says only `async_launched` and carries no outcome at all (no status, no
+ * duration, no token count). The real outcome arrives later, and Claude Code
+ * delivers it the same way it delivers a slash command's output: as an ordinary
+ * **user** line, this time holding an XML block. Left alone it renders as a
+ * tinted `you` bubble containing four hundred characters of markup and the whole
+ * agent report, immediately above the paragraph in which Claude paraphrases that
+ * same report — which is what "the user typed this" looks like when the user did
+ * not type it. Same rule as the interrupt marker and `<local-command-stdout>`.
+ *
+ * It is not merely suppressed, because it is the *only* place the outcome of a
+ * background agent is written down: `<tool-use-id>` names the row that launched
+ * it, and the block carries the status and the usage that a synchronous Task's
+ * `toolUseResult` would have carried. So it completes that row instead.
+ */
+const TASK_NOTE_RE = /<task-notification>([\s\S]*?)<\/task-notification>/
+
+/** One `<name>…</name>` out of a task notification, trimmed; '' when absent. */
+function noteTag(body: string, name: string): string {
+  return new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(body)?.[1]?.trim() ?? ''
+}
+
+/**
  * Escape sequences in a local command's output. The CLI writes these coloured
  * when it thinks it has a terminal, and a chat has none anywhere in its path, so
  * they would land in the log as literal noise. Only real ESC-introduced
@@ -412,6 +437,28 @@ export class ChatMapper {
   model: string | null = null
 
   private tools = new Map<string, { entry: ChatEntry; name: string; input: Json }>()
+  /**
+   * The `task` rows this mapper has produced, by spawning tool_use id.
+   *
+   * Separate from `tools`, which is the tool_use→tool_result pairing and is
+   * *deleted* the moment the result lands. A background agent's outcome arrives
+   * long after that (see TASK_NOTE_RE), so the row has to stay reachable once its
+   * launch has already been answered.
+   */
+  private taskRows = new Map<string, Extract<ChatEntry, { kind: 'task' }>>()
+  /**
+   * One sub-mapper per subagent, kept for the life of this mapper.
+   *
+   * It used to be a fresh `ChatMapper` per *line*, which silently threw away
+   * everything a mapper is stateful for: a `tool_result` looks its `tool_use` up
+   * in `tools`, so with the pairing reset between the two lines every result in
+   * every live sub-log was dropped on the floor (`toolResult` returns null when
+   * it has no pending call) and every tool card sat there spinning forever. The
+   * id counters restarted too, so rows collided on `#0`. Reopening the same
+   * conversation read the sibling file with one mapper and looked perfect, which
+   * is what made this look like a rendering bug rather than a mapping one.
+   */
+  private subMappers = new Map<string, ChatMapper>()
   private seq = 0
   private turn = 0
   /** index in `entries` where the current turn began, for the cancelled sweep */
@@ -426,6 +473,21 @@ export class ChatMapper {
   setTurn(turn: number): void {
     this.turn = turn
     this.turnStart = this.entries.length
+  }
+
+  /**
+   * Hand this mapper the `task` rows an earlier pass produced.
+   *
+   * **A background agent outlives the mapper that launched it.** The live mapper
+   * is dropped at every `result` and a settle builds a fresh one per turn, but
+   * an agent launched in turn 3 reports in turn 5 — so without this the
+   * notification lands in a mapper that has never heard of the row it names, and
+   * degrades to the orphan case for a row that is right there on screen. The
+   * rows are adopted **by reference**, which is the whole trick: completing one
+   * updates the object main and the renderer are already holding.
+   */
+  adoptTasks(entries: ChatEntry[]): void {
+    for (const e of entries) if (e.kind === 'task') this.taskRows.set(e.toolUseId, e)
   }
 
   private id(prefix: string): string {
@@ -463,7 +525,7 @@ export class ChatMapper {
     return n === 0 ? key : `${key}#${n}`
   }
 
-  private push(e: ChatEntry): ChatEntry {
+  private push<T extends ChatEntry>(e: T): T {
     this.entries.push(e)
     return e
   }
@@ -486,11 +548,29 @@ export class ChatMapper {
     // left edge. It is buffered here instead and served as that row's sub-log.
     const parentId = str(line.parent_tool_use_id)
     if (parentId) {
-      const sub = new ChatMapper(this.turn)
-      sub.feed({ ...line, parent_tool_use_id: '' }, at)
-      const list = this.subagents.get(parentId) ?? []
-      list.push(...sub.entries)
-      this.subagents.set(parentId, list)
+      let sub = this.subMappers.get(parentId)
+      if (!sub) {
+        sub = new ChatMapper(this.turn)
+        this.subMappers.set(parentId, sub)
+      }
+      // `feed` returns created *and changed* rows, so a tool_result ships the
+      // card it just completed rather than nothing. Both sides of the wire
+      // upsert these by id for exactly that reason.
+      const rows = sub.feed({ ...line, parent_tool_use_id: '' }, at)
+      if (rows.length) {
+        // Merged by id rather than pushed. The caller drains this bucket after
+        // every frame, so in practice a create and its completion land in two
+        // separate drains and the merge is `chat.ts`'s to do — but the bucket
+        // must not be the one place in the chain that can hold two states of one
+        // row, or a drain that happens to be late ships a duplicate key.
+        const list = this.subagents.get(parentId) ?? []
+        for (const r of rows) {
+          const i = list.findIndex((x) => x.id === r.id)
+          if (i >= 0) list[i] = r
+          else list.push(r)
+        }
+        this.subagents.set(parentId, list)
+      }
       return []
     }
 
@@ -533,7 +613,7 @@ export class ChatMapper {
     const content = message.content
 
     if (typeof content === 'string') {
-      this.userText(content, `${uuid}#0`, at, [])
+      this.userText(content, `${uuid}#0`, at, [], touched)
       return
     }
 
@@ -565,10 +645,16 @@ export class ChatMapper {
       })
       return
     }
-    texts.forEach((t, i) => this.userText(t.text, t.id, at, i === 0 ? chips : []))
+    texts.forEach((t, i) => this.userText(t.text, t.id, at, i === 0 ? chips : [], touched))
   }
 
-  private userText(raw: string, id: string, at: number, chips: ChatChip[]): void {
+  private userText(
+    raw: string,
+    id: string,
+    at: number,
+    chips: ChatChip[],
+    touched: ChatEntry[]
+  ): void {
     const text = raw.replace(STRIP_TAGS, '').trim()
     if (!text) return
 
@@ -586,6 +672,15 @@ export class ChatMapper {
         text: 'interrupted',
         tone: 'muted'
       })
+      return
+    }
+
+    // A background agent reporting in. Not a `you` row for the same reason the
+    // marker above is not one, and folded into the row that launched it rather
+    // than shown as a row of its own — see TASK_NOTE_RE.
+    const note = TASK_NOTE_RE.exec(text)
+    if (note) {
+      this.taskNotification(note[1], id, at, touched)
       return
     }
 
@@ -747,7 +842,13 @@ export class ChatMapper {
         kind: 'task',
         toolUseId,
         agentId: null,
-        agentType: str(input.subagent_type) || 'agent',
+        // `general-purpose` rather than a generic `agent`, because that is what
+        // the CLI actually launches when the call names no type — verified
+        // against the agent's own `subagents/agent-<id>.meta.json`, which
+        // records `agentType: "general-purpose"` for exactly these calls. The
+        // background `Agent` tool takes no `subagent_type` at all, so every one
+        // of them used to print the placeholder.
+        agentType: str(input.subagent_type) || 'general-purpose',
         description: str(input.description) || compact(str(input.prompt), 80),
         status: 'running',
         durationMs: null,
@@ -756,6 +857,9 @@ export class ChatMapper {
         running: true
       })
       this.tools.set(toolUseId, { entry, name, input })
+      // Outlives `tools`, which the result deletes — a background agent reports
+      // long after its launch was answered. See taskNotification.
+      this.taskRows.set(toolUseId, entry)
       return
     }
 
@@ -803,6 +907,56 @@ export class ChatMapper {
     this.tools.set(toolUseId, { entry, name, input })
   }
 
+  /**
+   * A background agent's completion notification completes the `task` row that
+   * launched it.
+   *
+   * Everything the row was missing is in here and nowhere else: `<status>`, and
+   * a `<usage>` block whose three numbers are the same three a synchronous
+   * Task's `toolUseResult` reports as `totalDurationMs` / `totalToolUseCount` /
+   * `totalTokens`. Folding them in is what makes an async agent's row read
+   * identically to a synchronous one's, which is the point — the difference
+   * between the two is a scheduling detail of the CLI, not something the log
+   * should make the reader decode.
+   *
+   * The `<result>` is deliberately **not** given a row. It is the agent's whole
+   * report, it is already the last row of the sub-log this task expands into,
+   * and Claude invariably paraphrases it in the very next message — three copies
+   * of one paragraph, two of them uninvited.
+   *
+   * A notification whose `<tool-use-id>` names no row we hold (a `/clear`
+   * between launch and report, or a rewind over the launch) still says
+   * something happened, so it degrades to a one-line muted row rather than
+   * vanishing.
+   */
+  private taskNotification(body: string, id: string, at: number, touched: ChatEntry[]): void {
+    const toolUseId = noteTag(body, 'tool-use-id')
+    const entry = this.taskRows.get(toolUseId)
+    const status = noteTag(body, 'status') || 'completed'
+    const usage = /<usage>([\s\S]*?)<\/usage>/.exec(body)?.[1] ?? ''
+    const usageNum = (name: string): number | null => {
+      const raw = noteTag(usage, name)
+      const n = raw ? Number(raw) : NaN
+      return Number.isFinite(n) ? n : null
+    }
+
+    if (!entry) {
+      const summary = noteTag(body, 'summary') || `agent ${status}`
+      this.push({ id, role: 'stop', at, turn: this.turn, kind: 'stop', text: summary, tone: 'muted' })
+      return
+    }
+
+    entry.agentId = entry.agentId || noteTag(body, 'task-id') || null
+    entry.status = status
+    entry.durationMs = usageNum('duration_ms') ?? entry.durationMs
+    entry.tools = usageNum('tool_uses') ?? entry.tools
+    entry.tokens = usageNum('subagent_tokens') ?? entry.tokens
+    entry.running = false
+    // The row is older than this line, so nothing appended — say so explicitly
+    // or the renderer never hears that the agent stopped.
+    touched.push(entry)
+  }
+
   /** A tool_result completes the card its tool_use already produced. */
   private toolResult(b: Json, structured: Json | null, at: number): ChatEntry | null {
     const toolUseId = str(b.tool_use_id)
@@ -841,8 +995,23 @@ export class ChatMapper {
     }
 
     if (entry.kind === 'task') {
-      entry.agentId = str(structured?.agentId) || null
+      // `|| entry.agentId`, not `|| null`: a re-read of a turn must not blank an
+      // id an earlier pass already recovered.
+      entry.agentId = str(structured?.agentId) || entry.agentId
       entry.agentType = str(structured?.agentType) || entry.agentType
+      // **A background launch is not a finished agent.** `run_in_background`
+      // returns the instant the agent starts, and this result says only that:
+      // `status: "async_launched"`, no duration, no tool count, no tokens. Taking
+      // it as the outcome froze the row at that word with a blank stats line and
+      // no clock — neither running nor finished, which is what a background agent
+      // looked like in this app until now. The row stays running until its
+      // notification lands (taskNotification), or until the file ends without one
+      // (finishHistory).
+      if (structured?.isAsync === true || str(structured?.status) === 'async_launched') {
+        entry.status = 'running'
+        entry.running = true
+        return entry
+      }
       entry.status = isError ? 'failed' : str(structured?.status) || 'completed'
       entry.durationMs = num(structured?.totalDurationMs)
       entry.tools = num(structured?.totalToolUseCount)
@@ -1001,6 +1170,21 @@ export class ChatMapper {
    * structurally cannot hold, and it is stated rather than papered over.
    */
   finishHistory(at: number): void {
+    // A background agent still marked running at the end of a whole-file read
+    // has no completion anywhere in this conversation. Almost always that means
+    // it never got one: the agent lived inside the CLI process that wrote the
+    // file, and the read that matters here is the one at *open*, where that
+    // process is already gone. Left alone the row would sit on screen with a
+    // clock ticking up from last Tuesday, so it says the one true thing there is
+    // to say instead. (The other caller is the re-read after a revert, where an
+    // agent really could still be running — and that case repairs itself: its
+    // notification completes the row by id when it lands.)
+    for (const e of this.entries) {
+      if (e.kind === 'task' && e.running) {
+        e.running = false
+        e.status = 'no report'
+      }
+    }
     for (let i = this.entries.length - 1; i >= 0; i--) {
       const e = this.entries[i]
       if (e.kind === 'text' && e.role === 'you') {

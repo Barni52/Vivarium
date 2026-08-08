@@ -76,6 +76,24 @@ function prose(entries: ChatEntry[]): number {
 }
 
 /**
+ * Fold newer rows into a list, replacing by id and appending the rest in order.
+ *
+ * The sub-log's version of the upsert `l.entries` already gets: a subagent's
+ * rows are *revised* as well as added — a `tool_result` completes the card its
+ * `tool_use` opened, arriving as the same row with the same id — so a plain
+ * concatenation ends up holding both states of every tool call the agent made.
+ */
+function mergeById(existing: ChatEntry[], incoming: ChatEntry[]): ChatEntry[] {
+  const out = [...existing]
+  for (const e of incoming) {
+    const i = out.findIndex((x) => x.id === e.id)
+    if (i >= 0) out[i] = e
+    else out.push(e)
+  }
+  return out
+}
+
+/**
  * One usage report, in this app's spelling.
  *
  * The four fields are read separately rather than kept as the raw object because
@@ -260,6 +278,14 @@ interface Live {
   todos: Map<string, ChatTodo>
   /** live sub-log frames, by their spawning tool_use id */
   subagents: Map<string, ChatEntry[]>
+  /**
+   * The tasks whose sub-log has been read from the sibling **file**, which is
+   * the complete and final version of it. Without this the live buffer — which
+   * is only ever what the stream happened to forward — was returned forever, so
+   * a task expanded while it ran kept showing the three rows it had at that
+   * moment even after the agent finished and wrote thirty more.
+   */
+  subagentsRead: Set<string>
   /** byte offset into the transcript that has already been mapped */
   offset: number
   /**
@@ -402,6 +428,7 @@ export class ChatService {
       bodies: new Map(),
       todos: new Map(),
       subagents: new Map(),
+      subagentsRead: new Set(),
       offset: 0,
       turnOffset: 0,
       transcriptExists: undefined,
@@ -576,9 +603,24 @@ export class ChatService {
     const { lines, bytes } = takeTurn(complete)
     this.accounted(l, from + bytes)
     const mapper = new ChatMapper(turn)
+    // Same reason as `mapperFor`: a background agent launched in an earlier turn
+    // reports into this one, and the row it completes belongs to that turn.
+    mapper.adoptTasks(l.entries)
     const now = Date.now()
-    for (const line of lines) mapper.feed(line, now)
+    // Rows this turn *changed* without creating. There is one producer: a
+    // background agent's notification completing a task row from an earlier
+    // turn. They are not part of this turn's replacement set — dropping and
+    // re-adding them would move them out of their place in time — so they ride
+    // out separately, as the upserts they are.
+    const foreign: ChatEntry[] = []
+    for (const line of lines) {
+      for (const e of mapper.feed(line, now)) if (e.turn !== turn) foreign.push(e)
+    }
     mapper.markCancelled(0)
+    // Shipped before the withholding check below, and unconditionally: a
+    // finished agent must not wait on a turn whose prose is still landing, and
+    // the mutation is idempotent, so a re-read applying it twice is a no-op.
+    if (foreign.length) this.upsert(l, foreign)
     if (mapper.entries.length === 0) return
 
     // How much prose the stream painted, against how much the transcript holds.
@@ -864,10 +906,14 @@ export class ChatService {
     const touched = mapper.feed(f, Date.now())
     // Subagent frames are buffered by the mapper rather than appended; ship them
     // as that row's sub-log so an expanded task grows while the turn runs.
+    // **Merged by id, not concatenated**: a sub-log's rows change as well as
+    // arrive — a `tool_result` completes the card its `tool_use` opened — and
+    // appending the completed card next to the running one puts two rows with
+    // one id in the same list, which is the one thing the renderer cannot
+    // survive. Both ends of this wire apply the same rule.
     for (const [toolUseId, rows] of mapper.subagents) {
       if (rows.length === 0) continue
-      const merged = [...(l.subagents.get(toolUseId) ?? []), ...rows]
-      l.subagents.set(toolUseId, merged)
+      l.subagents.set(toolUseId, mergeById(l.subagents.get(toolUseId) ?? [], rows))
       this.emit({ kind: 'task', sessionId: l.session.id, toolUseId, entries: rows })
       mapper.subagents.set(toolUseId, [])
     }
@@ -904,6 +950,11 @@ export class ChatService {
     if (!l.mapper) {
       l.mapper = new ChatMapper(l.turn)
       l.mapper.model = l.model
+      // This mapper is dropped at every `result`, and a background agent is not:
+      // one launched two turns ago reports into *this* one. Its row is handed
+      // forward by reference so the notification completes the row on screen
+      // rather than the orphan it would otherwise take itself for.
+      l.mapper.adoptTasks(l.entries)
     }
     return l.mapper
   }
@@ -1184,6 +1235,7 @@ export class ChatService {
     l.bodies.clear()
     l.todos.clear()
     l.subagents.clear()
+    l.subagentsRead.clear()
     l.offset = 0
     l.turnOffset = 0
     if (l.streamTimer) clearTimeout(l.streamTimer)
@@ -1811,23 +1863,38 @@ export class ChatService {
    * tool result reported. Reading the file for the *live* view was rejected: it
    * needs a docker exec per expand and per poll, and that round trip is precisely
    * what the open gate exists to meter.
+   *
+   * **Which of the two, decided by the row rather than by what is cached.** The
+   * buffer is only what `--forward-subagent-text` happened to forward, so it is
+   * the right answer exactly while the agent is running and the wrong one the
+   * moment it stops: a task expanded mid-run used to keep the rows it had at
+   * that instant for the life of the session, because a non-empty buffer short
+   * circuited the file read forever. Now a finished agent reads its file once
+   * (`subagentsRead`) and every later expand is served from that, so this still
+   * costs at most one docker exec per task.
    */
   async subagent(sessionId: string, toolUseId: string, agentId: string | null): Promise<ChatEntry[]> {
     const l = this.live.get(sessionId)
     if (!l) return []
-    const buffered = l.subagents.get(toolUseId)
-    if (buffered?.length) return buffered
+    const buffered = l.subagents.get(toolUseId) ?? []
+    if (l.subagentsRead.has(toolUseId)) return buffered
+    const row = l.entries.find((e) => e.kind === 'task' && e.toolUseId === toolUseId)
+    if (row?.kind === 'task' && row.running) return buffered
     const uuid = l.session.claudeSessionId
-    if (!uuid || !agentId) return []
+    if (!uuid || !agentId) return buffered
     const raw = await this.docker.readSubagentLog(l.project, uuid, agentId)
-    if (!raw) return []
+    // A read that finds nothing is not final: the file may simply not be there
+    // yet. Whatever the stream forwarded is still the better answer.
+    if (!raw) return buffered
     // The sub-log mapper KEEPS isSidechain lines — every line in a subagent file
     // carries it, and dropping them (right for the main mapper) would empty this.
     const mapper = new ChatMapper(0)
     const { lines } = parseNdjson(raw)
     const now = Date.now()
     for (const line of lines) mapper.feed({ ...line, isSidechain: false }, now)
+    if (mapper.entries.length === 0) return buffered
     l.subagents.set(toolUseId, mapper.entries)
+    l.subagentsRead.add(toolUseId)
     return mapper.entries
   }
 

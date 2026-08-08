@@ -989,10 +989,24 @@ function TaskRow({
   const [open, setOpen] = React.useState(false)
   const sub = handlers.subagents[entry.toolUseId] ?? []
 
-  const toggle = (): void => {
-    if (!open) handlers.onExpandTask(entry.toolUseId, entry.agentId)
-    setOpen(!open)
-  }
+  // Through a ref, and the effect below depends on primitives only: `handlers`
+  // is rebuilt whenever *any* sub-log changes, so asking for one with `handlers`
+  // in the dependency list is a request that triggers the next request.
+  const expand = React.useRef(handlers.onExpandTask)
+  React.useEffect(() => {
+    expand.current = handlers.onExpandTask
+  })
+
+  // Asked on open, and **again when the agent stops**. What main can hand back
+  // changes at exactly that moment: while a subagent runs the answer is the live
+  // buffer of whatever the stream forwarded, and once it finishes the complete
+  // sibling file exists. Without the second ask, a task expanded while it ran
+  // showed the three rows it had at that instant for good.
+  React.useEffect(() => {
+    if (open) expand.current(entry.toolUseId, entry.agentId)
+  }, [open, entry.running, entry.toolUseId, entry.agentId])
+
+  const toggle = (): void => setOpen(!open)
 
   const stats = [
     entry.status,

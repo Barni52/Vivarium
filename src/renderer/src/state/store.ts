@@ -234,6 +234,24 @@ function applyEntries(list: ChatEntry[], incoming: ChatEntry[]): ChatEntry[] {
   return next
 }
 
+/**
+ * The same upsert for a **sub-log**, without any of the log's special cases.
+ *
+ * A subagent has no turn clock and no stop row to swap one for, so this is the
+ * plain rule: replace by id, append what is new. It exists at all because the
+ * sub-log used to be *concatenated*, which meant every tool call the agent made
+ * appeared twice — once still running, once completed — with one id between them.
+ */
+function mergeEntriesById(list: ChatEntry[], incoming: ChatEntry[]): ChatEntry[] {
+  const next = list.slice()
+  for (const e of incoming) {
+    const i = next.findIndex((x) => x.id === e.id)
+    if (i >= 0) next[i] = e
+    else next.push(e)
+  }
+  return next
+}
+
 interface AppState {
   config: Config
   states: Record<string, ContainerState>
@@ -1001,11 +1019,14 @@ export const useStore = create<AppState>((set, get) => ({
         patch((c) => (c.blocking?.requestId === e.requestId ? { ...c, blocking: null } : c))
         break
       case 'task':
+        // Merged by id, not concatenated — a sub-log's rows are revised as well
+        // as added (a tool_result completes the card its tool_use opened, under
+        // the same id), and this list is rendered with `key={e.id}`.
         patch((c) => ({
           ...c,
           subagents: {
             ...c.subagents,
-            [e.toolUseId]: [...(c.subagents[e.toolUseId] ?? []), ...e.entries]
+            [e.toolUseId]: mergeEntriesById(c.subagents[e.toolUseId] ?? [], e.entries)
           }
         }))
         break
@@ -1184,8 +1205,15 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   loadSubagent: async (sessionId, toolUseId, agentId) => {
-    if (get().chats[sessionId]?.subagents[toolUseId]?.length) return
+    // Asked every time the row is opened, deliberately. The guard that used to
+    // sit here — "we already have rows, so don't" — is what made an agent
+    // expanded while it ran keep its half-written sub-log for good: the rows it
+    // had were the live buffer, and the complete version only exists in the
+    // sibling file. Main is the one that knows which of the two is current and
+    // memoises the file read, so this costs an IPC round trip and, at most once
+    // per task, one docker exec.
     const entries = await window.vivarium.chatSubagent(sessionId, toolUseId, agentId)
+    if (!entries.length) return
     set((s) => {
       const c = s.chats[sessionId]
       if (!c) return {}

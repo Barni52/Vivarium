@@ -431,6 +431,43 @@ in the renderer: the same guarantee bought back at a higher price.
   blanks the entire log for exactly the sessions this feature creates. It is unnecessary anyway:
   subagent work is not written into the parent file at all, it lives in a sibling `subagents/`
   directory read on demand.
+- **A subagent has three sources and one row, and the row is `task`.** The sources disagree about
+  everything except that, so all three are handled where they arrive:
+  - **A synchronous `Task`** completes the way any tool does: its `toolUseResult` carries
+    `status` / `agentType` / `totalDurationMs` / `totalToolUseCount` / `totalTokens`, and the row is
+    finished the moment the result lands.
+  - **A background `Agent`** (`run_in_background: true`) does not. Its result says only
+    `isAsync: true, status: "async_launched"` and carries **no outcome at all** — so taking it as
+    one froze the row on that word with a blank stats line and no clock, which is neither running
+    nor finished and is what a background agent looked like in this app until it was fixed. The row
+    stays `running` instead, and is completed by the **`<task-notification>`** the CLI delivers
+    later as an ordinary **user line** holding an XML block. That block is the *only* place a
+    background agent's outcome is written down (`<tool-use-id>` names the row, `<usage>` carries the
+    same three numbers a synchronous result would have), and untreated it renders as a tinted `you`
+    bubble of markup and a duplicate of the whole agent report, immediately above the paragraph in
+    which Claude paraphrases it — the identical failure `<local-command-stdout>` already documents.
+    Its `<result>` is deliberately given **no row**: it is already the last row of the sub-log the
+    task expands into, and Claude restates it next. An orphan notification (`/clear` or a rewind
+    between launch and report) degrades to one muted line rather than vanishing.
+    **A background agent outlives the mapper that launched it** — the live mapper is dropped at
+    every `result` and a settle builds one per turn, while an agent launched in turn 3 reports in
+    turn 5 — so `adoptTasks` hands the rows forward **by reference**, and `settleTurn` ships
+    anything it changed whose `turn` is not the one being settled (a row must not be moved out of
+    its place in time to be updated). A whole-file read ending with an agent still running closes it
+    out as `no report`, or the row ticks a clock up from last Tuesday.
+  - **The sub-log**, which is the sibling file once the agent has stopped and the forwarded stream
+    while it runs — decided by the row's `running`, never by what happens to be cached, because a
+    non-empty buffer used to short-circuit the file read forever and a task expanded mid-run kept
+    the three rows it had at that instant. `subagentsRead` memoises the file so this still costs at
+    most one `docker exec` per task, and `TaskRow` re-asks when the agent stops.
+    **One sub-mapper per subagent, kept for the life of the parent mapper.** It was a fresh
+    `ChatMapper` per *line*, which threw away everything a mapper is stateful for: `tool_result`
+    finds its `tool_use` in `tools`, so with the pairing reset between the two lines **every result
+    in every live sub-log was dropped** and every card sat there spinning, while the id counters
+    restarted and collided rows on `#0`. Reopening read the file with one mapper and looked
+    perfect, which is what made it read as a rendering bug. Sub-log rows are therefore **merged by
+    id at all three hops** (mapper bucket, `ChatService`, store) — a tool card arrives twice, once
+    opened and once completed, under one id.
 - **Chat entry ids are `<message id>#<block type>#<ordinal among blocks of that type>` — never the
   content-array index.** Claude Code writes one transcript line per content block but gives every
   line of one API message the same `message.id`, so a message whose text and tool call are two
