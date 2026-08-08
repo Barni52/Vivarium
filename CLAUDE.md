@@ -509,8 +509,8 @@ in the renderer: the same guarantee bought back at a higher price.
   row a CLI that emits no such message would produce at all. So whichever lands second is
   suppressed, per turn — never by a shared fixed id, or a conversation with five interrupted turns
   would collapse to one row.
-- **The `AskUserQuestion` card is the whole tool, not a row of labels — and it is a popover over the
-  log, not a band in it and not a dialog over everything.** The
+- **The `AskUserQuestion` card is the whole tool, not a row of labels — and it is the last row of
+  the conversation, not a band above it and not a surface over it.** The
   first version drew the
   option labels as chips, which silently dropped every affordance that makes the tool worth calling:
   the option **descriptions** (tooltip-only), the **previews** the model writes for you to compare,
@@ -520,17 +520,24 @@ in the renderer: the same guarantee bought back at a higher price.
   the composer it was a 46vh scroller wedged between the log and the box, competing with both for
   height. It was then a modal dialog, which failed in the opposite direction and worse: a scrim over
   the log, no scrolling, and a question you cannot answer without re-reading the last three tool
-  calls is exactly the question this tool asks.
-  So `QuestionPopover` **floats** — absolutely positioned inside the log's own box and anchored to
-  the bottom edge the composer starts at (`BlockingBar` still keeps the two one-line cases). Being
-  *over* the log rather than *in* it is the whole trick: the scroller keeps every pixel of its
-  height, so nothing re-pins and nothing reflows when the card appears or grows, and with no
-  backdrop and `pointer-events: none` on the anchor box the wheel, the scrollbar, text selection and
-  the composer all keep working underneath. Its ceiling is the log area, **measured** — everything
-  inside a zoomed box is in zoomed units, so `room` is read off the unzoomed anchor in screen pixels
-  and handed to the panel as `room / zoom` (a `getBoundingClientRect` taken *inside* the zoom is in
-  those units too, which is a good way to convince yourself of a bug that is not there; verified at
-  0.7×, 1× and 1.5×). There is no dismiss — "Chat about this" is the way out, since that is a real
+  calls is exactly the question this tool asks. It was then a card *floating* over the tail of the
+  log — which fixed the scrim and kept the scrolling, but still **covered** the last few messages,
+  the ones a question is almost always about, and read as something the app had put on top of the
+  chat rather than as something Claude had said in it.
+  So `QuestionCard` is simply **in the log**: the last child of the log column, after every message
+  and after the turn clock (`BlockingBar` still keeps the two one-line cases). It scrolls with the
+  conversation because it is part of it; it has **no height cap, no inner scroller and no
+  measurement** — the log is the scroller, and a card in the flow that capped itself would nest a
+  second one inside the first. Nothing is covered, and the answer lands directly under the messages
+  that prompted it. Two consequences worth stating: **focus is taken with `preventScroll`** (focusing
+  an element inside a scroller scrolls it into view, and the log's own tail-follow is what should
+  decide that — it already knows not to yank a reader who scrolled up), and **the preview pane's
+  reserve-the-tallest rule is load-bearing again** — the card's height *is* content height now, so a
+  pane that resized on hover would move the whole conversation under the pointer, which is the bug it
+  was written for. The cost is the one thing a band buys and this gives up: it can scroll out of
+  sight. That is why the other two blocking cards stay pinned — a plan's approve/reject must not
+  disappear behind the plan body — while this one can afford it. There is no dismiss — "Chat about
+  this" is the way out, since that is a real
   answer to the tool rather than a cancel, and dismissing would leave the CLI blocked with nothing
   on screen saying so. A single Esc keeps its single meaning, interrupt the turn, served by
   ChatView's window handler — and `RewindOverlay`, which the *second* Esc of a pair opens, is still
@@ -612,15 +619,17 @@ in the renderer: the same guarantee bought back at a higher price.
   watches the content **and the scroller** — a composer growing to three lines takes height away
   from the log without changing anything inside it — and `pinned` (within 40px of the bottom) is
   what keeps it from yanking a user who has scrolled up to read.
-  **The corollary binds everything in the pinned bands: a hover may not change their height.**
-  Todo strip, blocking bar and chip strip all sit between the log and the composer, so any pixel
-  they gain or lose is a pixel the *scroller* loses or gains, and the observer answers by re-pinning
-  the tail. The question card's preview pane learned this the hard way — it swapped its content on
+  **The corollary binds the pinned bands *and* everything in the log: a hover may not change a
+  height.** Todo strip, blocking bar and chip strip sit between the log and the composer, so any
+  pixel they gain or lose is a pixel the *scroller* loses or gains; anything inside the log changes
+  the content height directly. Either way the observer answers by re-pinning the tail. The question
+  card's preview pane learned this the hard way — it swapped its content on
   hover, so moving down a list of options jumped the whole conversation once per row. It lays every
   option's preview into one grid cell and hides all but the focused one (`visibility`, which keeps
-  layout), so the pane is the size of the tallest from the moment it appears. That card floats now
-  (absolutely positioned, out of the flow) and so is out from under this rule, and the technique
-  stays anyway — a card that resizes under the pointer is its own bug. Reserve the space; do not
+  layout), so the pane is the size of the tallest from the moment it appears. The card spent a
+  version floating, out of the flow and out from under this rule, and is now the log's last row —
+  so the rule binds it again, and the technique never stopped being right anyway: a card that
+  resizes under the pointer is its own bug. Reserve the space; do not
   compute it against font metrics, and do not re-measure on hover.
 - **The turn clock draws at the bottom of the log while it is running.** It is appended at *send*,
   before a word of the answer exists, so in list order it sits directly under your message and the

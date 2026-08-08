@@ -69,13 +69,6 @@ const DOUBLE_ESC_MS = 500
 const COMPOSER_MAX_FRACTION = 0.5
 const COMPOSER_MIN_MAX = 180
 
-/**
- * The gap the question card leaves above the composer — the same 10px the pinned
- * bands put between themselves, so a card and a todo strip stack at one rhythm
- * even though only one of them is in the flow.
- */
-const POPOVER_GAP = 10
-
 // There was a `columnMax(zoom)` here: the reading column's 880px `max-width`,
 // divided back out below 1× because a `max-width` on a zoomed box is in *zoomed*
 // pixels, so zooming out used to pull both edges of the page in from the window.
@@ -726,124 +719,107 @@ export function ChatView({
         </div>
       )}
 
-      {/* The log area, wrapped in a `position: relative` box it does not need
-          for itself — the question popover anchors to the *bottom of the
-          visible log*, and an absolutely positioned child of the scroller would
-          scroll away with the content instead of staying put above the
-          composer. The wrapper is also what caps the popover's height: it is
-          exactly the room there is between the header and the composer. */}
       <div
-        style={{
-          position: 'relative',
-          flex: 1,
-          minHeight: 0,
-          display: 'flex',
-          flexDirection: 'column'
+        ref={logRef}
+        className="vchat-scroll"
+        onScroll={(e) => {
+          const el = e.currentTarget
+          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
         }}
+        // The one place the zoom chords are written down. Same argument as the
+        // terminal's menu, which is where Ctrl+F and Ctrl+± are taught: a chord
+        // nothing on screen mentions may as well not exist.
+        onContextMenu={(e) => {
+          e.preventDefault()
+          const z = useStore.getState()
+          const selection = window.getSelection()?.toString() ?? ''
+          z.openContextMenu(e.clientX, e.clientY, [
+            {
+              label: 'Copy',
+              icon: <Copy size={14} />,
+              hint: 'Ctrl+C',
+              disabled: !selection,
+              onSelect: () => void window.vivarium.clipboardWriteText(selection)
+            },
+            { label: '---' },
+            {
+              label: 'Revert to a message…',
+              icon: <Undo size={14} />,
+              hint: 'Esc Esc',
+              disabled: revertTargets.length === 0,
+              onSelect: () => setRewind({ busy: false })
+            },
+            { label: '---' },
+            { label: 'Zoom in', icon: <ZoomIn size={14} />, hint: 'Ctrl++', onSelect: () => z.zoomChat(1) },
+            { label: 'Zoom out', icon: <ZoomOut size={14} />, hint: 'Ctrl+-', onSelect: () => z.zoomChat(-1) },
+            {
+              label: 'Reset zoom',
+              icon: <Refresh size={14} />,
+              hint: 'Ctrl+0',
+              onSelect: () => z.resetChatZoom()
+            }
+          ])
+        }}
+        style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}
       >
-        <div
-          ref={logRef}
-          className="vchat-scroll"
-          onScroll={(e) => {
-            const el = e.currentTarget
-            pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-          }}
-          // The one place the zoom chords are written down. Same argument as the
-          // terminal's menu, which is where Ctrl+F and Ctrl+± are taught: a chord
-          // nothing on screen mentions may as well not exist.
-          onContextMenu={(e) => {
-            e.preventDefault()
-            const z = useStore.getState()
-            const selection = window.getSelection()?.toString() ?? ''
-            z.openContextMenu(e.clientX, e.clientY, [
-              {
-                label: 'Copy',
-                icon: <Copy size={14} />,
-                hint: 'Ctrl+C',
-                disabled: !selection,
-                onSelect: () => void window.vivarium.clipboardWriteText(selection)
-              },
-              { label: '---' },
-              {
-                label: 'Revert to a message…',
-                icon: <Undo size={14} />,
-                hint: 'Esc Esc',
-                disabled: revertTargets.length === 0,
-                onSelect: () => setRewind({ busy: false })
-              },
-              { label: '---' },
-              { label: 'Zoom in', icon: <ZoomIn size={14} />, hint: 'Ctrl++', onSelect: () => z.zoomChat(1) },
-              { label: 'Zoom out', icon: <ZoomOut size={14} />, hint: 'Ctrl+-', onSelect: () => z.zoomChat(-1) },
-              {
-                label: 'Reset zoom',
-                icon: <Refresh size={14} />,
-                hint: 'Ctrl+0',
-                onSelect: () => z.resetChatZoom()
-              }
-            ])
-          }}
-          style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}
-        >
-          {/* The log column. The composer's carries the same zoom and the same
-              EDGE, so a message and the box you answer in share both edges.
+        {/* The log column. The composer's carries the same zoom and the same
+            EDGE, so a message and the box you answer in share both edges.
 
-              `zoom` rather than a font size threaded through thirty components:
-              the chat is a whole layout (a gutter, cards, a composer) and scaling
-              only the type would leave every one of those behind at its 1×
-              proportions. It sits on the *column* and not on the view root because
-              a zoomed `position:absolute; inset:0` box scales its own edges, while
-              the column is a plain auto-width block that fills the scroller at any
-              factor. */}
-          <div ref={contentRef} style={{ zoom, padding: `20px ${EDGE}px 40px` }}>
-            {chat && chat.total > entries.length && (
-              <button
-                onClick={() => void loadEarlier(session.id)}
-                style={{
-                  display: 'block',
-                  margin: '0 auto 18px',
-                  fontFamily: MONO,
-                  fontSize: 10.5,
-                  border: `1px solid ${CHAT.border}`,
-                  background: 'transparent',
-                  color: CHAT.dim3,
-                  padding: '4px 12px',
-                  cursor: 'pointer'
-                }}
-              >
-                load earlier ({chat.total - entries.length})
-              </button>
-            )}
-            {rows.map((e) => (
-              <LogRow key={e.id} entry={e} handlers={handlers} streaming={e.id === streamingId} />
-            ))}
-            {entries.length === 0 && chat?.open && (
-              <div
-                style={{
-                  padding: '48px 10px',
-                  fontSize: TYPE.prose,
-                  lineHeight: TYPE.proseLine,
-                  color: CHAT.dim3
-                }}
-              >
-                Nothing said yet — ask something below.
-              </div>
-            )}
-          </div>
+            `zoom` rather than a font size threaded through thirty components:
+            the chat is a whole layout (a gutter, cards, a composer) and scaling
+            only the type would leave every one of those behind at its 1×
+            proportions. It sits on the *column* and not on the view root because
+            a zoomed `position:absolute; inset:0` box scales its own edges, while
+            the column is a plain auto-width block that fills the scroller at any
+            factor. */}
+        <div ref={contentRef} style={{ zoom, padding: `20px ${EDGE}px 40px` }}>
+          {chat && chat.total > entries.length && (
+            <button
+              onClick={() => void loadEarlier(session.id)}
+              style={{
+                display: 'block',
+                margin: '0 auto 18px',
+                fontFamily: MONO,
+                fontSize: 10.5,
+                border: `1px solid ${CHAT.border}`,
+                background: 'transparent',
+                color: CHAT.dim3,
+                padding: '4px 12px',
+                cursor: 'pointer'
+              }}
+            >
+              load earlier ({chat.total - entries.length})
+            </button>
+          )}
+          {rows.map((e) => (
+            <LogRow key={e.id} entry={e} handlers={handlers} streaming={e.id === streamingId} />
+          ))}
+          {entries.length === 0 && chat?.open && (
+            <div
+              style={{
+                padding: '48px 10px',
+                fontSize: TYPE.prose,
+                lineHeight: TYPE.proseLine,
+                color: CHAT.dim3
+              }}
+            >
+              Nothing said yet — ask something below.
+            </div>
+          )}
+          {/* The question card. It is the last row of the conversation rather
+              than a surface over it, so it scrolls with the messages it is
+              asking about — see QuestionCard. Keyed on the request for the same
+              reason the bar is: two `can_use_tool` requests can arrive back to
+              back without passing through null, and half-ticked options carried
+              into the next question are an answer nobody gave. */}
+          {blocking?.kind === 'question' && (
+            <QuestionCard
+              key={blocking.requestId}
+              questions={blocking.questions ?? []}
+              onAnswer={(answer) => void answerChat(session.id, blocking.requestId, answer)}
+            />
+          )}
         </div>
-
-        {/* The question card, floating over the tail of the log and anchored to
-            the composer. Keyed on the request for the same reason the bar is:
-            two `can_use_tool` requests can arrive back to back without passing
-            through null, and half-ticked options carried into the next question
-            are an answer nobody gave. */}
-        {blocking?.kind === 'question' && (
-          <QuestionPopover
-            key={blocking.requestId}
-            questions={blocking.questions ?? []}
-            zoom={zoom}
-            onAnswer={(answer) => void answerChat(session.id, blocking.requestId, answer)}
-          />
-        )}
       </div>
 
       {/* The composer region floats over the end of the log rather than sitting
@@ -863,11 +839,11 @@ export function ChatView({
               not make the buttons more visible (they are adjacent either way) and
               it costs a disappearance the user did not cause. */}
           {todos.length > 0 && <TodoStrip todos={todos} />}
-          {/* A question is the one blocking card that is *not* a bar — it is a
-              popover, mounted over the end of the log just above this band (see
-              QuestionPopover). Everything else here is one line of chrome with
-              two buttons on it, which a band carries better than anything
-              floating would. */}
+          {/* A question is the one blocking card that is *not* a bar and not
+              here at all — it is a row at the end of the log (see QuestionCard).
+              Everything else is one line of chrome with two buttons on it, which
+              a band carries better than a card in the flow would: a plan's
+              approval must not scroll away behind the plan body it is about. */}
           {blocking && blocking.kind !== 'question' && (
             // Keyed on the request, so a card *replaced* rather than answered
             // starts empty. Answering unmounts the bar and takes its state with
@@ -1472,9 +1448,10 @@ function TodoStrip({ todos }: { todos: ChatTodo[] }): React.ReactElement {
  * place in time, so the transcript stays a complete record — and the buttons are
  * pinned here, so a decision cannot scroll away behind twenty tool calls.
  *
- * A `question` never reaches this component — it is a popover (QuestionPopover)
- * floating over the end of the log just above this band. What is left is the two
- * one-line cases, which is all a bar was ever the right shape for.
+ * A `question` never reaches this component — it is a card in the log itself
+ * (QuestionCard), being a form rather than a sentence with two buttons after it.
+ * What is left is the two one-line cases, which is all a bar was ever the right
+ * shape for — and the two whose buttons genuinely must not scroll away.
  */
 function BlockingBar({
   card,
@@ -1559,25 +1536,33 @@ function BlockingBar({
  * about than answer. All five are the reason the tool exists; a chip row is the
  * one part of it a plain sentence could have done instead.
  *
- * **A popover over the log, not a band in it and not a dialog over everything.**
- * All three have been tried and the two failures were opposite. Pinned *in* the
- * band above the composer it was a 46vh scroller wedged into the gap between the
- * log and the box, competing with both for height — every pixel it gained came
- * out of the log's scroller, which is also why it needed a rule against
- * changing size on hover. As a modal *dialog* it had all the room it wanted and
- * took the conversation away to get it: a scrim over the log, no scrolling, and
- * a question you cannot answer without re-reading the last three tool calls is
- * exactly the question this tool asks.
+ * **The last row of the conversation — not a band, not a dialog, and no longer
+ * a surface over the log.** All four have been built and the three that are gone
+ * failed in three different directions. Pinned *in* the band above the composer
+ * it was a 46vh scroller wedged into the gap between the log and the box,
+ * competing with both for height — every pixel it gained came out of the log's
+ * scroller. As a modal *dialog* it had all the room it wanted and took the
+ * conversation away to get it: a scrim over the log, no scrolling, and a question
+ * you cannot answer without re-reading the last three tool calls is exactly the
+ * question this tool asks. Floating over the tail of the log fixed the scrim and
+ * kept the scrolling, but it still *covered* the last few messages — the ones the
+ * question is almost always about — and it read as something the app had put on
+ * top of the chat rather than as something Claude had said in it.
  *
- * So it floats: absolutely positioned inside the log's own box, anchored to the
- * bottom edge that the composer starts at. That is the whole trick — it is
- * *over* the log rather than *in* it, so the scroller keeps every pixel of its
- * height (nothing re-pins, nothing reflows when the card appears or grows), and
- * there is no backdrop at all, so the wheel, the scrollbar, text selection and
- * the composer underneath all keep working while it is up. Its ceiling is the
- * log area itself, measured: it can be as tall as there is room for and never
- * taller, and a short question is a short card sitting just above the box you
- * would type in.
+ * So it is simply a row: the last child of the log column, in the flow, after
+ * every message and after the turn clock. It scrolls with the conversation
+ * because it is part of it, it can be as tall as it likes (the log is a scroller
+ * already, and it needs no cap and no measurement of the room above the
+ * composer), nothing is covered, and the answer you give lands directly under
+ * the messages that prompted it. Scrolling up to re-read is the ordinary gesture
+ * it always was, and the card is still there when you come back down.
+ *
+ * The cost is the one thing a band buys and this does not: it can scroll out of
+ * sight. That is why the *other* two blocking cards stay pinned — a plan's
+ * approve/reject must not disappear behind the plan body — while this one can
+ * afford it, being both tall enough to be hard to lose and the thing the tail
+ * follows to on arrival. The composer's placeholder says "Answer above" for the
+ * case where you have scrolled away from it anyway.
  *
  * The way out of a question you would rather not answer is still "Chat about
  * this", which is a real answer to the tool rather than a cancel — there is no
@@ -1597,14 +1582,11 @@ function BlockingBar({
  * read as terminal output you were somehow expected to click. The preview pane
  * is the exception and stays mono — see the note on it.
  */
-function QuestionPopover({
+function QuestionCard({
   questions,
-  zoom,
   onAnswer
 }: {
   questions: ChatQuestion[]
-  /** the chat's zoom factor — the card scales with the window it belongs to */
-  zoom: number
   onAnswer: (a: ChatAnswer) => void
 }): React.ReactElement {
   /** ticked option labels, per question */
@@ -1670,366 +1652,305 @@ function QuestionPopover({
   const answer = (clarify?: true): void =>
     onAnswer({ behavior: 'question', answers: answersFor(), notes: notesFor(), clarify })
 
-  // Focus the panel itself on mount, so Enter and Esc reach it without the user
-  // having to click into the card first. It cannot light the global focus ring
-  // — that rule is a `box-shadow`, and the inline shadow below wins. Focus is
-  // the *only* thing this card takes from the page, and it gives it back the
-  // moment you click anywhere else, which is the difference between a popover
-  // and the modal this used to be.
+  // Focus the card on mount, so Enter and Esc reach it without the user having
+  // to click into it first. It cannot light the global focus ring — that rule is
+  // a `box-shadow`, and the inline shadow below wins. Focus is the *only* thing
+  // this card takes from the page, and it gives it back the moment you click
+  // anywhere else, which is the difference between this and the modal it used to
+  // be. `preventScroll` because focusing an element inside a scroller scrolls it
+  // into view: the log's own tail-follow decides whether to move, and it already
+  // knows not to yank someone who has scrolled up to read.
   const panelRef = React.useRef<HTMLDivElement>(null)
   React.useEffect(() => {
-    panelRef.current?.focus()
-  }, [])
-
-  /**
-   * How tall the card may be: the log area it floats in, less the gap above the
-   * composer.
-   *
-   * **Everything inside a zoomed box is in zoomed units, and this is measured
-   * from outside one.** A length written inside the panel is multiplied by
-   * `zoom` on the way to the screen (and read back *un*multiplied — a
-   * `getBoundingClientRect` taken inside the subtree is in those units too,
-   * which is a good way to convince yourself of a bug that is not there). So
-   * both numbers handed to the panel are divided once: `room` is screen pixels
-   * off the unzoomed wrapper, and `room / zoom` is the same distance expressed
-   * in the units the panel is laid out in. Verified at 0.7×, 1× and 1.5×.
-   *
-   * A plain `maxHeight: 100%` would also have worked, since a percentage
-   * resolves against the unzoomed parent — but the gap above the composer has to
-   * come off in *screen* pixels, and `calc(100% - 10px)` would mix one unit with
-   * the other. One measurement, one division, no mixing.
-   */
-  const boxRef = React.useRef<HTMLDivElement>(null)
-  const [room, setRoom] = React.useState(0)
-  React.useLayoutEffect(() => {
-    const el = boxRef.current
-    if (!el) return
-    const read = (): void => setRoom(el.clientHeight)
-    read()
-    const ro = new ResizeObserver(read)
-    ro.observe(el)
-    return () => ro.disconnect()
+    panelRef.current?.focus({ preventScroll: true })
   }, [])
 
   return (
     <div
-      ref={boxRef}
+      ref={panelRef}
+      tabIndex={-1}
+      // Enter answers, from anywhere in the card including the two text fields —
+      // one handler rather than one per input, which is also what keeps "the
+      // button is disabled but Enter still sends" from happening.
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && !e.shiftKey && ready) {
+          e.preventDefault()
+          answer()
+        }
+      }}
       style={{
-        position: 'absolute',
-        // Left and right are the *composer's* edge rather than the log
-        // column's, so the card and the box you would answer in are one stack.
-        left: EDGE,
-        right: EDGE,
-        top: 0,
-        bottom: 0,
-        zIndex: 30,
-        display: 'flex',
-        flexDirection: 'column',
-        justifyContent: 'flex-end',
-        // **No backdrop, and none of this box is clickable.** It spans the whole
-        // log so the card can be measured against it and so a tall card starts
-        // from the top — but it must not swallow a click on the message the
-        // question is about, or a drag across a paragraph the user is quoting.
-        pointerEvents: 'none'
+        // No `maxHeight` and no inner scroller: the log is the scroller, and a
+        // card in the flow that capped itself would put a second one inside it —
+        // the wheel dying halfway down a preview is exactly the thing this
+        // window keeps being bitten by.
+        marginTop: 14,
+        background: CHAT.card,
+        border: `1px solid ${CHAT.borderCard}`,
+        // The `hold` edge every blocking surface wears, so a question and a plan
+        // awaiting approval are visibly the same kind of moment.
+        borderTop: `2px solid ${CHAT.hold}`,
+        borderRadius: CHAT.radiusCard,
+        // A row's shadow, not a floating panel's — enough to lift it off the
+        // page, nothing that claims to be above it.
+        boxShadow: '0 6px 20px -10px rgba(0,0,0,.55)',
+        animation: 'vdlg .16s ease',
+        fontFamily: SANS,
+        outline: 'none'
       }}
     >
       <div
-        ref={panelRef}
-        tabIndex={-1}
-        // Enter answers, from anywhere in the dialog including the two text
-        // fields — one handler rather than one per input, which is also what
-        // keeps "the button is disabled but Enter still sends" from happening.
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && ready) {
-            e.preventDefault()
-            answer()
-          }
-        }}
         style={{
-          zoom,
-          pointerEvents: 'auto',
           display: 'flex',
-          flexDirection: 'column',
-          minHeight: 0,
-          // The full width of the column, like the bands and the composer — this
-          // is a sheet rising out of the box below it, not a dialog floating in
-          // the middle of a page. `room` is 0 for the first frame, before the
-          // measure lands; the card is empty then anyway.
-          maxHeight: room ? Math.max(120, (room - POPOVER_GAP) / zoom) : undefined,
-          marginBottom: POPOVER_GAP / zoom,
-          background: CHAT.card,
-          border: `1px solid ${CHAT.borderCard}`,
-          // The `hold` edge every blocking surface wears, so a question and a
-          // plan awaiting approval are visibly the same kind of moment.
-          borderTop: `2px solid ${CHAT.hold}`,
-          borderRadius: CHAT.radiusCard,
-          // Heavier than a band's, because this one has to read as *above* the
-          // log rather than as another row in it — there is no scrim doing that
-          // job any more.
-          boxShadow: '0 24px 60px -18px rgba(0,0,0,.75)',
-          animation: 'vdlg .16s ease',
-          fontFamily: SANS,
-          outline: 'none'
+          alignItems: 'baseline',
+          gap: 10,
+          padding: '13px 18px',
+          borderBottom: `1px solid ${CHAT.borderSoft}`
         }}
       >
-        <div
-          style={{
-            flex: 'none',
-            display: 'flex',
-            alignItems: 'baseline',
-            gap: 10,
-            padding: '13px 18px',
-            borderBottom: `1px solid ${CHAT.borderSoft}`
-          }}
-        >
-          <span style={{ fontSize: 14, fontWeight: 500, color: CHAT.text }}>Claude is asking</span>
-          {questions.length > 1 && (
-            <span style={{ fontSize: 12, color: CHAT.dim3 }}>{questions.length} questions</span>
-          )}
-          <div style={{ flex: 1 }} />
-          {/* The one place Esc is taught while a card is up. It does here what it
-              does everywhere else in the chat: ends the turn. */}
-          <span style={{ fontFamily: MONO, fontSize: 10.5, color: CHAT.dim4 }}>esc interrupts</span>
-        </div>
+        <span style={{ fontSize: 14, fontWeight: 500, color: CHAT.text }}>Claude is asking</span>
+        {questions.length > 1 && (
+          <span style={{ fontSize: 12, color: CHAT.dim3 }}>{questions.length} questions</span>
+        )}
+        <div style={{ flex: 1 }} />
+        {/* The one place Esc is taught while a card is up. It does here what it
+            does everywhere else in the chat: ends the turn. */}
+        <span style={{ fontFamily: MONO, fontSize: 10.5, color: CHAT.dim4 }}>esc interrupts</span>
+      </div>
 
-        {/* Four questions with previews is a legal call, so the body scrolls
-            rather than the dialog growing past the window. */}
-        <div
-          style={{
-            minHeight: 0,
-            overflowY: 'auto',
-            padding: '16px 18px',
-            display: 'grid',
-            gap: 22,
-            alignContent: 'start'
-          }}
-        >
-          {questions.map((q) => {
-            const withPreview = !q.multiSelect && q.options.some((o) => o.preview)
-            const shown = focus[q.question] ?? q.options[0]?.label
-            const chosen = picks[q.question] ?? []
-            const list = (
-              <div style={{ display: 'grid', gap: 6, alignContent: 'start' }}>
-                {q.options.map((o) => (
-                  <OptionRow
-                    key={o.label}
-                    label={o.label}
-                    description={o.description}
-                    multi={q.multiSelect}
-                    on={chosen.includes(o.label)}
-                    focused={withPreview && shown === o.label}
-                    onFocus={() => setFocus((f) => ({ ...f, [q.question]: o.label }))}
-                    onClick={() => pick(q, o.label)}
-                  />
-                ))}
-                {/* Always present, because the CLI always adds it: "There should be
-                    no 'Other' option, that will be provided automatically" is in
-                    the schema the model is handed. Its text *is* the answer — the
-                    dialog files it under the question like any label. */}
+      <div
+        style={{
+          padding: '16px 18px',
+          display: 'grid',
+          gap: 22,
+          alignContent: 'start'
+        }}
+      >
+        {questions.map((q) => {
+          const withPreview = !q.multiSelect && q.options.some((o) => o.preview)
+          const shown = focus[q.question] ?? q.options[0]?.label
+          const chosen = picks[q.question] ?? []
+          const list = (
+            <div style={{ display: 'grid', gap: 6, alignContent: 'start' }}>
+              {q.options.map((o) => (
                 <OptionRow
-                  label="Other"
-                  description="answer in your own words"
+                  key={o.label}
+                  label={o.label}
+                  description={o.description}
                   multi={q.multiSelect}
-                  on={!!otherOn[q.question]}
-                  focused={false}
-                  onClick={() => armOther(q)}
+                  on={chosen.includes(o.label)}
+                  focused={withPreview && shown === o.label}
+                  onFocus={() => setFocus((f) => ({ ...f, [q.question]: o.label }))}
+                  onClick={() => pick(q, o.label)}
                 />
-                {otherOn[q.question] && (
-                  // Enter is the panel's, not this field's — see the dialog's own
-                  // onKeyDown. Indented to the marker's text column, so it reads as
-                  // belonging to the row above rather than as a sixth option.
-                  <input
-                    autoFocus
-                    value={other[q.question] ?? ''}
-                    onChange={(e) => setOther((o) => ({ ...o, [q.question]: e.target.value }))}
-                    placeholder="Type your answer…"
-                    spellCheck={false}
-                    style={{
-                      marginLeft: 27,
-                      height: 32,
-                      background: CHAT.well,
-                      border: `1px solid ${CHAT.border}`,
-                      color: CHAT.text,
-                      fontSize: 13,
-                      padding: '0 10px',
-                      outline: 'none'
-                    }}
-                  />
-                )}
-              </div>
-            )
-
-            return (
-              <div key={q.question}>
-                <div
+              ))}
+              {/* Always present, because the CLI always adds it: "There should be
+                  no 'Other' option, that will be provided automatically" is in
+                  the schema the model is handed. Its text *is* the answer — the
+                  dialog files it under the question like any label. */}
+              <OptionRow
+                label="Other"
+                description="answer in your own words"
+                multi={q.multiSelect}
+                on={!!otherOn[q.question]}
+                focused={false}
+                onClick={() => armOther(q)}
+              />
+              {otherOn[q.question] && (
+                // Enter is the panel's, not this field's — see the dialog's own
+                // onKeyDown. Indented to the marker's text column, so it reads as
+                // belonging to the row above rather than as a sixth option.
+                <input
+                  autoFocus
+                  value={other[q.question] ?? ''}
+                  onChange={(e) => setOther((o) => ({ ...o, [q.question]: e.target.value }))}
+                  placeholder="Type your answer…"
+                  spellCheck={false}
                   style={{
-                    display: 'flex',
-                    alignItems: 'baseline',
-                    gap: 9,
-                    marginBottom: 8,
-                    flexWrap: 'wrap'
+                    marginLeft: 27,
+                    height: 32,
+                    background: CHAT.well,
+                    border: `1px solid ${CHAT.border}`,
+                    color: CHAT.text,
+                    fontSize: 13,
+                    padding: '0 10px',
+                    outline: 'none'
+                  }}
+                />
+              )}
+            </div>
+          )
+
+          return (
+            <div key={q.question}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: 9,
+                  marginBottom: 8,
+                  flexWrap: 'wrap'
+                }}
+              >
+                {q.header && (
+                  <span
+                    style={{
+                      fontFamily: MONO,
+                      fontSize: 10,
+                      letterSpacing: '.04em',
+                      textTransform: 'uppercase',
+                      padding: '2px 6px',
+                      borderRadius: CHAT.radius,
+                      border: `1px solid ${CHAT.border}`,
+                      color: CHAT.hold,
+                      flex: 'none'
+                    }}
+                  >
+                    {q.header}
+                  </span>
+                )}
+                <span
+                  style={{
+                    fontSize: TYPE.prose + 0.5,
+                    color: CHAT.text,
+                    flex: 1,
+                    minWidth: 0,
+                    overflowWrap: 'anywhere'
                   }}
                 >
-                  {q.header && (
-                    <span
+                  {q.question}
+                </span>
+                {/* Whether more than one answer is allowed is not derivable from
+                    the options, and getting it wrong is a silently wrong answer
+                    rather than a visible error. A pill rather than the mono hint
+                    it was: it is a *rule about this control*, and it sits beside
+                    controls that now look like controls. */}
+                <span
+                  style={{
+                    flex: 'none',
+                    fontSize: 11,
+                    padding: '2px 9px',
+                    borderRadius: 999,
+                    background: CHAT.well,
+                    border: `1px solid ${CHAT.borderCard}`,
+                    color: CHAT.dim2
+                  }}
+                >
+                  {q.multiSelect ? 'choose any' : 'choose one'}
+                </span>
+              </div>
+
+              {withPreview ? (
+                <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 14 }}>
+                  {list}
+                  <div style={{ minWidth: 0, display: 'grid', gap: 8, alignContent: 'start' }}>
+                    {/* Markdown in a **monospace** box. The window root already
+                        declares mono; this says it again on purpose, because
+                        the CLI's own preview pane is Ink — a terminal grid
+                        whatever the model wrote — and the tool's schema promises
+                        the model that grid. A wrapper that ever restyles this
+                        window must not quietly reflow an ASCII mockup. */}
+                    {/* **Every option's preview is laid out, in one grid cell,
+                        and all but the focused one are hidden.** The box is
+                        therefore as tall and as wide as the *tallest* preview
+                        from the moment it appears, and moving down the list
+                        cannot change its size by a pixel.
+
+                        This is load-bearing, and it is load-bearing again for
+                        the reason it was written: the card is back **in** the
+                        log's flow, so its height is the scroller's content
+                        height. A five-line preview after a twenty-line one
+                        would shrink the card, the log's ResizeObserver would
+                        read that as the content changing height and re-pin the
+                        tail — and merely *hovering* the options would jump the
+                        conversation under the pointer. It survived a spell as a
+                        floating card, which could not resize the scroller at
+                        all, because it is also just better: a card that resizes
+                        while you compare four options is its own bug, and
+                        reserving the space costs nothing and needs no
+                        arithmetic against the font metrics.
+
+                        Sideways it scrolls; vertically it simply grows, and the
+                        *log* takes it — the card has no scroller of its own, so
+                        there is nothing here for a wheel to die in halfway down
+                        a mockup. */}
+                    <div
                       style={{
-                        fontFamily: MONO,
-                        fontSize: 10,
-                        letterSpacing: '.04em',
-                        textTransform: 'uppercase',
-                        padding: '2px 6px',
-                        borderRadius: CHAT.radius,
-                        border: `1px solid ${CHAT.border}`,
-                        color: CHAT.hold,
-                        flex: 'none'
+                        display: 'grid',
+                        overflowX: 'auto',
+                        padding: '8px 12px',
+                        background: CHAT.well,
+                        border: `1px solid ${CHAT.borderCard}`,
+                        borderRadius: CHAT.radiusCard
                       }}
                     >
-                      {q.header}
-                    </span>
-                  )}
-                  <span
-                    style={{
-                      fontSize: TYPE.prose + 0.5,
-                      color: CHAT.text,
-                      flex: 1,
-                      minWidth: 0,
-                      overflowWrap: 'anywhere'
-                    }}
-                  >
-                    {q.question}
-                  </span>
-                  {/* Whether more than one answer is allowed is not derivable from
-                      the options, and getting it wrong is a silently wrong answer
-                      rather than a visible error. A pill rather than the mono hint
-                      it was: it is a *rule about this control*, and it sits beside
-                      controls that now look like controls. */}
-                  <span
-                    style={{
-                      flex: 'none',
-                      fontSize: 11,
-                      padding: '2px 9px',
-                      borderRadius: 999,
-                      background: CHAT.well,
-                      border: `1px solid ${CHAT.borderCard}`,
-                      color: CHAT.dim2
-                    }}
-                  >
-                    {q.multiSelect ? 'choose any' : 'choose one'}
-                  </span>
-                </div>
-
-                {withPreview ? (
-                  <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 14 }}>
-                    {list}
-                    <div style={{ minWidth: 0, display: 'grid', gap: 8, alignContent: 'start' }}>
-                      {/* Markdown in a **monospace** box. The window root already
-                          declares mono; this says it again on purpose, because
-                          the CLI's own preview pane is Ink — a terminal grid
-                          whatever the model wrote — and the tool's schema promises
-                          the model that grid. A wrapper that ever restyles this
-                          window must not quietly reflow an ASCII mockup. */}
-                      {/* **Every option's preview is laid out, in one grid cell,
-                          and all but the focused one are hidden.** The box is
-                          therefore as tall and as wide as the *tallest* preview
-                          from the moment it appears, and moving down the list
-                          cannot change its size by a pixel.
-
-                          This began as a fix for something floating the card has
-                          since made impossible: pinned *in* the band above the
-                          composer, a five-line preview after a twenty-line one
-                          shrank the card, the log's ResizeObserver read that as
-                          the scroller changing height and re-pinned the tail — so
-                          merely *hovering* the options jumped the conversation.
-                          The card is out of the flow now and cannot resize the
-                          scroller at all, and this stays anyway, because it is
-                          also just better: a card that resizes under the pointer
-                          while you compare four options is its own bug, and
-                          reserving the space costs nothing and needs no
-                          arithmetic against the font metrics.
-
-                          Sideways it scrolls; vertically it grows and the card's
-                          own scroller takes it, since a second scroller nested in
-                          that one would swallow the wheel halfway down a mockup. */}
-                      <div
-                        style={{
-                          display: 'grid',
-                          overflowX: 'auto',
-                          padding: '8px 12px',
-                          background: CHAT.well,
-                          border: `1px solid ${CHAT.borderCard}`,
-                          borderRadius: CHAT.radiusCard
-                        }}
-                      >
-                        {q.options.map((o) => (
-                          <div
-                            key={o.label}
-                            style={{
-                              gridArea: '1 / 1',
-                              visibility: shown === o.label ? 'visible' : 'hidden'
-                            }}
-                          >
-                            {o.preview ? (
-                              <Preview src={o.preview} />
-                            ) : (
-                              <span style={{ fontFamily: MONO, fontSize: 11.5, color: CHAT.dim3 }}>
-                                no preview for this option
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                      <input
-                        value={notes[q.question] ?? ''}
-                        onChange={(e) => setNotes((n) => ({ ...n, [q.question]: e.target.value }))}
-                        placeholder="Notes on this option (optional)…"
-                        spellCheck={false}
-                        style={{
-                          height: 32,
-                          background: CHAT.well,
-                          border: `1px solid ${CHAT.border}`,
-                          color: CHAT.text,
-                          fontSize: 13,
-                          padding: '0 10px',
-                          outline: 'none'
-                        }}
-                      />
+                      {q.options.map((o) => (
+                        <div
+                          key={o.label}
+                          style={{
+                            gridArea: '1 / 1',
+                            visibility: shown === o.label ? 'visible' : 'hidden'
+                          }}
+                        >
+                          {o.preview ? (
+                            <Preview src={o.preview} />
+                          ) : (
+                            <span style={{ fontFamily: MONO, fontSize: 11.5, color: CHAT.dim3 }}>
+                              no preview for this option
+                            </span>
+                          )}
+                        </div>
+                      ))}
                     </div>
+                    <input
+                      value={notes[q.question] ?? ''}
+                      onChange={(e) => setNotes((n) => ({ ...n, [q.question]: e.target.value }))}
+                      placeholder="Notes on this option (optional)…"
+                      spellCheck={false}
+                      style={{
+                        height: 32,
+                        background: CHAT.well,
+                        border: `1px solid ${CHAT.border}`,
+                        color: CHAT.text,
+                        fontSize: 13,
+                        padding: '0 10px',
+                        outline: 'none'
+                      }}
+                    />
                   </div>
-                ) : (
-                  list
-                )}
-              </div>
-            )
-          })}
-        </div>
+                </div>
+              ) : (
+                list
+              )}
+            </div>
+          )
+        })}
+      </div>
 
-        <div
-          style={{
-            flex: 'none',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            padding: '12px 18px',
-            borderTop: `1px solid ${CHAT.borderSoft}`
-          }}
-        >
-          <span style={{ fontFamily: MONO, fontSize: 10.5, color: CHAT.dim4 }}>
-            {ready ? '⏎ answer' : 'pick an option to answer'}
-          </span>
-          <div style={{ flex: 1 }} />
-          {/* Not a cancel. It denies the tool with the questions attached and a
-              note that the user wants to talk first, so the composer message you
-              type next lands in a turn that is already listening. */}
-          <button onClick={() => answer(true)} style={secondaryButton}>
-            Chat about this
-          </button>
-          {/* The answers map is keyed by question *text*: an `allow` without one
-              yields "The user did not answer the questions." with no error
-              raised anywhere, which would silently break the card. */}
-          <button disabled={!ready} onClick={() => answer()} style={primaryButton(!ready)}>
-            Answer
-          </button>
-        </div>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '12px 18px',
+          borderTop: `1px solid ${CHAT.borderSoft}`
+        }}
+      >
+        <span style={{ fontFamily: MONO, fontSize: 10.5, color: CHAT.dim4 }}>
+          {ready ? '⏎ answer' : 'pick an option to answer'}
+        </span>
+        <div style={{ flex: 1 }} />
+        {/* Not a cancel. It denies the tool with the questions attached and a
+            note that the user wants to talk first, so the composer message you
+            type next lands in a turn that is already listening. */}
+        <button onClick={() => answer(true)} style={secondaryButton}>
+          Chat about this
+        </button>
+        {/* The answers map is keyed by question *text*: an `allow` without one
+            yields "The user did not answer the questions." with no error
+            raised anywhere, which would silently break the card. */}
+        <button disabled={!ready} onClick={() => answer()} style={primaryButton(!ready)}>
+          Answer
+        </button>
       </div>
     </div>
   )
@@ -2041,11 +1962,11 @@ function QuestionPopover({
  *
  * This is the one real **dialog** in the chat — root-mounted over the whole view,
  * behind a scrim, zoomed panel, focused on mount so the keyboard reaches it. The
- * question card was built the same way and is not any more (see QuestionPopover),
- * and the difference between the two is the whole argument: a question is asked
- * *about* the conversation and must not cover it, while this one asks you to pick
- * a message out of a list it prints for you — the conversation behind it is not
- * what you are reading.
+ * question card was built the same way and is now a row in the log (see
+ * QuestionCard), and the difference between the two is the whole argument: a
+ * question is asked *about* the conversation and belongs in it, while this one
+ * asks you to pick a message out of a list it prints for you — the conversation
+ * behind it is not what you are reading.
  *
  * It stays **mono**. The sans exception exists for a *form*: checkboxes, radios,
  * prose written by the model. This is a list of sentences you typed, quoted back,
