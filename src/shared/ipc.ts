@@ -78,6 +78,10 @@ export const CH = {
   chatEarlier: 'chat:earlier',
   chatSubagent: 'chat:subagent',
   chatMountTree: 'chat:mount-tree',
+  // "Look again at what `/` can expand." A send rather than an invoke, and the
+  // answer comes back on `chat:event` as a `meta` — the renderer is asking main
+  // to refresh a reading it already subscribes to, not fetching one.
+  chatRefreshCommands: 'chat:refresh-commands',
   chatEvent: 'chat:event',
 
   // A link in a chat message, opened in the user's own browser. The renderer

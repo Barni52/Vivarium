@@ -62,6 +62,19 @@ export class ClaudeService {
   }
 
   /**
+   * The newest published version, or null if it could not be looked up.
+   *
+   * Public so `DockerService` can ask at container-create time (see
+   * freshenClaude) without depending on this service — the dependency runs the
+   * other way, and a getter passed in keeps it that way. Cached like every other
+   * caller's answer: creating five projects in a row is one registry request.
+   */
+  async latestVersion(): Promise<string | null> {
+    await this.fetchLatest(false)
+    return this.latest
+  }
+
+  /**
    * Newest published version + the version installed in each project's
    * container. Container probes run sequentially: this is a handful of
    * `docker exec`s at most, and they're never on a hot path.

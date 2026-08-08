@@ -48,6 +48,34 @@ import { chipForNode, flattenTree, routeFile, type PendingChip } from './attach'
  */
 const DOUBLE_ESC_MS = 500
 
+/**
+ * How tall the composer may grow before it starts scrolling instead.
+ *
+ * It was a flat 180px, which is about six lines — and six lines is nothing for
+ * the kind of message this box actually receives: a pasted stack trace, a spec
+ * paragraph, a list of files. Past that the box stopped growing and you were
+ * writing through a letterbox, unable to see the top of your own prompt.
+ *
+ * A *fraction of the window* rather than a bigger constant, because the
+ * complaint scales with the monitor: 180px on a 2160px-tall window is a sliver,
+ * and 600px on a short one would leave no log at all. Half the view keeps the
+ * conversation on screen — the log is what you are writing *to* — and the floor
+ * is the old ceiling, so this can only ever be an improvement on a small window.
+ *
+ * Divided back out by the zoom at the point of use: the composer lives inside a
+ * zoomed column, so a height set here is multiplied by `zoom` on screen, and
+ * without that division zooming in would eat the log.
+ */
+const COMPOSER_MAX_FRACTION = 0.5
+const COMPOSER_MIN_MAX = 180
+
+/**
+ * The gap the question card leaves above the composer — the same 10px the pinned
+ * bands put between themselves, so a card and a todo strip stack at one rhythm
+ * even though only one of them is in the flow.
+ */
+const POPOVER_GAP = 10
+
 // There was a `columnMax(zoom)` here: the reading column's 880px `max-width`,
 // divided back out below 1× because a `max-width` on a zoomed box is in *zoomed*
 // pixels, so zooming out used to pull both edges of the page in from the window.
@@ -110,6 +138,8 @@ export function ChatView({
   const [rewind, setRewind] = React.useState<null | { busy: boolean; error?: string }>(null)
 
   const inputRef = React.useRef<HTMLTextAreaElement>(null)
+  /** the view root — what the composer's height ceiling is measured against */
+  const rootRef = React.useRef<HTMLDivElement>(null)
   const logRef = React.useRef<HTMLDivElement>(null)
   const contentRef = React.useRef<HTMLDivElement>(null)
   const overlayRef = React.useRef<HTMLDivElement>(null)
@@ -196,12 +226,27 @@ export function ChatView({
   // one line — so the height is set from scrollHeight, and reset to `auto` first
   // or it can only ever grow. Layout effect, not effect: measuring after paint
   // shows one frame of the wrong height on every keystroke.
-  React.useLayoutEffect(() => {
+  //
+  // The ceiling is measured rather than constant (see COMPOSER_MAX_FRACTION), so
+  // it is also re-applied on a window resize — a draft written on a maximised
+  // window and then restored down would otherwise keep a height the window no
+  // longer has room for.
+  const fitComposer = React.useCallback((): void => {
     const el = inputRef.current
     if (!el) return
+    const view = rootRef.current?.clientHeight ?? 0
+    const cap = Math.max(COMPOSER_MIN_MAX, Math.round((view * COMPOSER_MAX_FRACTION) / zoom))
+    el.style.maxHeight = `${cap}px`
     el.style.height = 'auto'
-    el.style.height = `${Math.min(180, Math.max(26, el.scrollHeight))}px`
-  }, [draft, visible])
+    el.style.height = `${Math.min(cap, Math.max(26, el.scrollHeight))}px`
+  }, [zoom])
+
+  React.useLayoutEffect(fitComposer, [fitComposer, draft, visible])
+
+  React.useEffect(() => {
+    window.addEventListener('resize', fitComposer)
+    return () => window.removeEventListener('resize', fitComposer)
+  }, [fitComposer])
 
   const entries = chat?.entries ?? []
   const blocking = chat?.blocking ?? null
@@ -352,6 +397,22 @@ export function ChatView({
   React.useEffect(() => {
     setPick(null)
   }, [menu?.kind, menu?.query])
+
+  /**
+   * Opening the command menu is the moment to go and look at the disk again.
+   *
+   * Claude Code only tells us what `/` can expand in a `system/init`, and it only
+   * emits one at the first turn of a process — so a chat opened before you wrote
+   * a skill offers a list that predates it, even though the CLI itself would run
+   * it (see ChatService.refreshCommands, which is also where the throttle lives).
+   * Keyed on the *kind* and not the query, so this is once per open rather than
+   * once per keystroke, and no state here waits on it: the answer lands as a
+   * `meta` event and the rows below re-derive.
+   */
+  React.useEffect(() => {
+    if (menu?.kind !== 'slash') return
+    window.vivarium.chatRefreshCommands(session.id)
+  }, [menu?.kind, session.id])
 
   const addFiles = async (files: FileList | File[]): Promise<void> => {
     const next: PendingChip[] = []
@@ -572,6 +633,7 @@ export function ChatView({
 
   return (
     <div
+      ref={rootRef}
       // The scope for every chat rule in GLOBAL_CSS — the control radius and the
       // scrollbar. It is a class rather than a wrapper selector so the rules die
       // with this subtree and can never reach the slate chrome around it.
@@ -664,94 +726,124 @@ export function ChatView({
         </div>
       )}
 
+      {/* The log area, wrapped in a `position: relative` box it does not need
+          for itself — the question popover anchors to the *bottom of the
+          visible log*, and an absolutely positioned child of the scroller would
+          scroll away with the content instead of staying put above the
+          composer. The wrapper is also what caps the popover's height: it is
+          exactly the room there is between the header and the composer. */}
       <div
-        ref={logRef}
-        className="vchat-scroll"
-        onScroll={(e) => {
-          const el = e.currentTarget
-          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+        style={{
+          position: 'relative',
+          flex: 1,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column'
         }}
-        // The one place the zoom chords are written down. Same argument as the
-        // terminal's menu, which is where Ctrl+F and Ctrl+± are taught: a chord
-        // nothing on screen mentions may as well not exist.
-        onContextMenu={(e) => {
-          e.preventDefault()
-          const z = useStore.getState()
-          const selection = window.getSelection()?.toString() ?? ''
-          z.openContextMenu(e.clientX, e.clientY, [
-            {
-              label: 'Copy',
-              icon: <Copy size={14} />,
-              hint: 'Ctrl+C',
-              disabled: !selection,
-              onSelect: () => void window.vivarium.clipboardWriteText(selection)
-            },
-            { label: '---' },
-            {
-              label: 'Revert to a message…',
-              icon: <Undo size={14} />,
-              hint: 'Esc Esc',
-              disabled: revertTargets.length === 0,
-              onSelect: () => setRewind({ busy: false })
-            },
-            { label: '---' },
-            { label: 'Zoom in', icon: <ZoomIn size={14} />, hint: 'Ctrl++', onSelect: () => z.zoomChat(1) },
-            { label: 'Zoom out', icon: <ZoomOut size={14} />, hint: 'Ctrl+-', onSelect: () => z.zoomChat(-1) },
-            {
-              label: 'Reset zoom',
-              icon: <Refresh size={14} />,
-              hint: 'Ctrl+0',
-              onSelect: () => z.resetChatZoom()
-            }
-          ])
-        }}
-        style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}
       >
-        {/* The log column. The composer's carries the same zoom and the same
-            EDGE, so a message and the box you answer in share both edges.
+        <div
+          ref={logRef}
+          className="vchat-scroll"
+          onScroll={(e) => {
+            const el = e.currentTarget
+            pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+          }}
+          // The one place the zoom chords are written down. Same argument as the
+          // terminal's menu, which is where Ctrl+F and Ctrl+± are taught: a chord
+          // nothing on screen mentions may as well not exist.
+          onContextMenu={(e) => {
+            e.preventDefault()
+            const z = useStore.getState()
+            const selection = window.getSelection()?.toString() ?? ''
+            z.openContextMenu(e.clientX, e.clientY, [
+              {
+                label: 'Copy',
+                icon: <Copy size={14} />,
+                hint: 'Ctrl+C',
+                disabled: !selection,
+                onSelect: () => void window.vivarium.clipboardWriteText(selection)
+              },
+              { label: '---' },
+              {
+                label: 'Revert to a message…',
+                icon: <Undo size={14} />,
+                hint: 'Esc Esc',
+                disabled: revertTargets.length === 0,
+                onSelect: () => setRewind({ busy: false })
+              },
+              { label: '---' },
+              { label: 'Zoom in', icon: <ZoomIn size={14} />, hint: 'Ctrl++', onSelect: () => z.zoomChat(1) },
+              { label: 'Zoom out', icon: <ZoomOut size={14} />, hint: 'Ctrl+-', onSelect: () => z.zoomChat(-1) },
+              {
+                label: 'Reset zoom',
+                icon: <Refresh size={14} />,
+                hint: 'Ctrl+0',
+                onSelect: () => z.resetChatZoom()
+              }
+            ])
+          }}
+          style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}
+        >
+          {/* The log column. The composer's carries the same zoom and the same
+              EDGE, so a message and the box you answer in share both edges.
 
-            `zoom` rather than a font size threaded through thirty components:
-            the chat is a whole layout (a gutter, cards, a composer) and scaling
-            only the type would leave every one of those behind at its 1×
-            proportions. It sits on the *column* and not on the view root because
-            a zoomed `position:absolute; inset:0` box scales its own edges, while
-            the column is a plain auto-width block that fills the scroller at any
-            factor. */}
-        <div ref={contentRef} style={{ zoom, padding: `20px ${EDGE}px 40px` }}>
-          {chat && chat.total > entries.length && (
-            <button
-              onClick={() => void loadEarlier(session.id)}
-              style={{
-                display: 'block',
-                margin: '0 auto 18px',
-                fontFamily: MONO,
-                fontSize: 10.5,
-                border: `1px solid ${CHAT.border}`,
-                background: 'transparent',
-                color: CHAT.dim3,
-                padding: '4px 12px',
-                cursor: 'pointer'
-              }}
-            >
-              load earlier ({chat.total - entries.length})
-            </button>
-          )}
-          {rows.map((e) => (
-            <LogRow key={e.id} entry={e} handlers={handlers} streaming={e.id === streamingId} />
-          ))}
-          {entries.length === 0 && chat?.open && (
-            <div
-              style={{
-                padding: '48px 10px',
-                fontSize: TYPE.prose,
-                lineHeight: TYPE.proseLine,
-                color: CHAT.dim3
-              }}
-            >
-              Nothing said yet — ask something below.
-            </div>
-          )}
+              `zoom` rather than a font size threaded through thirty components:
+              the chat is a whole layout (a gutter, cards, a composer) and scaling
+              only the type would leave every one of those behind at its 1×
+              proportions. It sits on the *column* and not on the view root because
+              a zoomed `position:absolute; inset:0` box scales its own edges, while
+              the column is a plain auto-width block that fills the scroller at any
+              factor. */}
+          <div ref={contentRef} style={{ zoom, padding: `20px ${EDGE}px 40px` }}>
+            {chat && chat.total > entries.length && (
+              <button
+                onClick={() => void loadEarlier(session.id)}
+                style={{
+                  display: 'block',
+                  margin: '0 auto 18px',
+                  fontFamily: MONO,
+                  fontSize: 10.5,
+                  border: `1px solid ${CHAT.border}`,
+                  background: 'transparent',
+                  color: CHAT.dim3,
+                  padding: '4px 12px',
+                  cursor: 'pointer'
+                }}
+              >
+                load earlier ({chat.total - entries.length})
+              </button>
+            )}
+            {rows.map((e) => (
+              <LogRow key={e.id} entry={e} handlers={handlers} streaming={e.id === streamingId} />
+            ))}
+            {entries.length === 0 && chat?.open && (
+              <div
+                style={{
+                  padding: '48px 10px',
+                  fontSize: TYPE.prose,
+                  lineHeight: TYPE.proseLine,
+                  color: CHAT.dim3
+                }}
+              >
+                Nothing said yet — ask something below.
+              </div>
+            )}
+          </div>
         </div>
+
+        {/* The question card, floating over the tail of the log and anchored to
+            the composer. Keyed on the request for the same reason the bar is:
+            two `can_use_tool` requests can arrive back to back without passing
+            through null, and half-ticked options carried into the next question
+            are an answer nobody gave. */}
+        {blocking?.kind === 'question' && (
+          <QuestionPopover
+            key={blocking.requestId}
+            questions={blocking.questions ?? []}
+            zoom={zoom}
+            onAnswer={(answer) => void answerChat(session.id, blocking.requestId, answer)}
+          />
+        )}
       </div>
 
       {/* The composer region floats over the end of the log rather than sitting
@@ -771,10 +863,11 @@ export function ChatView({
               not make the buttons more visible (they are adjacent either way) and
               it costs a disappearance the user did not cause. */}
           {todos.length > 0 && <TodoStrip todos={todos} />}
-          {/* A question is the one blocking card that is *not* a bar — it is an
-              overlay, mounted at the root of the view further down. Everything
-              else here is one line of chrome with two buttons on it, which a
-              band above the composer carries better than a dialog would. */}
+          {/* A question is the one blocking card that is *not* a bar — it is a
+              popover, mounted over the end of the log just above this band (see
+              QuestionPopover). Everything else here is one line of chrome with
+              two buttons on it, which a band carries better than anything
+              floating would. */}
           {blocking && blocking.kind !== 'question' && (
             // Keyed on the request, so a card *replaced* rather than answered
             // starts empty. Answering unmounts the bar and takes its state with
@@ -881,9 +974,11 @@ export function ChatView({
                   position: 'relative',
                   width: '100%',
                   minHeight: 26,
-                  // Height is driven by the layout effect above; the cap is here so
-                  // a 200-line paste scrolls inside the box instead of eating the log.
-                  maxHeight: 180,
+                  // Height *and* the cap are both driven by the layout effect
+                  // above (`fitComposer`) — the cap is a fraction of the window
+                  // now, so it cannot be written here as a number. What it buys
+                  // is unchanged: a 200-line paste scrolls inside the box
+                  // instead of eating the log.
                   overflowY: 'auto',
                   border: 0,
                   background: 'transparent',
@@ -968,24 +1063,11 @@ export function ChatView({
         </div>
       </div>
 
-      {/* The question overlay, last so it paints over everything and mounted at
-          the root so it can — a card inside the composer's column could only
-          ever cover the composer. Keyed on the request for the same reason the
-          bar is: two `can_use_tool` requests can arrive back to back without
-          passing through null, and half-ticked options carried into the next
-          question are an answer nobody gave. */}
-      {blocking?.kind === 'question' && (
-        <QuestionOverlay
-          key={blocking.requestId}
-          questions={blocking.questions ?? []}
-          zoom={zoom}
-          onAnswer={(answer) => void answerChat(session.id, blocking.requestId, answer)}
-        />
-      )}
-
-      {/* The revert picker, at the root for the same reason and after the
-          question card because a question is the one thing that must not be
-          covered — nothing behind it can proceed, while this is dismissable. */}
+      {/* The revert picker. Still a *dialog* at the view root, and the contrast
+          with the question card above is the point: this one is a detour you
+          chose, it covers a conversation you are not reading right now, and its
+          backdrop dismisses. A question card blocks the CLI, so it may not take
+          the conversation away from you. */}
       {rewind && (
         <RewindOverlay
           targets={revertTargets}
@@ -1390,9 +1472,9 @@ function TodoStrip({ todos }: { todos: ChatTodo[] }): React.ReactElement {
  * place in time, so the transcript stays a complete record — and the buttons are
  * pinned here, so a decision cannot scroll away behind twenty tool calls.
  *
- * A `question` never reaches this component — it is an overlay (QuestionOverlay)
- * and ChatView mounts it at the root. What is left is the two one-line cases,
- * which is all a bar was ever the right shape for.
+ * A `question` never reaches this component — it is a popover (QuestionPopover)
+ * floating over the end of the log just above this band. What is left is the two
+ * one-line cases, which is all a bar was ever the right shape for.
  */
 function BlockingBar({
   card,
@@ -1445,7 +1527,15 @@ function BlockingBar({
 
   return (
     <Bar hue={CHAT.hold}>
-      <span style={{ fontSize: TYPE.prose, color: CHAT.text }}>{card.title}</span>
+      {/* The title of a permission card *is* the call — a bash line, a URL, a
+          path — so it is long as often as not, and a flex item's automatic
+          minimum size is its content: without these two it pushed the two
+          buttons off the right edge of the bar. */}
+      <span
+        style={{ minWidth: 0, overflowWrap: 'anywhere', fontSize: TYPE.prose, color: CHAT.text }}
+      >
+        {card.title}
+      </span>
       <div style={{ flex: 1 }} />
       <button onClick={() => onAnswer({ behavior: 'allow' })} style={primaryButton(false)}>
         Allow
@@ -1469,20 +1559,31 @@ function BlockingBar({
  * about than answer. All five are the reason the tool exists; a chip row is the
  * one part of it a plain sentence could have done instead.
  *
- * **An overlay, not a band above the composer.** The band was where every other
- * blocking card lives, and a question is not like the others: it is the one that
- * is a *form* rather than a sentence with two buttons after it — several
- * questions, each with a list, a free-text escape, a preview pane and a notes
- * field. Pinned above the composer it was a 46vh scroller wedged into the gap
- * between the log and the box, competing with both for height, and it had to
- * take a rule against changing size on hover because every pixel it gained came
- * out of the log's scroller. As a dialog it simply has the room, it reads as the
- * one thing on screen that wants answering, and the log dims behind it instead
- * of arguing with it. The backdrop does **not** dismiss on click: nothing is
- * behind it that can proceed, and the way out of a question you would rather not
- * answer is "Chat about this", which is a real answer to the tool. Esc keeps its
- * single meaning — interrupt the turn — and ChatView's window-level handler is
- * what serves it.
+ * **A popover over the log, not a band in it and not a dialog over everything.**
+ * All three have been tried and the two failures were opposite. Pinned *in* the
+ * band above the composer it was a 46vh scroller wedged into the gap between the
+ * log and the box, competing with both for height — every pixel it gained came
+ * out of the log's scroller, which is also why it needed a rule against
+ * changing size on hover. As a modal *dialog* it had all the room it wanted and
+ * took the conversation away to get it: a scrim over the log, no scrolling, and
+ * a question you cannot answer without re-reading the last three tool calls is
+ * exactly the question this tool asks.
+ *
+ * So it floats: absolutely positioned inside the log's own box, anchored to the
+ * bottom edge that the composer starts at. That is the whole trick — it is
+ * *over* the log rather than *in* it, so the scroller keeps every pixel of its
+ * height (nothing re-pins, nothing reflows when the card appears or grows), and
+ * there is no backdrop at all, so the wheel, the scrollbar, text selection and
+ * the composer underneath all keep working while it is up. Its ceiling is the
+ * log area itself, measured: it can be as tall as there is room for and never
+ * taller, and a short question is a short card sitting just above the box you
+ * would type in.
+ *
+ * The way out of a question you would rather not answer is still "Chat about
+ * this", which is a real answer to the tool rather than a cancel — there is no
+ * dismiss, because dismissing would leave the CLI blocked with nothing on screen
+ * saying so. Esc keeps its single meaning, interrupt the turn, served by
+ * ChatView's window-level handler.
  *
  * Layout still follows the CLI's own dialog: a vertical option list, and — for a
  * single-select question whose options carry previews — the focused option's
@@ -1496,13 +1597,13 @@ function BlockingBar({
  * read as terminal output you were somehow expected to click. The preview pane
  * is the exception and stays mono — see the note on it.
  */
-function QuestionOverlay({
+function QuestionPopover({
   questions,
   zoom,
   onAnswer
 }: {
   questions: ChatQuestion[]
-  /** the chat's zoom factor — the dialog scales with the window it belongs to */
+  /** the chat's zoom factor — the card scales with the window it belongs to */
   zoom: number
   onAnswer: (a: ChatAnswer) => void
 }): React.ReactElement {
@@ -1570,29 +1671,66 @@ function QuestionOverlay({
     onAnswer({ behavior: 'question', answers: answersFor(), notes: notesFor(), clarify })
 
   // Focus the panel itself on mount, so Enter and Esc reach it without the user
-  // having to click into the dialog first. It cannot light the global focus ring
-  // — that rule is a `box-shadow`, and the inline shadow below wins.
+  // having to click into the card first. It cannot light the global focus ring
+  // — that rule is a `box-shadow`, and the inline shadow below wins. Focus is
+  // the *only* thing this card takes from the page, and it gives it back the
+  // moment you click anywhere else, which is the difference between a popover
+  // and the modal this used to be.
   const panelRef = React.useRef<HTMLDivElement>(null)
   React.useEffect(() => {
     panelRef.current?.focus()
   }, [])
 
+  /**
+   * How tall the card may be: the log area it floats in, less the gap above the
+   * composer.
+   *
+   * **Everything inside a zoomed box is in zoomed units, and this is measured
+   * from outside one.** A length written inside the panel is multiplied by
+   * `zoom` on the way to the screen (and read back *un*multiplied — a
+   * `getBoundingClientRect` taken inside the subtree is in those units too,
+   * which is a good way to convince yourself of a bug that is not there). So
+   * both numbers handed to the panel are divided once: `room` is screen pixels
+   * off the unzoomed wrapper, and `room / zoom` is the same distance expressed
+   * in the units the panel is laid out in. Verified at 0.7×, 1× and 1.5×.
+   *
+   * A plain `maxHeight: 100%` would also have worked, since a percentage
+   * resolves against the unzoomed parent — but the gap above the composer has to
+   * come off in *screen* pixels, and `calc(100% - 10px)` would mix one unit with
+   * the other. One measurement, one division, no mixing.
+   */
+  const boxRef = React.useRef<HTMLDivElement>(null)
+  const [room, setRoom] = React.useState(0)
+  React.useLayoutEffect(() => {
+    const el = boxRef.current
+    if (!el) return
+    const read = (): void => setRoom(el.clientHeight)
+    read()
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
   return (
     <div
+      ref={boxRef}
       style={{
         position: 'absolute',
-        inset: 0,
+        // Left and right are the *composer's* edge rather than the log
+        // column's, so the card and the box you would answer in are one stack.
+        left: EDGE,
+        right: EDGE,
+        top: 0,
+        bottom: 0,
         zIndex: 30,
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 22,
-        // Written out rather than taken from `--overlay`: the chat's palette is
-        // plain strings precisely so nothing here reaches into the app's custom
-        // properties, and this scrim is mixed for the chat's page, not the
-        // sidebar's.
-        background: 'rgba(8,11,15,.62)',
-        animation: 'vover .12s ease'
+        flexDirection: 'column',
+        justifyContent: 'flex-end',
+        // **No backdrop, and none of this box is clickable.** It spans the whole
+        // log so the card can be measured against it and so a tall card starts
+        // from the top — but it must not swallow a click on the message the
+        // question is about, or a drag across a paragraph the user is quoting.
+        pointerEvents: 'none'
       }}
     >
       <div
@@ -1609,18 +1747,26 @@ function QuestionOverlay({
         }}
         style={{
           zoom,
+          pointerEvents: 'auto',
           display: 'flex',
           flexDirection: 'column',
-          width: 920,
-          maxWidth: '100%',
-          maxHeight: '100%',
+          minHeight: 0,
+          // The full width of the column, like the bands and the composer — this
+          // is a sheet rising out of the box below it, not a dialog floating in
+          // the middle of a page. `room` is 0 for the first frame, before the
+          // measure lands; the card is empty then anyway.
+          maxHeight: room ? Math.max(120, (room - POPOVER_GAP) / zoom) : undefined,
+          marginBottom: POPOVER_GAP / zoom,
           background: CHAT.card,
           border: `1px solid ${CHAT.borderCard}`,
           // The `hold` edge every blocking surface wears, so a question and a
           // plan awaiting approval are visibly the same kind of moment.
           borderTop: `2px solid ${CHAT.hold}`,
           borderRadius: CHAT.radiusCard,
-          boxShadow: '0 28px 70px -22px rgba(0,0,0,.75)',
+          // Heavier than a band's, because this one has to read as *above* the
+          // log rather than as another row in it — there is no scrim doing that
+          // job any more.
+          boxShadow: '0 24px 60px -18px rgba(0,0,0,.75)',
           animation: 'vdlg .16s ease',
           fontFamily: SANS,
           outline: 'none'
@@ -1741,7 +1887,15 @@ function QuestionOverlay({
                       {q.header}
                     </span>
                   )}
-                  <span style={{ fontSize: TYPE.prose + 0.5, color: CHAT.text, flex: 1, minWidth: 0 }}>
+                  <span
+                    style={{
+                      fontSize: TYPE.prose + 0.5,
+                      color: CHAT.text,
+                      flex: 1,
+                      minWidth: 0,
+                      overflowWrap: 'anywhere'
+                    }}
+                  >
                     {q.question}
                   </span>
                   {/* Whether more than one answer is allowed is not derivable from
@@ -1780,18 +1934,20 @@ function QuestionOverlay({
                           from the moment it appears, and moving down the list
                           cannot change its size by a pixel.
 
-                          This began as a fix for something the overlay has since
-                          made impossible: pinned above the composer, a five-line
-                          preview after a twenty-line one shrank the card, the log's
-                          ResizeObserver read that as the scroller changing height
-                          and re-pinned the tail — so merely *hovering* the options
-                          jumped the conversation. It stays because it is also just
-                          better: a dialog that resizes under the pointer while you
-                          compare four options is its own bug, and reserving the
-                          space costs nothing and needs no arithmetic against the
-                          font metrics.
+                          This began as a fix for something floating the card has
+                          since made impossible: pinned *in* the band above the
+                          composer, a five-line preview after a twenty-line one
+                          shrank the card, the log's ResizeObserver read that as
+                          the scroller changing height and re-pinned the tail — so
+                          merely *hovering* the options jumped the conversation.
+                          The card is out of the flow now and cannot resize the
+                          scroller at all, and this stays anyway, because it is
+                          also just better: a card that resizes under the pointer
+                          while you compare four options is its own bug, and
+                          reserving the space costs nothing and needs no
+                          arithmetic against the font metrics.
 
-                          Sideways it scrolls; vertically it grows and the dialog's
+                          Sideways it scrolls; vertically it grows and the card's
                           own scroller takes it, since a second scroller nested in
                           that one would swallow the wheel halfway down a mockup. */}
                       <div
@@ -1883,15 +2039,20 @@ function QuestionOverlay({
  * The revert picker: your own messages, newest first, and choosing one winds the
  * conversation back to just before it.
  *
- * It borrows QuestionOverlay's scaffolding — root-mounted, zoomed panel, focused
- * on mount so the keyboard reaches it — and departs from it twice, deliberately.
+ * This is the one real **dialog** in the chat — root-mounted over the whole view,
+ * behind a scrim, zoomed panel, focused on mount so the keyboard reaches it. The
+ * question card was built the same way and is not any more (see QuestionPopover),
+ * and the difference between the two is the whole argument: a question is asked
+ * *about* the conversation and must not cover it, while this one asks you to pick
+ * a message out of a list it prints for you — the conversation behind it is not
+ * what you are reading.
  *
  * It stays **mono**. The sans exception exists for a *form*: checkboxes, radios,
  * prose written by the model. This is a list of sentences you typed, quoted back,
  * and a transcript excerpt set in sans stops looking like the thing it quotes.
  *
- * And the **backdrop dismisses**, which the question card refuses. That refusal is
- * about a card nothing can proceed past; here nothing is blocked, nothing has
+ * And the **backdrop dismisses**, where the question card has no dismiss at all.
+ * That is the same distinction again: nothing is blocked here, nothing has
  * happened yet, and a picker you cannot click your way out of is a trap. Same
  * reason it has no Cancel button: Esc and the backdrop are both already there.
  *
@@ -2149,7 +2310,7 @@ function OptionRow({
       }}
     >
       <Marker multi={multi} on={on} />
-      <span style={{ display: 'grid', gap: 3, minWidth: 0 }}>
+      <span style={{ display: 'grid', gap: 3, minWidth: 0, overflowWrap: 'anywhere' }}>
         <span style={{ fontSize: 13, fontWeight: 500, color: on ? CHAT.text : CHAT.prose }}>
           {label}
         </span>

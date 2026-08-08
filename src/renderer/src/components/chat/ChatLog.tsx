@@ -155,6 +155,14 @@ function Card({
         display: 'flex',
         alignItems: 'center',
         gap: 10,
+        // **Nothing in this row may be `flex: none` *and* long.** A flex item's
+        // automatic minimum size is its own content, so a child that cannot
+        // break — a 200-character error, a path with no spaces — used to push
+        // the row wider than the card and paint straight through its border.
+        // Every long child below therefore carries `minWidth: 0` and wraps
+        // (`overflowWrap: anywhere`) or ellipsises; this one is for the case
+        // where the card is itself a flex item in some future wrapper.
+        minWidth: 0,
         padding: '8px 12px',
         background: CHAT.card,
         border: `1px solid ${tone ?? CHAT.borderCard}`,
@@ -214,7 +222,14 @@ export const LogRow = React.memo(function LogRow({
                   fontSize: TYPE.prose,
                   lineHeight: TYPE.proseLine,
                   color: CHAT.text,
-                  whiteSpace: 'pre-wrap'
+                  whiteSpace: 'pre-wrap',
+                  // `pre-wrap` breaks at spaces and nowhere else, and half of
+                  // what gets pasted into a composer has none — a URL, a
+                  // Windows path, a stack frame — so the message ran straight
+                  // out through the right edge of its own tinted band. This
+                  // breaks only what would not fit, so ordinary prose is
+                  // untouched.
+                  overflowWrap: 'anywhere'
                 }}
               >
                 {entry.md}
@@ -263,7 +278,13 @@ export const LogRow = React.memo(function LogRow({
             </>
           ) : (
             <Card>
-              <span style={{ whiteSpace: 'pre-wrap' }}>{entry.md}</span>
+              {/* Terminal output, so it keeps its own line breaks — but a
+                  `/context` meter or a `git log --oneline` line is routinely
+                  wider than the card, and `pre-wrap` alone would carry it out
+                  through the border. */}
+              <span style={{ minWidth: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                {entry.md}
+              </span>
             </Card>
           )}
           {entry.truncated && <div style={{ ...mono, color: CHAT.dim3, marginTop: 4 }}>…</div>}
@@ -316,7 +337,16 @@ export const LogRow = React.memo(function LogRow({
                       {q.header}
                     </span>
                   )}
-                  <span style={{ fontSize: TYPE.prose, lineHeight: TYPE.proseLine, color: CHAT.prose }}>
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      overflowWrap: 'anywhere',
+                      fontSize: TYPE.prose,
+                      lineHeight: TYPE.proseLine,
+                      color: CHAT.prose
+                    }}
+                  >
                     {q.question}
                   </span>
                   <span style={{ ...mono, fontSize: TYPE.gutter, color: CHAT.dim4 }}>
@@ -439,7 +469,16 @@ export const LogRow = React.memo(function LogRow({
           color={entry.tone === 'alert' ? CHAT.danger : CHAT.dim2}
         >
           <Card tone={entry.tone === 'alert' ? CHAT.danger : undefined}>
-            <span style={{ color: entry.tone === 'alert' ? CHAT.danger : CHAT.dim }}>
+            {/* A crash row carries the CLI's own message, which can be a whole
+                paragraph with a path in it — it wraps inside the card rather
+                than running past the retry button. */}
+            <span
+              style={{
+                minWidth: 0,
+                overflowWrap: 'anywhere',
+                color: entry.tone === 'alert' ? CHAT.danger : CHAT.dim
+              }}
+            >
               {entry.text}
             </span>
             {entry.retry && (
@@ -628,6 +667,7 @@ function Thinking({ at, md }: { at: number; md: string }): React.ReactElement {
             color: CHAT.dim3,
             lineHeight: 1.6,
             whiteSpace: open ? 'pre-wrap' : 'nowrap',
+            overflowWrap: 'anywhere',
             overflow: 'hidden',
             textOverflow: 'ellipsis'
           }}
@@ -765,7 +805,19 @@ function ToolCard({
             <SlowClock since={entry.at} />
           </>
         ) : (
-          <span style={{ color: statusColor(entry.status), flex: 'none' }}>{entry.result}</span>
+          // Allowed to shrink and to wrap, unlike the two chips beside it: a
+          // result is usually `12 lines` but on a failure it is the tool's own
+          // error sentence, which is as long as it is and has no reason to fit.
+          <span
+            style={{
+              color: statusColor(entry.status),
+              flex: '0 1 auto',
+              minWidth: 0,
+              overflowWrap: 'anywhere'
+            }}
+          >
+            {entry.result}
+          </span>
         )}
         {expandable && (
           <span style={{ marginLeft: 'auto', flex: 'none', fontSize: TYPE.gutter, color: CHAT.dim3 }}>
@@ -800,6 +852,16 @@ function ToolCard({
               key={i}
               style={{
                 whiteSpace: 'pre',
+                // **A row is as wide as the widest row, not as wide as the
+                // box.** These are blocks inside a horizontal scroller, so left
+                // alone each one is exactly the *visible* width — scroll right
+                // along a long changed line and its green stopped dead at the
+                // fold, with the code continuing over bare card. `max-content`
+                // sizes the row to its own text and `minWidth: 100%` keeps the
+                // short ones spanning the box, so the tint always runs the full
+                // length of the line it marks.
+                width: 'max-content',
+                minWidth: '100%',
                 background:
                   r.sign === '+'
                     ? 'rgba(111,191,139,.10)'

@@ -51,6 +51,12 @@ export function registerIpc(win: BrowserWindow): void {
   const pty = new PtyManager(docker, emit)
   const usage = new UsageService(docker)
   const claude = new ClaudeService(docker)
+  // A freshly created container is born with whatever Claude Code the cached
+  // image was built around, which is as old as the image. This is the one thing
+  // docker needs from the registry to fix that, handed down rather than
+  // imported so the dependency between the two services keeps pointing one way
+  // (see DockerService.freshenClaude).
+  docker.setClaudeLatest(() => claude.latestVersion())
 
   // ---- chat sessions ------------------------------------------------------
   // One CLI process per chat session (see main/chat.ts). Its four callbacks are
@@ -831,6 +837,12 @@ export function registerIpc(win: BrowserWindow): void {
   )
 
   ipcMain.on(CH.chatClose, (_e, sessionId: string) => chat.close(sessionId))
+
+  // Fire-and-forget: a stale menu is a cosmetic fault and a scan that fails, is
+  // throttled away or finds nothing is a no-op the composer must not wait on.
+  ipcMain.on(CH.chatRefreshCommands, (_e, sessionId: string) => {
+    void chat.refreshCommands(sessionId)
+  })
 
   ipcMain.handle(CH.chatBody, (_e, sessionId: string, entryId: string): string | null =>
     chat.body(sessionId, entryId)

@@ -125,8 +125,9 @@ electron-vite with three build targets (aliases `@shared`, `@renderer`):
 
 **Adding an IPC feature** touches four places in order: channel name in `src/shared/ipc.ts` →
 handler in `src/main/ipc.ts` → typed method in `src/preload/index.ts` → renderer call via
-`window.vivarium.*` (usually from a store action). No exceptions for chat — its eleven outbound
-channels each follow this path.
+`window.vivarium.*` (usually from a store action). No exceptions for chat — every one of its
+outbound channels follows this path (the count used to be written down here and had already rotted
+by three; `CH` is the list).
 
 **`chat:event` is the one deliberate departure** from one-channel-per-payload: it carries a
 discriminated `ChatEvent` union. `ptyData`/`ptyExit` can be separate channels safely because exit
@@ -181,6 +182,21 @@ in the renderer: the same guarantee bought back at a higher price.
   ever is, it goes next to it in `Config` and follows the same path. `Project.slashCommands`
   *is* cached, on a different argument — it is a **hint, never authority**: the CLI always decides,
   so a stale entry can only mis-suggest, never mis-execute.
+- **What `/` can expand is learned from `init` *and* from the disk, because `init` arrives too
+  late.** Claude Code's own list is authoritative and comes only in a `system/init`, which is
+  emitted at the **first turn of a process** and re-emitted only when a `set_model` /
+  `set_permission_mode` arms it — so a chat opened this morning offers the list as of its last turn,
+  and a skill written since is missing from the menu. There is no control request to ask with
+  either: `list_models` has no `list_commands` sibling. The CLI itself is *not* stale — verified on
+  2.1.226 that a `SKILL.md` created while the process ran appears in the next init it emits — so
+  this is only ever a gap in the app's picture, and `ChatService.refreshCommands` closes it by
+  counting the definitions in the container's four canonical directories
+  (`<cwd>/.claude` and `$CLAUDE_CONFIG_DIR`, `commands/**.md` and `skills/*/SKILL.md`) and
+  **merging**: `init`'s names first, the scan may only add. That keeps the built-ins, which live in
+  the binary and are on no disk, and plugin skills, which the scan deliberately does not go looking
+  for. It runs at open and when the composer's `/` menu opens, throttled — it is a `docker exec`,
+  and the menu opens on every command you start typing. An `init` **replaces** rather than merges
+  (it is the one reading that can also *drop* a deleted skill) and re-arms the throttle.
 - Mounts may only change while the container is stopped (`ipc.ts` enforces it); saving settings
   on a running container recreates it.
 - **All terminal resizing goes through `fitNow()`** in `TerminalView` — never call `fit.fit()` or
@@ -234,14 +250,25 @@ in the renderer: the same guarantee bought back at a higher price.
   `moveSession` kills the pty **silently** because it kills before rewriting config, so the exit
   would otherwise land on the replacement terminal; `TerminalHost` keys views on
   `project.id:session.id` so that replacement actually happens.
-- **Claude Code is never auto-updated.** It used to be — a fire-and-forget `npm i -g` on every
-  container start — which invisibly changed the CLI version under a live session. Updates are now
+- **Claude Code is never updated under a running container — and always fresh in a new one.**
+  Those are one rule, not two, and the line between them is `docker run`. It used to be updated by a
+  fire-and-forget `npm i -g` on every container *start*, which invisibly changed the CLI version
+  under live sessions; that is gone and stays gone. Updates to an existing container are
   user-initiated only: title-bar version chip / project context menu → the Claude Code dialog, which
   runs `sudo npm install -g …@latest` in one running container at a time. Consequences the UI states
-  rather than hides: the CLI only exists inside containers (a stopped one has no version to read), a
-  running `claude` keeps its version until relaunched, and since the install lands in the writable
-  layer a `recreate` reverts it to the image's version — the chip re-flags it instead of silently
-  self-healing.
+  rather than hides: the CLI only exists inside containers (a stopped one has no version to read),
+  and a running `claude` keeps its version until relaunched.
+  The other half is `DockerService.freshenClaude`, on the **fresh-create path only**. The CLI is an
+  image layer and `IMAGE_VERSION` is bumped roughly never, so a container created today is born on
+  whatever version was current the day the image was built — months behind, and a `recreate` used to
+  hand you that same regression on purpose. A container that has just been created has no session,
+  no agent and no turn in it by construction, so there is nothing to change *under*; the install is
+  awaited and streamed into the same terminal that shows the image build, so it is a step you watch.
+  Every failure is non-fatal — the container is up and usable on the image's version. What decides
+  "behind" is a numeric compare of the dotted parts (`isOlderVersion`, prerelease suffix stripped
+  before the split or `2.1.226-rc.1` sorts *above* `2.1.226`), and "latest" is `ClaudeService`'s
+  cached registry answer, handed down as a getter — `claude.ts` is built on `docker.ts`, so the
+  dependency may not point back.
 - **A turn duration is a stopwatch on the host clock, and blocking on the user pauses it.**
   `hook.sh` writes a container-side timestamp into `events.log` and `bridge.ts` ignores it: events
   are stamped with `Date.now()` as the host *reads* the line (`AgentHookEvent.at`), because a WSL2
@@ -482,20 +509,33 @@ in the renderer: the same guarantee bought back at a higher price.
   row a CLI that emits no such message would produce at all. So whichever lands second is
   suppressed, per turn — never by a shared fixed id, or a conversation with five interrupted turns
   would collapse to one row.
-- **The `AskUserQuestion` card is the whole tool, not a row of labels — and it is an overlay.** The
+- **The `AskUserQuestion` card is the whole tool, not a row of labels — and it is a popover over the
+  log, not a band in it and not a dialog over everything.** The
   first version drew the
   option labels as chips, which silently dropped every affordance that makes the tool worth calling:
   the option **descriptions** (tooltip-only), the **previews** the model writes for you to compare,
   whether the question takes one answer or several, the **Other** free-text escape, and **Chat about
   this**. Rebuilt with all five it stopped fitting where the other blocking cards live: it is the one
-  that is a *form* rather than a sentence with two buttons after it, and pinned above the composer it
-  was a 46vh scroller wedged between the log and the box, competing with both for height. It is a
-  dialog now (`QuestionOverlay`, mounted at the view root so it can cover the view; `BlockingBar`
-  keeps the two one-line cases). The backdrop does **not** dismiss — nothing behind it can proceed,
-  and "Chat about this" is the way out, since that is a real answer to the tool rather than a
-  cancel. A single Esc keeps its single meaning, interrupt the turn, served by ChatView's window
-  handler — and `RewindOverlay`, which the *second* Esc of a pair opens, dismisses on its backdrop
-  precisely because nothing is blocked behind it. The
+  that is a *form* rather than a sentence with two buttons after it, and pinned *in* the band above
+  the composer it was a 46vh scroller wedged between the log and the box, competing with both for
+  height. It was then a modal dialog, which failed in the opposite direction and worse: a scrim over
+  the log, no scrolling, and a question you cannot answer without re-reading the last three tool
+  calls is exactly the question this tool asks.
+  So `QuestionPopover` **floats** — absolutely positioned inside the log's own box and anchored to
+  the bottom edge the composer starts at (`BlockingBar` still keeps the two one-line cases). Being
+  *over* the log rather than *in* it is the whole trick: the scroller keeps every pixel of its
+  height, so nothing re-pins and nothing reflows when the card appears or grows, and with no
+  backdrop and `pointer-events: none` on the anchor box the wheel, the scrollbar, text selection and
+  the composer all keep working underneath. Its ceiling is the log area, **measured** — everything
+  inside a zoomed box is in zoomed units, so `room` is read off the unzoomed anchor in screen pixels
+  and handed to the panel as `room / zoom` (a `getBoundingClientRect` taken *inside* the zoom is in
+  those units too, which is a good way to convince yourself of a bug that is not there; verified at
+  0.7×, 1× and 1.5×). There is no dismiss — "Chat about this" is the way out, since that is a real
+  answer to the tool rather than a cancel, and dismissing would leave the CLI blocked with nothing
+  on screen saying so. A single Esc keeps its single meaning, interrupt the turn, served by
+  ChatView's window handler — and `RewindOverlay`, which the *second* Esc of a pair opens, is still
+  a real dialog with a scrim that dismisses on click, precisely because nothing is blocked behind it
+  and the conversation under it is not what you are reading. The
   options are drawn controls (a rounded box with a tick, a circle with a dot) rather than `[x]` and
   `( )` typed in mono: this window is not a terminal, and the ASCII markers made a clickable list
   read as output. Four facts hold that surface up, and all four are read off the CLI's own dialog
@@ -578,10 +618,10 @@ in the renderer: the same guarantee bought back at a higher price.
   the tail. The question card's preview pane learned this the hard way — it swapped its content on
   hover, so moving down a list of options jumped the whole conversation once per row. It lays every
   option's preview into one grid cell and hides all but the focused one (`visibility`, which keeps
-  layout), so the pane is the size of the tallest from the moment it appears. That card is an
-  overlay now and out from under this rule, and the technique stays anyway — a dialog that resizes
-  under the pointer is its own bug. Reserve the space; do not compute it against font metrics, and
-  do not re-measure on hover.
+  layout), so the pane is the size of the tallest from the moment it appears. That card floats now
+  (absolutely positioned, out of the flow) and so is out from under this rule, and the technique
+  stays anyway — a card that resizes under the pointer is its own bug. Reserve the space; do not
+  compute it against font metrics, and do not re-measure on hover.
 - **The turn clock draws at the bottom of the log while it is running.** It is appended at *send*,
   before a word of the answer exists, so in list order it sits directly under your message and the
   whole turn then grows below the row reporting on it — `working · 4s` is a reading about right

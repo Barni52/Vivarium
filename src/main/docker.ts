@@ -30,6 +30,33 @@ export interface ExecResult {
   stderr: string
 }
 
+/**
+ * Is `a` an older release than `b`?
+ *
+ * Numeric compare of the dotted parts and nothing else. A prerelease suffix
+ * (`2.1.0-rc.1`) is deliberately read as its release — the question here is only
+ * ever "is the container behind the registry's `latest`", and `latest` never
+ * points at a prerelease, so the worst this can do is decline to reinstall a
+ * version somebody hand-installed. Unparseable either side → false, i.e. leave
+ * it alone: a version string this does not understand is not evidence of
+ * anything.
+ */
+function isOlderVersion(a: string, b: string): boolean {
+  // The suffix comes off before the split, not after: `2.1.226-rc.1` splits into
+  // four fields and would otherwise compare as *newer* than the 2.1.226 it is a
+  // candidate for.
+  const parts = (v: string): number[] =>
+    v.split('-')[0].split('.').map((p) => parseInt(p, 10)).map((n) => (Number.isFinite(n) ? n : NaN))
+  const x = parts(a)
+  const y = parts(b)
+  if (x.some(Number.isNaN) || y.some(Number.isNaN)) return false
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0)
+    if (d !== 0) return d < 0
+  }
+  return false
+}
+
 /** short 4-byte SHA1 hex of a string (ref: 8-char hash suffix in claude-box.ps1). */
 function shortHash(input: string): string {
   return createHash('sha1').update(input, 'utf8').digest('hex').slice(0, 8)
@@ -547,7 +574,59 @@ export class DockerService {
       sink('\r\n[vivarium] docker run failed\r\n')
       return false
     }
+    await this.freshenClaude(project, sink)
     return true
+  }
+
+  /**
+   * Bring a **brand-new** container's Claude Code up to the published version.
+   *
+   * The CLI is an image layer (`npm install -g` in slimDockerfile) and the image
+   * is only rebuilt when IMAGE_VERSION changes, which is roughly never — so the
+   * version a container is born with is the version that was current the day the
+   * image was built, months ago, and every new project and every `recreate`
+   * started life behind. That is what this fixes.
+   *
+   * **This is not the auto-update that was removed, and the difference is the
+   * whole reason it is allowed to exist.** That one was a fire-and-forget
+   * `npm i -g` on *every container start*, which swapped the CLI out from under
+   * sessions that were already running in it. This runs on exactly one path —
+   * the `docker run` that just created the container — where by construction
+   * there is no session, no agent and no live turn to change anything under. It
+   * is also awaited and streamed into the terminal that is already showing the
+   * image build, so it is a step you watch rather than something that happened
+   * to you. Starting an existing container still never touches the CLI.
+   *
+   * Every failure is non-fatal and quiet-ish: no network, no npm, a registry
+   * outage, docker being slow — the container is up and perfectly usable with
+   * the image's version, and the version chip goes on saying so.
+   */
+  private async freshenClaude(project: Project, sink: LineSink): Promise<void> {
+    const latest = await this.claudeLatest?.()
+    if (!latest) return
+    const have = (await this.claudeVersion(project)).installed
+    if (!have || !isOlderVersion(have, latest)) return
+    sink(`\r\n==> Updating Claude Code ${have} → ${latest} in the new container\r\n`)
+    const r = await this.updateClaude(project)
+    if (r.code !== 0) {
+      sink(`[vivarium] could not update Claude Code — staying on ${have}\r\n`)
+      return
+    }
+    sink(`[vivarium] Claude Code ${(await this.claudeVersion(project)).installed ?? latest}\r\n`)
+  }
+
+  /**
+   * What "the newest published version" is, injected rather than imported.
+   *
+   * `ClaudeService` owns the npm-registry lookup and its cache, and it is built
+   * *on top of* this service — so it hands its getter down instead, and the
+   * dependency keeps pointing one way. Absent (nobody wired it) means no
+   * freshening, which is the old behaviour.
+   */
+  private claudeLatest: (() => Promise<string | null>) | undefined
+
+  setClaudeLatest(fn: () => Promise<string | null>): void {
+    this.claudeLatest = fn
   }
 
   async stop(project: Project): Promise<void> {
@@ -914,6 +993,42 @@ export class DockerService {
     const cmd = `cat /home/node/.claude/projects/*/${uuid}/subagents/agent-${agentId}.jsonl 2>/dev/null`
     const r = await this.execBuf(['exec', this.containerName(project), 'sh', '-c', cmd], 30_000)
     return r.stdout.length > 0 ? r.stdout.toString('utf8') : null
+  }
+
+  /**
+   * The slash-command and skill definitions sitting on disk in the container.
+   *
+   * This exists because `system/init` — Claude Code's own list, and the only
+   * authoritative one — is not emitted until the first user message of a
+   * process (see ChatService.init). So a chat you have just opened, or one open
+   * since before you wrote a skill this morning, offers whatever list the last
+   * turn happened to report. The CLI itself is *not* stale (verified against
+   * 2.1.226: a SKILL.md created while the process ran turned up in the next
+   * init it emitted), only this app's picture of it is.
+   *
+   * The four canonical directories, and deliberately no more:
+   * `<cwd>/.claude` for the project and `$CLAUDE_CONFIG_DIR` — which the image
+   * pins to `/home/node/.claude`, on the shared creds volume — for the user.
+   * Plugin skills (`plugin:name`) live under a repos tree whose layout this
+   * would have to guess at, and they arrive with `init` like everything else;
+   * the merge is a union, so missing them costs nothing.
+   *
+   * Paths out, names *not* derived here: turning a path into `/dir:name` is
+   * Claude Code's rule, not docker's, and it belongs next to the code that
+   * already merges the CLI's own list (see commandNamesFrom in chat.ts).
+   */
+  async listCommandFiles(project: Project): Promise<string[]> {
+    // Both `find`s are allowed to fail — a project with no `.claude` is the
+    // common case, and `find` exits non-zero for a missing root — so stderr
+    // goes nowhere and the trailing `true` keeps the exec's own code at 0.
+    // `head` bounds a pathological tree; nobody has 500 commands, and if they
+    // do the menu was never going to help.
+    const cmd =
+      "{ find /workspace/.claude/commands /home/node/.claude/commands -type f -name '*.md' 2>/dev/null;" +
+      " find /workspace/.claude/skills /home/node/.claude/skills -mindepth 2 -maxdepth 2 -name SKILL.md 2>/dev/null; } | head -500; true"
+    const r = await this.exec(['exec', this.containerName(project), 'sh', '-c', cmd], 15_000)
+    if (r.code !== 0) return []
+    return r.stdout.split('\n').map((l) => l.trim()).filter(Boolean)
   }
 
   async volumeExists(name: string): Promise<boolean> {

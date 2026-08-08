@@ -182,6 +182,9 @@ const api = {
   ): Promise<ChatEntry[]> => ipcRenderer.invoke(CH.chatSubagent, sessionId, toolUseId, agentId),
   chatMountTree: (projectId: string): Promise<MountNode[]> =>
     ipcRenderer.invoke(CH.chatMountTree, projectId),
+  /** Re-scan what `/` can expand; the fresh list arrives as a `meta` event. */
+  chatRefreshCommands: (sessionId: string): void =>
+    ipcRenderer.send(CH.chatRefreshCommands, sessionId),
   // The one union channel — see the ChatEvent doc comment for why it is one.
   onChatEvent: (cb: (e: ChatEvent) => void): (() => void) => {
     const h = (_: unknown, p: ChatEvent): void => cb(p)

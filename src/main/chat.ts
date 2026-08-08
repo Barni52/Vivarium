@@ -197,6 +197,17 @@ const SETTLE_ATTEMPTS = 3
 const STREAM_FLUSH_MS = 40
 
 /**
+ * How often the on-disk command scan may actually run (see refreshCommands).
+ *
+ * The composer asks on every `/` menu *open*, which is once per command you
+ * start typing and again every time you delete the slash and put it back — a
+ * `docker exec` each would be a burst on a hot path. Ten seconds is far shorter
+ * than the gesture it serves (write a skill in one tab, go and use it in
+ * another) and long enough that no realistic amount of typing produces two.
+ */
+const COMMAND_SCAN_MS = 10_000
+
+/**
  * What the picker offers when `list_models` answers with nothing — an old CLI,
  * a control request it does not implement, or a timed-out round trip.
  *
@@ -278,6 +289,8 @@ interface Live {
   silence: ReturnType<typeof setTimeout> | null
   model: string | null
   commands: string[]
+  /** when the on-disk command scan last ran, for its throttle */
+  commandsAt: number
   context: ChatContextUsage | null
   /** the assistant message currently streaming, for partial-text painting */
   streaming: Streaming | null
@@ -401,6 +414,7 @@ export class ChatService {
       silence: null,
       model: session.model ?? null,
       commands: project.slashCommands ?? [],
+      commandsAt: 0,
       context: null,
       streaming: null,
       streamTimer: null,
@@ -422,6 +436,12 @@ export class ChatService {
     // exactly the moment you look at it. The control channel, unlike the message
     // stream, is live from spawn.
     void this.refreshContext(l)
+    // Same shape and the same reason: the menu this session opens with is the
+    // *previous* session's list until a turn produces an init, and a skill
+    // written since then is missing from it. Fire-and-forget for the same
+    // reason too — the open must not wait on a fourth docker exec, and the
+    // renderer picks the answer up as a `meta` event.
+    void this.refreshCommands(session.id)
 
     const state = this.stateOf(l)
     if (historyError) state.historyError = historyError
@@ -899,7 +919,14 @@ export class ChatService {
       })
     ].filter(Boolean)
     if (commands.length) {
+      // Replaced, not merged: this is the authority, and it is the one reading
+      // that can also *drop* a command — a skill deleted since the last scan is
+      // still in the cache and in whatever refreshCommands last added. The scan
+      // is re-armed rather than left throttled, so anything on disk the CLI has
+      // not picked up yet comes back on the next menu open instead of ten
+      // seconds later.
       l.commands = commands
+      l.commandsAt = 0
       this.onCommands(l.project.id, commands)
     }
     // Withheld while a switch of our own is outstanding: this frame reports what
@@ -1724,6 +1751,47 @@ export class ChatService {
     this.emit({ kind: 'context', sessionId: l.session.id, context: next })
   }
 
+  /**
+   * Bring the command menu up to date from disk.
+   *
+   * **The CLI is not the problem; waiting for it is.** `system/init` is the
+   * authority on what `/` can expand and it is emitted at the *first turn* of a
+   * process, never at spawn — so a chat opened this morning is offering the list
+   * as of its last turn, and a skill written since is missing from the menu even
+   * though the CLI would run it perfectly well (it re-reads the registry every
+   * turn: verified on 2.1.226, a SKILL.md created mid-process appears in the
+   * next init the CLI emits). There is no control request that asks for the list
+   * either — `list_models` has no `list_commands` sibling in the protocol.
+   *
+   * So the definitions are counted on disk and *merged*, never substituted:
+   * `init`'s names come first and keep their order, and the scan can only add.
+   * That keeps the built-ins (`/clear`, `/compact`, …), which live in the binary
+   * and are on no disk, and it keeps plugin skills, which this deliberately does
+   * not look for. It stays a **hint, never authority** — the same standing the
+   * cached `Project.slashCommands` has always had, and for the same reason: the
+   * CLI decides what a `/name` means when it is sent, so an entry that is wrong
+   * here can only mis-suggest.
+   *
+   * Called at open (where the gap is guaranteed) and from the composer when the
+   * `/` menu opens, throttled: it is a `docker exec` per call, and a menu that
+   * opens on every keystroke of a command name must not be.
+   */
+  async refreshCommands(sessionId: string): Promise<void> {
+    const l = this.live.get(sessionId)
+    if (!l) return
+    const now = Date.now()
+    if (now - l.commandsAt < COMMAND_SCAN_MS) return
+    l.commandsAt = now
+    const found = commandNamesFrom(await this.docker.listCommandFiles(l.project))
+    const merged = [...new Set([...l.commands, ...found])]
+    // Emitted only on a real change: this runs on every menu open, and a `meta`
+    // event replaces the array the renderer memoises its typeahead rows against.
+    if (merged.length === l.commands.length) return
+    l.commands = merged
+    this.onCommands(l.project.id, merged)
+    this.emit({ kind: 'meta', sessionId: l.session.id, commands: merged })
+  }
+
   // ---- fetch-on-demand ----------------------------------------------------
   body(sessionId: string, entryId: string): string | null {
     return this.live.get(sessionId)?.bodies.get(entryId) ?? null
@@ -1843,6 +1911,31 @@ export class ChatService {
     if (quiet) e.quiet = true
     this.emitActivity(e)
   }
+}
+
+/**
+ * Definition paths → the names `/` offers, following Claude Code's own two
+ * rules: a skill is named by its **directory** (`skills/foo/SKILL.md` → `foo`)
+ * and a command by its **file** (`commands/foo.md` → `foo`), with any
+ * intermediate directories joined by `:` — `commands/db/reset.md` is
+ * `/db:reset`. Bare names, no leading slash, because that is the shape `init`
+ * reports and the renderer strips one anyway.
+ *
+ * Anything that matches neither shape is dropped rather than guessed at: this
+ * list is merged into the CLI's own, and a name that does not exist is worse
+ * than a name that is missing — the menu is the one place in the composer that
+ * claims a `/word` will expand.
+ */
+function commandNamesFrom(paths: string[]): string[] {
+  const names: string[] = []
+  for (const raw of paths) {
+    const p = raw.replace(/\\/g, '/')
+    const skill = /\/\.claude\/skills\/(.+)\/SKILL\.md$/.exec(p)
+    const cmd = skill ? null : /\/\.claude\/commands\/(.+)\.md$/.exec(p)
+    const rel = skill?.[1] ?? cmd?.[1]
+    if (rel) names.push(rel.split('/').join(':'))
+  }
+  return names
 }
 
 /**
