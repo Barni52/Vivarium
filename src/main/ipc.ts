@@ -114,6 +114,25 @@ export function registerIpc(win: BrowserWindow): void {
         return cfg
       })
     },
+    (sessionId, name) => {
+      // A name the chat generated for itself. `autoName` rides with it in the
+      // same mutate — the two are one fact ("this was written by the app"), and
+      // a name persisted without its flag would be indistinguishable from one
+      // the user typed the moment the app restarts.
+      void store
+        .mutate((cfg) => {
+          for (const p of cfg.projects) {
+            const s = p.sessions.find((x) => x.id === sessionId)
+            if (!s) continue
+            s.name = name
+            s.autoName = true
+          }
+          return cfg
+        })
+        // The only config change that pushes: the renderer did not ask for this
+        // one, so it cannot adopt a return value.
+        .then((cfg) => emit(CH.sessionRenamed, cfg))
+    },
     (five, seven) => usage.applyStreamLimits(five, seven)
   )
   ;(win as unknown as { __chat?: ChatService }).__chat = chat
@@ -338,10 +357,20 @@ export function registerIpc(win: BrowserWindow): void {
   ipcMain.handle(
     CH.renameSession,
     async (_e, projectId: string, sessionId: string, name: string): Promise<Config> => {
+      const next = name.trim()
+      // A human named it, so the chat auto-titler is done with this session for
+      // good (see Session.autoName). Told to the live ChatService as well as
+      // written to config, because its `l.session` is a snapshot from open time
+      // and a title generated against a stale copy would land on top of the name
+      // just typed.
+      if (next) chat.manualRename(sessionId, next)
       return store.mutate((cfg) => {
         const p = cfg.projects.find((x) => x.id === projectId)
         const s = p?.sessions.find((x) => x.id === sessionId)
-        if (s && name.trim()) s.name = name.trim()
+        if (s && next) {
+          s.name = next
+          delete s.autoName
+        }
         return cfg
       })
     }
@@ -843,6 +872,11 @@ export function registerIpc(win: BrowserWindow): void {
   ipcMain.on(CH.chatRefreshCommands, (_e, sessionId: string) => {
     void chat.refreshCommands(sessionId)
   })
+
+  // Fire-and-forget for the same reason, one beat slower: the answer is a model
+  // call away and arrives as a `session:renamed` push, so the menu that asked
+  // for it has long since closed.
+  ipcMain.on(CH.chatRetitle, (_e, sessionId: string) => chat.retitle(sessionId))
 
   ipcMain.handle(CH.chatBody, (_e, sessionId: string, entryId: string): string | null =>
     chat.body(sessionId, entryId)

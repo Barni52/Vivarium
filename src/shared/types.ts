@@ -48,6 +48,23 @@ export interface Session {
   /** chat only. Same exception, same argument; applied as `--model` at spawn. */
   model?: string
   /**
+   * chat only. This name was written by the app, not by you — so the app may
+   * write it again.
+   *
+   * The sixth deliberate exception to "runtime state is queried live": it is a
+   * fact about *who last named this session*, and there is nowhere to query
+   * that from. It exists because auto-titling has exactly one way to be
+   * obnoxious — overwriting a name a human chose — and a flag is the only thing
+   * that can tell the two apart once both are just a string in `name`.
+   *
+   * Set whenever a generated title lands, cleared for good by the sidebar's
+   * rename (see the CH.renameSession handler). Absent on every session that
+   * existed before the feature, which is why `isDefaultName` is consulted
+   * *alongside* it: a chat still called `chat-3` was named by the counter, not
+   * by a person, so it is fair game with no migration.
+   */
+  autoName?: true
+  /**
    * chat only. Stretches of this conversation's transcript that a revert
    * abandoned, skipped by every later whole-file read.
    *

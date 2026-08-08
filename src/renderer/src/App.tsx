@@ -23,6 +23,7 @@ export function App(): React.ReactElement {
   const refreshOutputTree = useStore((s) => s.refreshOutputTree)
   const handleAgentActivity = useStore((s) => s.handleAgentActivity)
   const handleChatEvent = useStore((s) => s.handleChatEvent)
+  const adoptConfig = useStore((s) => s.adoptConfig)
   const acknowledgeSelected = useStore((s) => s.acknowledgeSelected)
   const requestQuit = useStore((s) => s.requestQuit)
   const dialog = useStore((s) => s.dialog)
@@ -61,6 +62,10 @@ export function App(): React.ReactElement {
     // turn-end replacement, its blocking cards and its exit are strictly ordered
     // and Electron only guarantees ordering *within* a channel.
     const offChat = window.vivarium.onChatEvent((e) => handleChatEvent(e))
+    // The one config change this side did not start: a chat that has named
+    // itself. Not on `chat:event` — a session name is sidebar state, and it has
+    // to land for chats that are not the one on screen.
+    const offRenamed = window.vivarium.onSessionRenamed((c) => adoptConfig(c))
     // Bringing the app to the front means looking at the selected session, so its
     // attention flag (and its share of the taskbar number) is answered for.
     const offFocus = window.vivarium.onWindowFocused(() => acknowledgeSelected())
@@ -74,6 +79,7 @@ export function App(): React.ReactElement {
       offOutput()
       offActivity()
       offChat()
+      offRenamed()
       offFocus()
       offQuit()
     }
@@ -86,6 +92,7 @@ export function App(): React.ReactElement {
     refreshClaude,
     handleAgentActivity,
     handleChatEvent,
+    adoptConfig,
     acknowledgeSelected,
     requestQuit
   ])

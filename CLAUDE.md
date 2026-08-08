@@ -69,6 +69,11 @@ discriminated `ChatEvent` union, because a turn's appends, the turn-end replacem
 rows, blocking cards, task/todo, `rewound` and exit are strictly ordered — and Electron guarantees
 ordering **within** a channel, not across channels.
 
+**`session:renamed` is the one config channel that pushes.** Every other config change starts in
+the renderer and adopts the `Config` its invoke returns; a chat that has named itself starts in
+main, so there is no return value to adopt. It carries the whole `Config` anyway, into
+`adoptConfig`, so the store keeps having exactly one way to take a config update.
+
 ## Invariants — do not break
 
 ### Docker and persistence
@@ -95,9 +100,11 @@ ordering **within** a channel, not across channels.
   kinds write the same container-side transcript — so only the in-flight turn is lost.
 - Runtime state (container running, live ptys) is **queried live, never persisted**. `config.json`
   holds projects/mounts/sessions/settings and is written through `ConfigStore.mutate` (atomic
-  temp-file + rename). Five deliberate exceptions, all user preferences or facts that *cannot* be
+  temp-file + rename). Six deliberate exceptions, all user preferences or facts that *cannot* be
   queried: `Session.mode`, `Session.model`, `Config.chatZoom`,
-  `Session.previousClaudeSessionIds` + `Config.pendingTranscriptDeletes`, and `Session.rewound`.
+  `Session.previousClaudeSessionIds` + `Config.pendingTranscriptDeletes`, `Session.rewound`, and
+  `Session.autoName` (*who* last named a chat — nothing can be asked once both answers are just a
+  string in `name`).
   Not persisted, for contrast: the `list_models` result, the composer draft, `terminalFontSize`.
   `Project.slashCommands` is cached as a **hint, never authority** — the CLI always decides, so a
   stale entry can only mis-suggest, never mis-execute.
@@ -243,6 +250,20 @@ ordering **within** a channel, not across channels.
   cannot, since a clean deny-then-interrupt reports true. On reopen a cancelled tool is detected
   **structurally**, never by matching the refusal wording. The `interrupted` row has two producers
   on one stream and neither can be dropped, so whichever lands second is suppressed, per turn.
+- **A chat names itself, and a human rename ends the arrangement for good.** Two beats: the first
+  message of a chat still called `chat-N` replaces that name with a cleaned slice of what you
+  typed (instant, free), and the settle replaces the slice with a few words from a **throwaway
+  Haiku process** (`docker.askClaude` — `-w /tmp` so no project CLAUDE.md loads, a pinned
+  `--session-id` so the transcript it necessarily writes can be deleted). Never the chat's own
+  process: the transcript *is* the model's context, so a "name this" turn would both show in the
+  log and be re-fed to the agent forever. Regenerated only when what the chat is about can have
+  changed — **a compaction** (the CLI's own evidence that the opening prompt no longer describes
+  the conversation), a `/clear`, or the "Retitle" menu item — never per turn. `mayRename` is the
+  whole safety story: `autoName` *or* a name still matching `chat-\d+`, which is what makes every
+  chat already in config.json eligible with no migration. The rename handler tells `ChatService`
+  as well as config (`manualRename`), because `l.session` is a snapshot from open time and a title
+  generated against a stale copy would land on top of the name just typed. Every failure — no
+  model, a timeout, a paragraph instead of a name — keeps the name it has and says nothing.
 - **The context meter is only as fresh as the last thing that asked for it**, so `set_model` asks
   too — the ceiling is a property of the model. `setModel` adopts the *resolved* id for display
   while `Session.model` keeps the **alias**, which is what `--model` needs at the next spawn.

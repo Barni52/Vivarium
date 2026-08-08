@@ -459,6 +459,10 @@ interface AppState {
   setEditDraft: (v: string) => void
   commitRename: (projectId: string) => Promise<void>
   cancelRename: () => void
+  /** Take a Config main wrote on its own initiative (the chat auto-titler). */
+  adoptConfig: (config: Config) => void
+  /** "Retitle" — regenerate a chat's name from what it has been about. */
+  retitleChat: (sessionId: string) => void
   requestKill: (projectId: string, sessionId: string, name: string) => void
   confirmKill: () => Promise<void>
 
@@ -1461,6 +1465,16 @@ export const useStore = create<AppState>((set, get) => ({
     const config = await window.vivarium.renameSession(projectId, editingSessionId, editDraft)
     set({ config, editingSessionId: null })
   },
+
+  // A name main wrote by itself — today only a chat titling itself. Adopted
+  // whole, exactly like the Config every other config action gets back from its
+  // invoke, so there is still one way for this store to take a config update.
+  //
+  // Safe to land under an open rename box: the draft lives in `editDraft`, not
+  // in `config`, and main stops titling a session the moment that box commits.
+  adoptConfig: (config) => set({ config }),
+
+  retitleChat: (sessionId) => window.vivarium.chatRetitle(sessionId),
 
   requestKill: (projectId, sessionId, name) =>
     set({ dialog: 'confirmKill', killTarget: { projectId, sessionId, name } }),

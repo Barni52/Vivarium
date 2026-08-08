@@ -185,6 +185,8 @@ const api = {
   /** Re-scan what `/` can expand; the fresh list arrives as a `meta` event. */
   chatRefreshCommands: (sessionId: string): void =>
     ipcRenderer.send(CH.chatRefreshCommands, sessionId),
+  /** Regenerate this chat's name from what it has actually been about. */
+  chatRetitle: (sessionId: string): void => ipcRenderer.send(CH.chatRetitle, sessionId),
   // The one union channel — see the ChatEvent doc comment for why it is one.
   onChatEvent: (cb: (e: ChatEvent) => void): (() => void) => {
     const h = (_: unknown, p: ChatEvent): void => cb(p)
@@ -220,6 +222,12 @@ const api = {
     return () => ipcRenderer.removeListener(CH.quitRequested, h)
   },
   // The window became the active one (taskbar/start-menu click, alt-tab, restore).
+  /** Main renamed a session by itself (the chat auto-titler). */
+  onSessionRenamed: (cb: (config: Config) => void): (() => void) => {
+    const h = (_: unknown, p: Config): void => cb(p)
+    ipcRenderer.on(CH.sessionRenamed, h)
+    return () => ipcRenderer.removeListener(CH.sessionRenamed, h)
+  },
   onWindowFocused: (cb: () => void): (() => void) => {
     const h = (): void => cb()
     ipcRenderer.on(CH.windowFocused, h)

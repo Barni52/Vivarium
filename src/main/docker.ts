@@ -1,7 +1,7 @@
 import { spawn, execFile } from 'child_process'
 import { existsSync } from 'fs'
 import { join, basename } from 'path'
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { app } from 'electron'
 import type {
   ClaudeVersionInfo,
@@ -184,6 +184,119 @@ export class DockerService {
       child.on('close', (code) => done(code ?? 0))
       child.on('error', () => done(1, stderr || 'spawn failed'))
     })
+  }
+
+  /**
+   * The same runner again, with something written to the child's stdin.
+   *
+   * Exists for exactly one caller (askClaude below) and for one reason: the text
+   * it sends is a slice of the user's own conversation, and stdin is the only
+   * way into the container that never becomes part of a command line. An argv
+   * would have to survive `sh -c` quoting, which is a shell-injection bug
+   * waiting for the first prompt containing a backtick.
+   */
+  private async execStdin(
+    args: string[],
+    stdin: string,
+    timeoutMs?: number
+  ): Promise<ExecResult> {
+    const bin = await this.docker()
+    return new Promise((resolve) => {
+      const child = spawn(bin, args, { windowsHide: true })
+      let stdout = ''
+      let stderr = ''
+      let timer: ReturnType<typeof setTimeout> | null = null
+      const done = (code: number, err?: string): void => {
+        if (timer) clearTimeout(timer)
+        resolve({ code, stdout, stderr: err ?? stderr })
+      }
+      if (timeoutMs) {
+        timer = setTimeout(() => {
+          child.kill()
+          done(124, stderr || 'timed out')
+        }, timeoutMs)
+      }
+      child.stdout.on('data', (d: Buffer) => (stdout += d.toString()))
+      child.stderr.on('data', (d) => (stderr += d.toString()))
+      child.on('close', (code) => done(code ?? 0))
+      child.on('error', () => done(1, stderr || 'spawn failed'))
+      // A `-p` run reads its whole prompt from stdin and waits for EOF, so the
+      // end matters as much as the write.
+      child.stdin.on('error', () => {
+        /* the child died before it read us; the exit code is the report */
+      })
+      child.stdin.write(stdin)
+      child.stdin.end()
+    })
+  }
+
+  /**
+   * Ask Claude Code a one-shot question inside a project's container, in a
+   * conversation that is thrown away before this resolves.
+   *
+   * The chat auto-titler is the only caller, and every choice here is about
+   * keeping it invisible — a name in the sidebar is not worth a slow, expensive
+   * or side-effecting call:
+   *
+   * - **Never the chat's own live process.** The transcript *is* the model's
+   *   context, so a "name this conversation" turn sent down that stdin would
+   *   both appear in the user's log and be re-fed to the agent for the rest of
+   *   the session. A separate process is the only way to ask about a
+   *   conversation without joining it.
+   * - **`-w /tmp`, not `/workspace`.** cwd decides which CLAUDE.md files load,
+   *   and the project's is the largest thing this call could accidentally pay
+   *   for. `/tmp` has none. (The user-level `~/.claude/CLAUDE.md` on the shared
+   *   home volume still loads; that one is not addressable from here.)
+   * - **A pinned `--session-id`,** so the throwaway transcript it necessarily
+   *   writes has a name we know and can delete. Without it the CLI mints a uuid
+   *   we never learn, and the `-tmp` project dir grows a file per titling for
+   *   the life of the volume.
+   *
+   * Returns trimmed stdout, or null on any failure at all — a caller that
+   * cannot get a title keeps the one it has, which is always a reasonable
+   * outcome and never worth a dialog.
+   */
+  async askClaude(
+    project: Project,
+    prompt: string,
+    model: string,
+    timeoutMs = 90_000
+  ): Promise<string | null> {
+    if (!(await this.detect())) return null
+    const container = this.containerName(project)
+    const uuid = randomUUID()
+    // `-i` for the stdin pipe, and no `-t` — there is no TTY in this path any
+    // more than in the chat's own (a TTY would make the CLI paint a spinner
+    // into the answer). Default `--output-format text`: the answer is the whole
+    // of stdout, which is the cheapest thing to parse and the hardest to
+    // misread. Tools are not disabled by a flag because a plain `-p` run
+    // auto-denies every permission prompt (the same CLI fact the chat's
+    // `--permission-prompt-tool stdio` exists to *undo*), and `/tmp` holds
+    // nothing to read anyway.
+    const r = await this.execStdin(
+      ['exec', '-i', '-w', '/tmp', container, 'claude', '-p', '--model', model, '--session-id', uuid],
+      prompt,
+      timeoutMs
+    )
+    // Best-effort, and deliberately not awaited into the answer: the title is
+    // worth having even if the cleanup fails, and the file is a few KB.
+    //
+    // **`rm -rf` with an interpolated variable**, so the safety argument sits
+    // here exactly as it does on deleteTranscripts: `uuid` is `randomUUID()`
+    // output — hex and hyphens, never user input, never a name the CLI chose —
+    // and the glob names that one conversation, so the `-workspace` slug next
+    // to it (which holds this project's chats *and* claude-box's) cannot be
+    // reached even if the escaping of the cwd changes under us.
+    void this.exec([
+      'exec',
+      container,
+      'sh',
+      '-c',
+      `rm -rf /home/node/.claude/projects/*/${uuid}.jsonl /home/node/.claude/projects/*/${uuid}/`
+    ])
+    if (r.code !== 0) return null
+    const text = r.stdout.trim()
+    return text || null
   }
 
   /** Run a docker command, streaming combined output to a sink line-by-line. */

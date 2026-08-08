@@ -10,6 +10,13 @@ export const CH = {
   addSession: 'session:add',
   renameSession: 'session:rename',
   removeSession: 'session:remove',
+  // A session renamed by *main* rather than by the sidebar — today only the chat
+  // auto-titler. The one config channel that pushes: every other config change
+  // starts in the renderer and adopts the Config it gets back, but a generated
+  // title starts in ChatService, so main is the writer and the renderer adopts.
+  // The whole Config rides along, exactly like an invoke's return value, so the
+  // store keeps having one way to take a config update.
+  sessionRenamed: 'session:renamed',
   // The chat window's zoom factor. A setting rather than a chat channel: it is
   // global to the app and outlives every session, so it is written straight to
   // config.json and read back at launch.
@@ -82,6 +89,10 @@ export const CH = {
   // answer comes back on `chat:event` as a `meta` — the renderer is asking main
   // to refresh a reading it already subscribes to, not fetching one.
   chatRefreshCommands: 'chat:refresh-commands',
+  // "Name this chat after what it is actually about." A send, not an invoke: the
+  // answer is a model call away and arrives on `session:renamed` like every
+  // other generated title, rather than being awaited by a context menu.
+  chatRetitle: 'chat:retitle',
   chatEvent: 'chat:event',
 
   // A link in a chat message, opened in the user's own browser. The renderer

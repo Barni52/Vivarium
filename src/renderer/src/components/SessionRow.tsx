@@ -2,7 +2,7 @@ import React from 'react'
 import type { Project, Session } from '@shared/types'
 import { useStore } from '../state/store'
 import { ACCENT, MONO } from '../theme'
-import { TypeIcon, Pencil, Close, ThinkingDots } from './Icons'
+import { TypeIcon, Pencil, Close, Refresh, ThinkingDots } from './Icons'
 import { Elapsed } from './Elapsed'
 
 // Turn duration next to an agent's indicator. Deliberately visible text, not a
@@ -27,6 +27,7 @@ export function SessionRow({ project, session }: { project: Project; session: Se
   const waitingSince = useStore((s) => s.agentWaitingSince[session.id])
   const select = useStore((s) => s.select)
   const startRename = useStore((s) => s.startRename)
+  const retitleChat = useStore((s) => s.retitleChat)
   const setEditDraft = useStore((s) => s.setEditDraft)
   const commitRename = useStore((s) => s.commitRename)
   const cancelRename = useStore((s) => s.cancelRename)
@@ -49,6 +50,22 @@ export function SessionRow({ project, session }: { project: Project; session: Se
         icon: <Pencil size={13} />,
         onSelect: () => startRename(session.id, session.name)
       },
+      // Chats name themselves after their first message and again after a
+      // compaction; this is the way to ask for one at any other moment — and
+      // the only way back once you have renamed one by hand, since a manual
+      // rename otherwise ends the arrangement for good. Offered only while the
+      // chat is open, because the conversation it reads lives in that process.
+      ...(session.type === 'chat' && live
+        ? [
+            {
+              label: 'Retitle',
+              // Refresh, not Sparkle: Sparkle is the `agent` type's glyph, and
+              // the type vocabulary is SESSION_TYPES' to spend (see theme.ts).
+              icon: <Refresh size={13} />,
+              onSelect: () => retitleChat(session.id)
+            }
+          ]
+        : []),
       { label: '---' },
       {
         // same two glyphs as this row's hover controls, so the menu and the
