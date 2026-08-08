@@ -203,6 +203,11 @@ const api = {
   // dialogs / window
   appInfo: (): Promise<AppInfo> => ipcRenderer.invoke(CH.appInfo),
   browseFolder: (): Promise<string | null> => ipcRenderer.invoke(CH.browseFolder),
+  /** The same picker, multi-select — several mounts from one trip through it. */
+  browseFolders: (): Promise<string[]> => ipcRenderer.invoke(CH.browseFolders),
+  /** A base folder's immediate subfolders, absolute, for the mount quick-picks. */
+  subfolders: (basePath: string): Promise<string[]> =>
+    ipcRenderer.invoke(CH.subfolders, basePath),
   fetchUsage: (): Promise<UsageSnapshot> => ipcRenderer.invoke(CH.fetchUsage),
 
   // claude code version / manual update (force skips main's npm-registry cache)

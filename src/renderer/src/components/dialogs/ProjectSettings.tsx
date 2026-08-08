@@ -3,7 +3,7 @@ import { useStore } from '../../state/store'
 import { Overlay, Panel, FooterButton, ImageToggle, fieldStyle, labelStyle } from '../ui'
 import { MountList } from '../MountList'
 import { Restart, Trash } from '../Icons'
-import { toAbs } from '../../paths'
+import { mergeMounts } from '../../paths'
 
 export function ProjectSettings(): React.ReactElement | null {
   const st = useStore((s) => s.st)
@@ -18,14 +18,14 @@ export function ProjectSettings(): React.ReactElement | null {
   if (!st) return null
   const slim = st.image === 'slim'
 
-  const addMount = (name: string): void => {
-    const abs = toAbs(st.basePath, name)
-    setSt(st.mounts.includes(abs) ? { mountDraft: '' } : { mounts: [...st.mounts, abs], mountDraft: '' })
+  const addMounts = (names: string[]): void => {
+    setSt({ mounts: mergeMounts(st.basePath, st.mounts, names), mountDraft: '' })
   }
 
+  // Multi-select, like the Add-Project dialog: several mounts, one trip.
   const browseMount = async (): Promise<void> => {
-    const dir = await window.vivarium.browseFolder()
-    if (dir) addMount(dir)
+    const dirs = await window.vivarium.browseFolders()
+    if (dirs.length) addMounts(dirs)
   }
 
   return (
@@ -72,7 +72,7 @@ export function ProjectSettings(): React.ReactElement | null {
             setDraft={(v) => setSt({ mountDraft: v })}
             locked={st.locked}
             lockedNote="Mounts can’t change while a session is live — stop the container to edit them."
-            onAdd={addMount}
+            onAdd={addMounts}
             onBrowse={browseMount}
             onRemove={(i) => setSt({ mounts: st.mounts.filter((_, j) => j !== i) })}
           />

@@ -115,6 +115,16 @@ export const CH = {
   // dialogs / window
   appInfo: 'app:info',
   browseFolder: 'dialog:browse-folder',
+  // The same picker with multiSelections on, for the mount list: adding six
+  // folders should cost one trip through the Windows dialog, not six. A second
+  // channel rather than a flag on the first because the return type differs and
+  // every other caller (base folder, shared output) wants exactly one path.
+  browseFolders: 'dialog:browse-folders',
+  // The immediate subfolders of a base folder, absolute, for the mount picker's
+  // quick-add chips. A host-side readdir — nothing here touches docker, and it
+  // is deliberately one level deep: this answers "which of these do I want
+  // mounted", which is a flat question, not "browse my disk".
+  subfolders: 'dialog:subfolders',
   setBadge: 'window:set-badge',
   windowMinimize: 'window:minimize',
   windowMaximize: 'window:maximize',

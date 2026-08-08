@@ -1,8 +1,8 @@
 import { app, ipcMain, dialog, BrowserWindow, clipboard, shell, nativeImage } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { watch, type FSWatcher } from 'node:fs'
-import { readdir, mkdir } from 'node:fs/promises'
-import { join, resolve, sep, extname } from 'node:path'
+import { readdir, mkdir, stat } from 'node:fs/promises'
+import { join, resolve, sep, extname, isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { CH } from '@shared/ipc'
 import type {
@@ -969,6 +969,54 @@ export function registerIpc(win: BrowserWindow): void {
   ipcMain.handle(CH.browseFolder, async (): Promise<string | null> => {
     const res = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
     return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
+  })
+
+  // Several mounts from one trip through the picker. Ctrl/Shift-click in the
+  // folder list selects more than one; a cancel is an empty array rather than
+  // null, so the caller's "add these" path is the only path.
+  ipcMain.handle(CH.browseFolders, async (): Promise<string[]> => {
+    const res = await dialog.showOpenDialog(win, {
+      properties: ['openDirectory', 'multiSelections']
+    })
+    return res.canceled ? [] : res.filePaths
+  })
+
+  // One level of directories under a base folder, for the mount picker's
+  // quick-add chips — the fast way to mount four of a monorepo's six packages.
+  //
+  // Absolute-only by design: a relative string here would resolve against the
+  // app's cwd, which is nowhere near the user's project. Dot-directories and
+  // node_modules are dropped because they are never what someone is picking
+  // between (and the shadow volumes make node_modules the container's copy
+  // anyway) — anything unusual is still reachable by typing it or by Browse….
+  // Junctions and symlinks are common in dev trees and docker binds them fine,
+  // so they are stat()ed rather than skipped along with the files.
+  const SUBFOLDER_SKIP = new Set(['node_modules'])
+  ipcMain.handle(CH.subfolders, async (_e, basePath: string): Promise<string[]> => {
+    if (typeof basePath !== 'string' || !basePath.trim() || !isAbsolute(basePath.trim())) return []
+    const base = basePath.trim()
+    let entries
+    try {
+      entries = await readdir(base, { withFileTypes: true })
+    } catch {
+      return [] // a half-typed path, a disconnected drive, a folder we can't read
+    }
+    const named = entries
+      .filter((e) => !e.name.startsWith('.') && !SUBFOLDER_SKIP.has(e.name))
+      .filter((e) => e.isDirectory() || e.isSymbolicLink())
+      .slice(0, 200)
+    const dirs = await Promise.all(
+      named.map(async (e) => {
+        const full = join(base, e.name)
+        if (e.isDirectory()) return full
+        try {
+          return (await stat(full)).isDirectory() ? full : null
+        } catch {
+          return null // a broken link
+        }
+      })
+    )
+    return dirs.filter((d): d is string => d !== null).sort((a, b) => a.localeCompare(b))
   })
 
   ipcMain.on(CH.windowMinimize, () => win.minimize())

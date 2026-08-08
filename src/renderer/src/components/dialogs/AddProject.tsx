@@ -2,7 +2,7 @@ import React from 'react'
 import { useStore } from '../../state/store'
 import { Overlay, Panel, FooterButton, ImageToggle, fieldStyle, labelStyle } from '../ui'
 import { MountList } from '../MountList'
-import { toAbs } from '../../paths'
+import { mergeMounts } from '../../paths'
 
 export function AddProject(): React.ReactElement {
   const ap = useStore((s) => s.ap)
@@ -15,14 +15,14 @@ export function AddProject(): React.ReactElement {
     if (dir) setAp({ basePath: dir })
   }
 
-  const addMount = (name: string): void => {
-    const abs = toAbs(ap.basePath, name)
-    setAp(ap.mounts.includes(abs) ? { mountDraft: '' } : { mounts: [...ap.mounts, abs], mountDraft: '' })
+  const addMounts = (names: string[]): void => {
+    setAp({ mounts: mergeMounts(ap.basePath, ap.mounts, names), mountDraft: '' })
   }
 
+  // Multi-select: Ctrl-click four packages in the picker and they all land.
   const browseMount = async (): Promise<void> => {
-    const dir = await window.vivarium.browseFolder()
-    if (dir) addMount(dir)
+    const dirs = await window.vivarium.browseFolders()
+    if (dirs.length) addMounts(dirs)
   }
 
   const slim = ap.image === 'slim'
@@ -98,7 +98,7 @@ export function AddProject(): React.ReactElement {
             basePath={ap.basePath}
             draft={ap.mountDraft}
             setDraft={(v) => setAp({ mountDraft: v })}
-            onAdd={addMount}
+            onAdd={addMounts}
             onBrowse={browseMount}
             onRemove={(i) => setAp({ mounts: ap.mounts.filter((_, j) => j !== i) })}
           />
