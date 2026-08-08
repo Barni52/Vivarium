@@ -328,11 +328,14 @@ There is **no test suite, by design — don't add one.**
 
 ## Git
 
-- **Every commit is followed by a push.** `git push` to the current branch's upstream (`-u origin
-  <branch>` the first time) in the same turn as the commit — do not leave commits sitting locally
-  waiting to be asked about. If the push fails, say so; do not silently treat the commit as done.
-- Committing itself is still on request, as always — this rule says what happens *after* a commit,
-  not that work should be committed unprompted.
+- **Commit straight onto `main`.** No feature branch and no PR unless asked — this is a personal
+  single-user tool, so a branch is only a merge step nobody is going to review. Do not "branch
+  first" out of caution; that default does not apply here.
+- **Every commit is followed by a push.** `git push` in the same turn as the commit (`-u origin
+  main` if the upstream is somehow unset) — do not leave commits sitting locally waiting to be
+  asked about. If the push fails, say so; do not silently treat the commit as done.
+- Committing itself is still on request, as always — these two rules say *where* a commit goes and
+  what happens *after* it, not that work should be committed unprompted.
 
 ## Code style
 
